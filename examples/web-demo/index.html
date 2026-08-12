@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>duck-geocoder demo</title>
+  </head>
+  <body>
+    <div id="app">
+      <div id="search-panel">
+        <div id="search-box">
+          <input
+            id="search-input"
+            type="text"
+            placeholder="住所を入力 (例: 本町通一丁目)"
+            autocomplete="off"
+            disabled
+          />
+          <button id="clear-button" type="button" title="クリア" hidden>×</button>
+        </div>
+        <ul id="results"></ul>
+      </div>
+      <div id="map"></div>
+      <div id="loading">
+        <div class="spinner"></div>
+        <p id="loading-message">読み込み中…</p>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

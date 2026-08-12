@@ -1,0 +1,138 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+  width: 100%;
+  font-family: system-ui, sans-serif;
+}
+
+#map {
+  position: absolute;
+  inset: 0;
+}
+
+#search-panel {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  z-index: 1;
+  width: 20rem;
+  max-width: calc(100vw - 2rem);
+}
+
+#search-box {
+  position: relative;
+}
+
+#search-input {
+  width: 100%;
+  padding: 0.6rem 2.2rem 0.6rem 0.8rem;
+  font-size: 1rem;
+  border: 1px solid #ccc;
+  border-radius: 0.4rem;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+#search-input:disabled {
+  background: #f5f5f5;
+  cursor: wait;
+}
+
+#clear-button {
+  position: absolute;
+  top: 50%;
+  right: 0.5rem;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  font-size: 1.2rem;
+  line-height: 1;
+  color: #888;
+  cursor: pointer;
+  padding: 0.2rem 0.3rem;
+}
+
+#clear-button:hover {
+  color: #333;
+}
+
+#loading {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  background: rgba(255, 255, 255, 0.9);
+  transition: opacity 0.3s;
+}
+
+#loading[hidden] {
+  display: none;
+}
+
+#loading p {
+  margin: 0;
+  color: #555;
+}
+
+.spinner {
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 3px solid #ddd;
+  border-top-color: #ff6600;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+#results {
+  list-style: none;
+  margin: 0.3rem 0 0;
+  padding: 0;
+  background: white;
+  border-radius: 0.4rem;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+
+#results:empty {
+  display: none;
+}
+
+#results li {
+  padding: 0.5rem 0.8rem;
+  cursor: pointer;
+  border-bottom: 1px solid #eee;
+}
+
+#results li:last-child {
+  border-bottom: none;
+}
+
+#results li:hover {
+  background: #f0f4ff;
+}
+
+.badge {
+  display: inline-block;
+  margin-right: 0.5rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.2rem;
+  background: #eee;
+  color: #666;
+  font-size: 0.7rem;
+  vertical-align: middle;
+}

@@ -1,3 +1,5 @@
 [tools]
 duckdb = "latest"
+node = "lts"
+pnpm = "latest"
 rust = "stable"
