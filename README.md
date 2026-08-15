@@ -70,6 +70,18 @@ cargo run --release --bin isj_block_to_geoparquet -- \
 座標系は元データのメタデータ (GeoJSONの `crs` / 位置参照情報のメタデータXML) から実行時に読み取り、
 PROJでWGS84 (EPSG:4326) に変換して書き出す。ハードコードはしていない。
 
+## カタログの生成
+
+変換したGeoParquetを走査して、カタログJSONを作る。
+
+```sh
+cargo run --release --bin build_catalog -- data/output data/output/catalog.json
+```
+
+件数・収録範囲 (bbox)・列構成は実際のParquetメタデータから読むので、中身とずれない。
+Webデモはこれを読んで、どのデータセットを使うかを決める
+(変換するファイルを増やせば、UIのコードを変えなくても追随する)。
+
 ## テスト
 
 ```sh

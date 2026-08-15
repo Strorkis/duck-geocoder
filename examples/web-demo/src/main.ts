@@ -7,10 +7,33 @@ import eh_worker from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url'
 import { MapLibreMap, GeoJSONSource, Popup, type StyleSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
-// 現時点では手元にダウンロードした都道府県だけをハードコードで列挙している。
-// (東京都/神奈川県の位置参照情報 + 全国の行政区域データ)
-const ISJ_OAZA_FILES = ['isj_oaza_13.parquet', 'isj_oaza_14.parquet'];
-const N03_FILE = 'n03_all.parquet';
+/**
+ * カタログ (data/output/catalog.json)。
+ * Rust側の build_catalog がGeoParquetのメタデータから生成するので、
+ * 変換したファイルが増えればUIは自動で追随する。
+ */
+interface CatalogEntry {
+  id: string;
+  file: string;
+  kind: 'admin' | 'oaza' | 'block';
+  title: string;
+  source: string;
+  geometry_types: string[];
+  bbox: [number, number, number, number] | null;
+  row_count: number;
+  columns: { name: string; data_type: string }[];
+}
+
+async function fetchCatalog(): Promise<CatalogEntry[]> {
+  const response = await fetch('/data/catalog.json');
+  if (!response.ok) {
+    throw new Error(
+      'catalog.json が読めません。`cargo run --bin build_catalog -- data/output data/output/catalog.json` を実行してください。',
+    );
+  }
+  const catalog = (await response.json()) as { datasets: CatalogEntry[] };
+  return catalog.datasets;
+}
 
 /**
  * 検索結果は2種類ある。
@@ -21,7 +44,9 @@ type SearchResult =
   | { kind: 'admin'; label: string; adminCode: string }
   | { kind: 'oaza'; label: string; lon: number; lat: number };
 
-async function initDuckDb(): Promise<duckdb.AsyncDuckDBConnection> {
+async function initDuckDb(
+  datasets: CatalogEntry[],
+): Promise<duckdb.AsyncDuckDBConnection> {
   const MANUAL_BUNDLES: duckdb.DuckDBBundles = {
     mvp: {
       mainModule: duckdb_wasm_mvp,
@@ -48,7 +73,18 @@ async function initDuckDb(): Promise<duckdb.AsyncDuckDBConnection> {
   await conn.query(`SELECT * FROM duckdb_coordinate_systems();`);
   await conn.query(`INSTALL spatial; LOAD spatial;`);
 
-  for (const file of ISJ_OAZA_FILES) {
+  const oazaFiles = datasets.filter((d) => d.kind === 'oaza').map((d) => d.file);
+  // 行政区域は全国版と都道府県版が同居しうる。範囲の広いもの (=件数が最多) を採用する。
+  const adminDataset = datasets
+    .filter((d) => d.kind === 'admin')
+    .sort((a, b) => b.row_count - a.row_count)[0];
+
+  if (oazaFiles.length === 0 || !adminDataset) {
+    throw new Error('カタログに必要なデータセット (oaza / admin) がありません。');
+  }
+  console.info('[catalog] 行政区域:', adminDataset.id, '/ 地名:', oazaFiles.join(', '));
+
+  for (const file of [...oazaFiles, adminDataset.file]) {
     await db.registerFileURL(
       file,
       `${window.location.origin}/data/${file}`,
@@ -56,16 +92,10 @@ async function initDuckDb(): Promise<duckdb.AsyncDuckDBConnection> {
       false,
     );
   }
-  await db.registerFileURL(
-    N03_FILE,
-    `${window.location.origin}/data/${N03_FILE}`,
-    duckdb.DuckDBDataProtocol.HTTP,
-    false,
-  );
 
-  const oazaList = ISJ_OAZA_FILES.map((f) => `'${f}'`).join(', ');
+  const oazaList = oazaFiles.map((f) => `'${f}'`).join(', ');
   await conn.query(`CREATE VIEW isj_oaza AS SELECT * FROM read_parquet([${oazaList}]);`);
-  await conn.query(`CREATE VIEW n03 AS SELECT * FROM read_parquet('${N03_FILE}');`);
+  await conn.query(`CREATE VIEW n03 AS SELECT * FROM read_parquet('${adminDataset.file}');`);
 
   // N03は行政区域ごとに多数のポリゴン行を持つ (飛び地や島など) ので、
   // 検索用に名前とコードだけを重複排除した小さなテーブルを作っておく。
@@ -283,7 +313,8 @@ async function main() {
   let conn: duckdb.AsyncDuckDBConnection;
   let map: MapLibreMap;
   try {
-    [conn, map] = await Promise.all([initDuckDb(), initMap()]);
+    const datasets = await fetchCatalog();
+    [conn, map] = await Promise.all([initDuckDb(datasets), initMap()]);
   } catch (e) {
     console.error('[init] failed', e);
     loadingEl.innerHTML = '<p>初期化に失敗しました。コンソールを確認してください。</p>';

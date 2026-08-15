@@ -3,6 +3,7 @@ use proj::{Area, Proj};
 use std::fs::File;
 use std::path::Path;
 
+pub mod catalog;
 pub mod isj_block;
 pub mod isj_oaza;
 pub mod n03;

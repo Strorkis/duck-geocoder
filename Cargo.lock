@@ -582,9 +582,11 @@ dependencies = [
  "geo-types",
  "geojson",
  "geoparquet-batch-writer",
+ "parquet",
  "proj",
  "roxmltree",
  "serde",
+ "serde_json",
  "zip",
 ]
 
