@@ -90,6 +90,18 @@ pnpm dev
 `public/data` は `data/output/` へのシンボリックリンクなので、先に変換を済ませておくこと。
 読み込むファイルは `src/main.ts` の先頭でハードコードしている。
 
+### E2Eテスト
+
+```sh
+cd examples/web-demo
+pnpm exec playwright install chromium   # 初回のみ
+pnpm test
+```
+
+検索・ハイライト・逆ジオコーディングをブラウザ上で通しで検証する。
+開発サーバーは Playwright が自動で起動する。
+Rust側の統合テストと同様、`data/output/` が無い環境ではスキップされる。
+
 ## ライセンス・出典
 
 - 国土数値情報、位置参照情報: 国土交通省 (利用にあたっては各データの利用約款を確認すること)

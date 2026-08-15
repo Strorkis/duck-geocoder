@@ -289,6 +289,10 @@ async function main() {
     loadingEl.innerHTML = '<p>初期化に失敗しました。コンソールを確認してください。</p>';
     return;
   }
+  // E2Eテストから地図の状態 (ハイライトされている地物など) を検証するための足がかり。
+  // アプリ本体はこれを参照しない。
+  (window as unknown as { __map?: MapLibreMap }).__map = map;
+
   loadingEl.hidden = true;
   input.disabled = false;
   input.focus();
