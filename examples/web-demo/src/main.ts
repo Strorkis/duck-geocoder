@@ -4,7 +4,7 @@ import duckdb_wasm_mvp from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url';
 import mvp_worker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url';
 import duckdb_wasm_eh from '@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url';
 import eh_worker from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url';
-import { MapLibreMap, GeoJSONSource, type StyleSpecification } from 'maplibre-gl';
+import { MapLibreMap, GeoJSONSource, Popup, type StyleSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 // 現時点では手元にダウンロードした都道府県だけをハードコードで列挙している。
@@ -133,6 +133,34 @@ async function searchAddress(
   });
 
   return [...admins, ...oazas].slice(0, MAX_RESULTS);
+}
+
+/**
+ * 逆ジオコーディング。指定した座標を含む行政区域を返す。
+ *
+ * ポリゴンとの包含判定 (ST_Contains) は重いので、先に bbox 列で候補を絞る。
+ * bbox はGeoParquet生成時に書き込んである covering 列で、
+ * これがあるおかげで全国データ (12万件) でも実用的な速度で返る。
+ */
+async function reverseGeocode(
+  conn: duckdb.AsyncDuckDBConnection,
+  lon: number,
+  lat: number,
+): Promise<{ label: string; adminCode: string } | null> {
+  const result = await conn.query(`
+    SELECT pref_name || coalesce(county_name, '') || coalesce(city_name, '')
+             || coalesce(ward_name, '') AS label,
+           admin_code
+    FROM n03
+    WHERE bbox.xmin <= ${lon} AND bbox.xmax >= ${lon}
+      AND bbox.ymin <= ${lat} AND bbox.ymax >= ${lat}
+      AND ST_Contains(geometry, ST_Point(${lon}, ${lat}))
+    LIMIT 1;
+  `);
+  const rows = result.toArray();
+  if (rows.length === 0) return null;
+  const row = rows[0].toJSON() as unknown as { label: string; admin_code: string };
+  return { label: row.label, adminCode: row.admin_code };
 }
 
 async function fetchAdminPolygon(
@@ -369,6 +397,31 @@ async function main() {
     if (e.key === 'Escape') clearSearch();
   });
   clearButton.addEventListener('click', clearSearch);
+
+  // 逆ジオコーディング: 地図をクリックした地点がどの行政区域かを引き、
+  // その区域をハイライトしてポップアップで名前を出す。
+  // ポップアップは1つを使い回す (クリックのたびに増やさない)。
+  const popup = new Popup({ closeButton: false });
+  map.on('click', (e) => {
+    const { lng, lat } = e.lngLat;
+    popup.setLngLat(e.lngLat).setText('判定中…').addTo(map);
+
+    reverseGeocode(conn, lng, lat)
+      .then(async (hit) => {
+        if (!hit) {
+          popup.setText('該当する行政区域はありません (海上など)');
+          return;
+        }
+        popup.setText(hit.label);
+        input.value = hit.label;
+        clearButton.hidden = false;
+        await showResult({ kind: 'admin', label: hit.label, adminCode: hit.adminCode });
+      })
+      .catch((err: unknown) => {
+        console.error('[reverseGeocode] failed', err);
+        popup.setText('判定に失敗しました');
+      });
+  });
 }
 
 void main();
