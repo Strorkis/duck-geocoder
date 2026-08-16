@@ -56,6 +56,9 @@ COPY (
     subtype,
     height,
     num_floors,
+    -- 表示範囲での絞り込みに使う covering 列。
+    -- これを落とすと、あとで毎回ジオメトリ本体を評価する羽目になる。
+    bbox,
     geometry
   FROM read_parquet(
     's3://overturemaps-us-west-2/release/{release}/theme=buildings/type=building/*',
@@ -96,5 +99,7 @@ mod tests {
         assert!(sql.contains("bbox.xmin BETWEEN 139.73 AND 139.78"));
         assert!(sql.contains("bbox.ymin BETWEEN 35.63 AND 35.68"));
         assert!(sql.contains("TO '/tmp/out.parquet'"));
+        // 表示範囲での絞り込みに必要なので、bbox列を落とさないこと。
+        assert!(sql.contains("    bbox,\n"));
     }
 }

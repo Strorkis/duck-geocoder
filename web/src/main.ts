@@ -15,7 +15,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 interface CatalogEntry {
   id: string;
   file: string;
-  kind: 'admin' | 'oaza' | 'block';
+  kind: 'admin' | 'oaza' | 'block' | 'buildings';
   title: string;
   source: string;
   geometry_types: string[];
@@ -46,7 +46,7 @@ type SearchResult =
 
 async function initDuckDb(
   datasets: CatalogEntry[],
-): Promise<duckdb.AsyncDuckDBConnection> {
+): Promise<{ conn: duckdb.AsyncDuckDBConnection; hasBuildings: boolean }> {
   const MANUAL_BUNDLES: duckdb.DuckDBBundles = {
     mvp: {
       mainModule: duckdb_wasm_mvp,
@@ -82,9 +82,18 @@ async function initDuckDb(
   if (oazaFiles.length === 0 || !adminDataset) {
     throw new Error('カタログに必要なデータセット (oaza / admin) がありません。');
   }
-  console.info('[catalog] 行政区域:', adminDataset.id, '/ 地名:', oazaFiles.join(', '));
+  // 建物は任意。無ければ建物レイヤーを出さないだけで、他の機能は動く。
+  const buildingFiles = datasets.filter((d) => d.kind === 'buildings').map((d) => d.file);
+  console.info(
+    '[catalog] 行政区域:',
+    adminDataset.id,
+    '/ 地名:',
+    oazaFiles.join(', '),
+    '/ 建物:',
+    buildingFiles.join(', ') || 'なし',
+  );
 
-  for (const file of [...oazaFiles, adminDataset.file]) {
+  for (const file of [...oazaFiles, ...buildingFiles, adminDataset.file]) {
     await db.registerFileURL(
       file,
       `${window.location.origin}/data/${file}`,
@@ -96,6 +105,11 @@ async function initDuckDb(
   const oazaList = oazaFiles.map((f) => `'${f}'`).join(', ');
   await conn.query(`CREATE VIEW isj_oaza AS SELECT * FROM read_parquet([${oazaList}]);`);
   await conn.query(`CREATE VIEW n03 AS SELECT * FROM read_parquet('${adminDataset.file}');`);
+
+  if (buildingFiles.length > 0) {
+    const buildingList = buildingFiles.map((f) => `'${f}'`).join(', ');
+    await conn.query(`CREATE VIEW buildings AS SELECT * FROM read_parquet([${buildingList}]);`);
+  }
 
   // N03は行政区域ごとに多数のポリゴン行を持つ (飛び地や島など) ので、
   // 検索用に名前とコードだけを重複排除した小さなテーブルを作っておく。
@@ -111,7 +125,54 @@ async function initDuckDb(
     FROM n03;
   `);
 
-  return conn;
+  return { conn, hasBuildings: buildingFiles.length > 0 };
+}
+
+/** 建物1件分の表示用データ。 */
+interface BuildingFeature {
+  geojson: GeoJSON.Geometry;
+  name: string | null;
+  class: string | null;
+  height: number | null;
+}
+
+/**
+ * 表示範囲に入る建物を取り出す。
+ *
+ * 逆ジオコーディングと同じく、ジオメトリ本体を評価する前に bbox 列で絞る。
+ *
+ * 件数が多いと描画が重くなるので上限を設けるが、単に LIMIT で切ると
+ * まずい。Overtureのデータは空間的にソートされているため、先頭から N 件を
+ * 取ると地図の一部分にだけ固まって「帯状に消える」ように見える。
+ * bboxの面積が大きい順に取ることで、間引かれても全体に散らばるようにする。
+ */
+async function fetchBuildingsInView(
+  conn: duckdb.AsyncDuckDBConnection,
+  bounds: { west: number; south: number; east: number; north: number },
+  limit: number,
+): Promise<BuildingFeature[]> {
+  const result = await conn.query(`
+    SELECT ST_AsGeoJSON(geometry) AS geojson, name, class, height
+    FROM buildings
+    WHERE bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}
+      AND bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}
+    ORDER BY (bbox.xmax - bbox.xmin) * (bbox.ymax - bbox.ymin) DESC
+    LIMIT ${limit};
+  `);
+  return result.toArray().map((row) => {
+    const r = row.toJSON() as unknown as {
+      geojson: string;
+      name: string | null;
+      class: string | null;
+      height: number | null;
+    };
+    return {
+      geojson: JSON.parse(r.geojson) as GeoJSON.Geometry,
+      name: r.name,
+      class: r.class,
+      height: r.height,
+    };
+  });
 }
 
 /**
@@ -260,6 +321,23 @@ function initMap(): Promise<MapLibreMap> {
 
   return new Promise((resolve) => {
     map.on('load', () => {
+      // 建物はハイライトより先に追加して、下に敷く。
+      // OvertureのbuildingsはODbL 1.0で、OpenStreetMap由来を含むため
+      // 帰属表示が必須。https://docs.overturemaps.org/attribution/
+      map.addSource('buildings', {
+        type: 'geojson',
+        data: EMPTY_FEATURE_COLLECTION,
+        attribution:
+          '© <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap contributors</a>, ' +
+          '<a href="https://overturemaps.org" target="_blank">Overture Maps Foundation</a>',
+      });
+      map.addLayer({
+        id: 'buildings-fill',
+        type: 'fill',
+        source: 'buildings',
+        paint: { 'fill-color': '#4a6785', 'fill-opacity': 0.5 },
+      });
+
       map.addSource('highlight', {
         type: 'geojson',
         data: EMPTY_FEATURE_COLLECTION,
@@ -312,9 +390,13 @@ async function main() {
   loadingMessageEl.textContent = '地図とデータベースを準備中…';
   let conn: duckdb.AsyncDuckDBConnection;
   let map: MapLibreMap;
+  let hasBuildings = false;
   try {
     const datasets = await fetchCatalog();
-    [conn, map] = await Promise.all([initDuckDb(datasets), initMap()]);
+    const [db, createdMap] = await Promise.all([initDuckDb(datasets), initMap()]);
+    conn = db.conn;
+    hasBuildings = db.hasBuildings;
+    map = createdMap;
   } catch (e) {
     console.error('[init] failed', e);
     loadingEl.innerHTML = '<p>初期化に失敗しました。コンソールを確認してください。</p>';
@@ -433,7 +515,84 @@ async function main() {
   });
   clearButton.addEventListener('click', clearSearch);
 
-  // 逆ジオコーディング: 地図をクリックした地点がどの行政区域かを引き、
+  // 建物は件数が多いので、ある程度寄ったときだけ表示範囲の分を読み込む。
+  const BUILDINGS_MIN_ZOOM = 15;
+  const BUILDINGS_LIMIT = 3000;
+  let buildingsToken = 0;
+
+  const refreshBuildings = async () => {
+    const source = map.getSource('buildings') as GeoJSONSource | undefined;
+    if (!source) return;
+
+    if (map.getZoom() < BUILDINGS_MIN_ZOOM) {
+      await source.setData(EMPTY_FEATURE_COLLECTION);
+      return;
+    }
+
+    // 連続して地図を動かすと古い結果が後から届くことがあるので、
+    // 最新の要求以外は捨てる。
+    const token = ++buildingsToken;
+    const b = map.getBounds();
+    const rows = await fetchBuildingsInView(
+      conn,
+      { west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth() },
+      BUILDINGS_LIMIT,
+    );
+    if (token !== buildingsToken) return;
+
+    await source.setData({
+      type: 'FeatureCollection',
+      features: rows.map((row) => ({
+        type: 'Feature',
+        properties: { name: row.name, class: row.class, height: row.height },
+        geometry: row.geojson,
+      })),
+    });
+  };
+
+  if (hasBuildings) {
+    map.on('moveend', () => {
+      refreshBuildings().catch((e: unknown) => console.error('[buildings] failed', e));
+    });
+  }
+
+  // 操作の役割分担:
+  //   ホバー = 調べる (建物の情報を見るだけ。地図は動かさない)
+  //   クリック = 選ぶ (逆ジオコーディングして行政区域をハイライトする)
+  // 建物名を見るためにクリックすると行政区域までズームしてしまう、という
+  // ちぐはぐさを避けるため分けている。
+
+  // ホバー用。マウスを追うだけなので閉じるボタンは出さない。
+  const hoverPopup = new Popup({
+    closeButton: false,
+    closeOnClick: false,
+    offset: 12,
+  });
+
+  if (hasBuildings) {
+    map.on('mousemove', 'buildings-fill', (e) => {
+      const building = e.features?.[0];
+      if (!building) return;
+      map.getCanvas().style.cursor = 'pointer';
+
+      const props = building.properties;
+      const text = [
+        (props.name as string | null) ?? '(名称なし)',
+        props.class ? `用途: ${props.class as string}` : null,
+        props.height ? `高さ: ${props.height as number}m` : null,
+      ]
+        .filter(Boolean)
+        .join('\n');
+      hoverPopup.setLngLat(e.lngLat).setText(text).addTo(map);
+    });
+
+    map.on('mouseleave', 'buildings-fill', () => {
+      map.getCanvas().style.cursor = '';
+      hoverPopup.remove();
+    });
+  }
+
+  // 逆ジオコーディング: クリックした地点がどの行政区域かを引き、
   // その区域をハイライトしてポップアップで名前を出す。
   // ポップアップは1つを使い回す (クリックのたびに増やさない)。
   const popup = new Popup({ closeButton: false });
