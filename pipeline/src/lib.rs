@@ -7,6 +7,7 @@ pub mod catalog;
 pub mod isj_block;
 pub mod isj_oaza;
 pub mod n03;
+pub mod overture;
 
 /// 指定したEPSGコードからWGS84 (EPSG:4326) への変換器を作る。
 /// `bbox` (west, south, east, north) は変換対象データの範囲で、

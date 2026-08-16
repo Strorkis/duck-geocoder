@@ -73,6 +73,23 @@ cargo run --release --bin isj_block_to_geoparquet -- \
 座標系は元データのメタデータ (GeoJSONの `crs` / 位置参照情報のメタデータXML) から実行時に読み取り、
 PROJでWGS84 (EPSG:4326) に変換して書き出す。ハードコードはしていない。
 
+## Overture Maps の取り込み
+
+[Overture Maps](https://docs.overturemaps.org/) は最初からGeoParquetで配布されているので、
+変換は不要で、必要な範囲を切り出すだけでよい。
+
+```sh
+cd pipeline
+cargo run --release --bin extract_overture -- \
+  ../data/output/overture_buildings_minato.parquet 139.73 35.63 139.78 35.68
+```
+
+S3上の全件をスキャンするため、範囲が狭くても数分かかる。
+ブラウザのDuckDB-WASMは `httpfs` 拡張を持たず `s3://` を直接読めないため、
+この切り出しは手元で行う必要がある。
+
+出力ファイル名が `overture_buildings` で始まっていれば、カタログが建物データとして認識する。
+
 ## カタログの生成
 
 変換したGeoParquetを走査して、カタログJSONを作る。

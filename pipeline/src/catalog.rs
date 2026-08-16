@@ -36,6 +36,8 @@ pub enum DatasetKind {
     Oaza,
     /// 街区 (点)。より細かい住所検索に使う。
     Block,
+    /// 建物 (面)。名称・用途・高さなどを持つ。
+    Buildings,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,6 +69,12 @@ fn describe(file_stem: &str) -> Option<(DatasetKind, &'static str, &'static str)
         ))
     } else if file_stem.starts_with("isj_block") {
         Some((DatasetKind::Block, "街区", "位置参照情報 (街区レベル)"))
+    } else if file_stem.starts_with("overture_buildings") {
+        Some((
+            DatasetKind::Buildings,
+            "建物",
+            "Overture Maps (ODbL 1.0)",
+        ))
     } else {
         None
     }
@@ -213,6 +221,10 @@ mod tests {
         assert_eq!(describe("n03_all").unwrap().0, DatasetKind::Admin);
         assert_eq!(describe("isj_oaza_13").unwrap().0, DatasetKind::Oaza);
         assert_eq!(describe("isj_block_14").unwrap().0, DatasetKind::Block);
+        assert_eq!(
+            describe("overture_buildings_minato").unwrap().0,
+            DatasetKind::Buildings
+        );
         assert!(describe("unknown_data").is_none());
     }
 }
