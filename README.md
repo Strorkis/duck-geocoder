@@ -5,8 +5,9 @@ Rustで加工してGeoParquetに変換し、DuckDB-WASMからブラウザ上で�
 
 サーバーを持たず、静的ホスティング (Cloudflare R2など) にGeoParquetを置くだけで動かすことを想定している。
 
-- **本体 (リポジトリ直下)**: ダウンロード済みのzipを読み、WGS84のGeoParquetに変換するRust CLI。
-- **[examples/web-demo](examples/web-demo)**: 変換したGeoParquetをDuckDB-WASM + MapLibreで検索・表示するデモ。
+- **[pipeline/](pipeline)**: ダウンロード済みのzipを読み、WGS84のGeoParquetに変換するRust CLI。
+- **[web/](web)**: 変換したGeoParquetをDuckDB-WASM + MapLibreで検索・表示するWebアプリ。
+- **data/**: 手動ダウンロードした元データと、変換後のGeoParquet (git管理外)。
 
 ## 必要なもの
 
@@ -54,17 +55,19 @@ data/
 ## GeoParquetへの変換
 
 ```sh
+cd pipeline
+
 # 行政区域 (全国)
 cargo run --release --bin n03_to_geoparquet -- \
-  data/ksj/N03/N03-20260101_GML.zip data/output/n03_all.parquet
+  ../data/ksj/N03/N03-20260101_GML.zip ../data/output/n03_all.parquet
 
 # 位置参照情報 (大字・町丁目レベル)
 cargo run --release --bin isj_oaza_to_geoparquet -- \
-  data/isj/oaza/13000-19.0b.zip data/output/isj_oaza_13.parquet
+  ../data/isj/oaza/13000-19.0b.zip ../data/output/isj_oaza_13.parquet
 
 # 位置参照情報 (街区レベル)
 cargo run --release --bin isj_block_to_geoparquet -- \
-  data/isj/block/13000-24.0a.zip data/output/isj_block_13.parquet
+  ../data/isj/block/13000-24.0a.zip ../data/output/isj_block_13.parquet
 ```
 
 座標系は元データのメタデータ (GeoJSONの `crs` / 位置参照情報のメタデータXML) から実行時に読み取り、
@@ -75,7 +78,8 @@ PROJでWGS84 (EPSG:4326) に変換して書き出す。ハードコードはし�
 変換したGeoParquetを走査して、カタログJSONを作る。
 
 ```sh
-cargo run --release --bin build_catalog -- data/output data/output/catalog.json
+cd pipeline
+cargo run --release --bin build_catalog -- ../data/output ../data/output/catalog.json
 ```
 
 件数・収録範囲 (bbox)・列構成は実際のParquetメタデータから読むので、中身とずれない。
@@ -85,6 +89,7 @@ Webデモはこれを読んで、どのデータセットを使うかを決め�
 ## テスト
 
 ```sh
+cd pipeline
 cargo test
 ```
 
@@ -94,18 +99,18 @@ cargo test
 ## Webデモ
 
 ```sh
-cd examples/web-demo
+cd web
 pnpm install
 pnpm dev
 ```
 
-`public/data` は `data/output/` へのシンボリックリンクなので、先に変換を済ませておくこと。
-読み込むファイルは `src/main.ts` の先頭でハードコードしている。
+`public/data` は `data/output/` へのシンボリックリンクなので、先に変換とカタログ生成を済ませておくこと。
+読み込むデータセットは `catalog.json` から決まるので、UI側にファイル名は書かれていない。
 
 ### E2Eテスト
 
 ```sh
-cd examples/web-demo
+cd web
 pnpm exec playwright install chromium   # 初回のみ
 pnpm test
 ```

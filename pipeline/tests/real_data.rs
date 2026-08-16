@@ -23,7 +23,7 @@ macro_rules! require_fixture {
 
 #[test]
 fn n03_kanagawa_parses_all_features() {
-    let path = require_fixture!("data/ksj/N03/N03-20260101_14_GML.zip");
+    let path = require_fixture!("../data/ksj/N03/N03-20260101_14_GML.zip");
 
     let geojson_bytes = read_zip_entry_bytes(path, ".geojson").unwrap();
     let geojson_str = String::from_utf8(geojson_bytes).unwrap();
@@ -38,7 +38,7 @@ fn n03_kanagawa_parses_all_features() {
 
 #[test]
 fn isj_oaza_kanagawa_parses_all_rows() {
-    let path = require_fixture!("data/isj/oaza/14000-19.0b.zip");
+    let path = require_fixture!("../data/isj/oaza/14000-19.0b.zip");
 
     let csv_bytes = read_zip_entry_bytes(path, ".csv").unwrap();
     let csv_text = decode_sjis(&csv_bytes);
@@ -60,7 +60,7 @@ fn isj_oaza_kanagawa_parses_all_rows() {
 
 #[test]
 fn isj_block_kanagawa_parses_all_rows() {
-    let path = require_fixture!("data/isj/block/14000-24.0a.zip");
+    let path = require_fixture!("../data/isj/block/14000-24.0a.zip");
 
     let csv_bytes = read_zip_entry_bytes(path, ".csv").unwrap();
     let csv_text = decode_sjis(&csv_bytes);
