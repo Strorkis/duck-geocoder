@@ -90,6 +90,52 @@ test('地図をクリックすると逆ジオコーディングされる', async
   await expect(page.locator('#search-input')).toHaveValue(/東京都/);
 });
 
+/**
+ * 逆ジオコーディングは全国の行政区域 (200MB超) に対する点クエリなので、
+ * ファイル全体を読んでしまうと静的ホスティングでは成立しない。
+ * GeoParquet側は空間的に並べ替えてrow groupに分けてあり、bbox列の
+ * row group統計で必要な範囲だけを取れる形になっている
+ * (pipeline/src/spatial_pack.rs)。
+ *
+ * ただし現状のDuckDB-WASM (1.33.1-dev57.0) は、registerFileURL で登録した
+ * HTTPファイルに対してRangeリクエストを一切出さず、開いた時点でファイル全体を
+ * GETしている。開発サーバーのアクセスログで確認済み。
+ * つまりGeoParquet側の並べ替えの効果が、いまはブラウザまで届いていない。
+ *
+ * このテストはその状態を記録するために置いてある。クライアント側が
+ * 部分取得するようになったら fixme を外すこと。
+ */
+test.fixme('逆ジオコーディングはファイル全体のごく一部しか読まない', async ({ page }) => {
+  const dataset = '/data/n03_all.parquet';
+  const totalBytes = Number((await page.request.head(dataset)).headers()['content-length']);
+  expect(totalBytes).toBeGreaterThan(0);
+
+  // 初期化を含めて、このファイルの取得量を数える。
+  let fetchedBytes = 0;
+  page.on('response', (response) => {
+    if (!response.url().endsWith(dataset)) return;
+    // HEADは本文を返さないが Content-Length に全体サイズを載せるので数えない。
+    if (response.request().method() === 'HEAD') return;
+    fetchedBytes += Number(response.headers()['content-length'] ?? 0);
+  });
+  await page.reload();
+  await waitForReady(page);
+
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7671, 35.6812], zoom: 13 });
+  });
+  await page.locator('#map canvas').click({ position: { x: 400, y: 300 } });
+  await expect(page.locator('.maplibregl-popup-content')).toContainText('東京都', {
+    timeout: 30_000,
+  });
+
+  const measured = `${(fetchedBytes / 1024 / 1024).toFixed(1)} MB / ${(totalBytes / 1024 / 1024).toFixed(1)} MB`;
+  // 0バイトなら「絞り込めている」のではなく「計測できていない」ので、そちらも弾く。
+  expect(fetchedBytes, `転送量を計測できていない: ${measured}`).toBeGreaterThan(0);
+  expect(fetchedBytes, `読みすぎ: ${measured}`).toBeLessThan(totalBytes * 0.1);
+});
+
 test('十分に寄ると建物が表示され、離すと消える', async ({ page }) => {
   const hasBuildings = await page.request
     .head('/data/overture_buildings_minato.parquet')

@@ -5,6 +5,9 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+# parquet とメジャーバージョンを揃えること。ずれると RecordBatch などが
+# 別クレートの別型になり、parquet に渡せなくなる。
+arrow = "56"
 csv = "1.4.0"
 encoding_rs = "0.8.35"
 geo-types = "0.7.20"
