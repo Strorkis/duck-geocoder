@@ -62,6 +62,12 @@ async function initDuckDb(
   const logger = new duckdb.ConsoleLogger();
   const db = new duckdb.AsyncDuckDB(logger, worker);
   await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+  // これを明示しないと、DuckDB-WASMはRangeリクエストを一切出さずに
+  // ファイル全体をダウンロードする。既定値は false のはずだが、指定しないと
+  // そうならない (指定した場合としない場合で挙動が変わることを実測で確認)。
+  // 全国の行政区域は200MB超あるので、これが有るか無いかで転送量が
+  // 7.9MB と 202.6MB になる。詳細: docs/duckdb-wasm-range-requests.md
+  await db.open({ filesystem: { forceFullHTTPReads: false } });
 
   const conn = await db.connect();
   // duckdb-wasmはCRSメタデータ付きのGeoParquetをread_parquetすると

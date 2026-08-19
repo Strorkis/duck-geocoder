@@ -93,19 +93,16 @@ test('地図をクリックすると逆ジオコーディングされる', async
 /**
  * 逆ジオコーディングは全国の行政区域 (200MB超) に対する点クエリなので、
  * ファイル全体を読んでしまうと静的ホスティングでは成立しない。
- * GeoParquet側は空間的に並べ替えてrow groupに分けてあり、bbox列の
- * row group統計で必要な範囲だけを取れる形になっている
- * (pipeline/src/spatial_pack.rs)。
  *
- * ただし現状のDuckDB-WASM (1.33.1-dev57.0) は、registerFileURL で登録した
- * HTTPファイルに対してRangeリクエストを一切出さず、開いた時点でファイル全体を
- * GETしている。開発サーバーのアクセスログで確認済み。
- * つまりGeoParquet側の並べ替えの効果が、いまはブラウザまで届いていない。
+ * 成立させるには3つが噛み合う必要があり、どれが欠けても静かに全件取得に戻る。
+ * - GeoParquetが空間的に並べ替えられ、row groupに分かれていること
+ *   (pipeline/src/spatial_pack.rs)
+ * - DuckDB-WASMに forceFullHTTPReads: false を明示していること (web/src/main.ts)
+ * - 配信側がRangeリクエストを正しく扱うこと (vite.config.ts)
  *
- * このテストはその状態を記録するために置いてある。クライアント側が
- * 部分取得するようになったら fixme を外すこと。
+ * どれも実行時に警告が出ないので、転送量そのものを見張る。
  */
-test.fixme('逆ジオコーディングはファイル全体のごく一部しか読まない', async ({ page }) => {
+test('逆ジオコーディングはファイル全体のごく一部しか読まない', async ({ page }) => {
   const dataset = '/data/n03_all.parquet';
   const totalBytes = Number((await page.request.head(dataset)).headers()['content-length']);
   expect(totalBytes).toBeGreaterThan(0);

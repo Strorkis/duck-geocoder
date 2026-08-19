@@ -112,19 +112,18 @@ row groupの行数は、1行あたりのバイト数から自動で決める
 中身は変えない。行数・列構成・`geo` メタデータはそのまま引き継ぎ、並び順とrow groupの区切り、
 それと圧縮 (変換直後は無圧縮なのでZSTD) だけを変える。
 
-全国の行政区域で、1点を逆ジオコーディングするときに読む必要があるgeometryの量:
+全国の行政区域 (203MB) で1点を逆ジオコーディングしたときに、ブラウザが実際に転送した量:
 
-| | 変換直後 | 最適化後 |
-| --- | ---: | ---: |
-| 東京駅 | 243.0 MB | 19.5 MB |
-| 大阪市 | 243.0 MB | 4.3 MB |
-| 那覇市 | 243.0 MB | 1.4 MB |
-| 稚内市 | 243.0 MB | 2.5 MB |
+| | 転送量 |
+| --- | ---: |
+| 変換直後 (1 row group / 248MB) | 90.5 MB |
+| 最適化後 (125 row groups / 203MB) | **7.9 MB** |
 
-> **既知の問題**: DuckDB-WASM (1.33.1-dev57.0) は `registerFileURL` で登録したHTTPファイルに
-> Rangeリクエストを出さず、開いた時点でファイル全体をダウンロードする。
-> そのため上の効果はまだブラウザまで届いていない。調査記録は
-> [docs/duckdb-wasm-range-requests.md](docs/duckdb-wasm-range-requests.md)。
+ブラウザ側でこれが成立するには、DuckDB-WASMに `forceFullHTTPReads: false` を明示し、
+配信側がRangeリクエストを正しく扱う必要がある。どちらも欠けると警告なしに全件取得へ戻る
+(Viteの開発サーバーは既定でRangeの扱いに穴があるため `web/vite.config.ts` で補っている)。
+経緯は [docs/duckdb-wasm-range-requests.md](docs/duckdb-wasm-range-requests.md)。
+転送量は `web/tests/demo.spec.ts` のE2Eで見張っている。
 
 ## カタログの生成
 
