@@ -17,8 +17,11 @@ pub struct Row {
     pub city_name: Option<String>,
     /// N03_005 (行政区名)
     pub ward_name: Option<String>,
-    /// N03_007 (行政区域コード)
-    pub admin_code: String,
+    /// N03_007 (行政区域コード)。
+    /// 列名を `admin_id` にしているのは、行政区域データセットの出所が
+    /// 複数ありうるため (Overture Mapsのdivisionsから作る場合はUUIDが入る)。
+    /// UIはこれを不透明な識別子としてしか使わない。
+    pub admin_id: String,
     /// WGS84 (EPSG:4326) に変換済み。
     /// 元データの座標系はGeoJSONの `crs` フィールドから実行時に読み取っている
     /// (このファイルではJGD2011/EPSG:6668だが決め打ちしていない)。
@@ -104,7 +107,7 @@ pub fn parse_geojson(geojson_str: &str) -> Result<Vec<Row>> {
                 county_name: get_string("N03_003"),
                 city_name: get_string("N03_004"),
                 ward_name: get_string("N03_005"),
-                admin_code: get_string("N03_007").context("missing N03_007 (admin code)")?,
+                admin_id: get_string("N03_007").context("missing N03_007 (admin code)")?,
                 geometry: MultiPolygon(vec![]),
             };
             Ok((row, multi_polygon))
@@ -159,7 +162,7 @@ mod tests {
         assert_eq!(row.county_name, None);
         assert_eq!(row.city_name.as_deref(), Some("横浜市"));
         assert_eq!(row.ward_name.as_deref(), Some("鶴見区"));
-        assert_eq!(row.admin_code, "14101");
+        assert_eq!(row.admin_id, "14101");
         assert_eq!(row.geometry.0.len(), 1, "expected a single polygon ring");
         // JGD2011->WGS84 はこの地域では近似上シフト0 (EPSG:6698/1826)。
         let exterior = row.geometry.0[0].exterior();

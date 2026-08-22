@@ -33,7 +33,7 @@ fn n03_kanagawa_parses_all_features() {
     assert!(rows.iter().all(|r| r.pref_name == "神奈川県"));
     assert!(rows.iter().any(|r| r.city_name.as_deref() == Some("横浜市")
         && r.ward_name.as_deref() == Some("鶴見区")
-        && r.admin_code == "14101"));
+        && r.admin_id == "14101"));
 }
 
 #[test]

@@ -70,6 +70,59 @@ pub fn covering_bbox(geo_json: &str) -> Result<CoveringBbox> {
     })
 }
 
+/// GeoParquet 1.1 の `geo` メタデータJSONを組み立てる。
+///
+/// DuckDBの `COPY ... TO ... (FORMAT PARQUET)` は、GEOMETRY列があると自前で
+/// `geo` を書くが、その内容はGeoParquet **1.0.0** で `covering` の宣言が落ちる。
+/// coveringが無いとrow group統計での絞り込みができず、配信用の最適化
+/// ([`crate::spatial_pack`]) も適用できないので、こちらで書いたものを
+/// `KV_METADATA` で渡す (その際ジオメトリはBLOBとして書き、DuckDBに
+/// `geo` を書かせないようにすること。両方書かれると `geo` キーが重複する)。
+pub fn geo_metadata_json(
+    primary_column: &str,
+    covering: &CoveringBbox,
+    geometry_types: &[String],
+    bbox: [f64; 4],
+) -> Result<String> {
+    let path = |field: &str| serde_json::json!([covering.column, field]);
+    let geo = serde_json::json!({
+        "version": "1.1.0",
+        "primary_column": primary_column,
+        "columns": {
+            primary_column: {
+                "encoding": "WKB",
+                "geometry_types": geometry_types,
+                "bbox": bbox,
+                "covering": {
+                    "bbox": {
+                        "xmin": path(&covering.xmin),
+                        "ymin": path(&covering.ymin),
+                        "xmax": path(&covering.xmax),
+                        "ymax": path(&covering.ymax),
+                    }
+                }
+            }
+        }
+    });
+    serde_json::to_string(&geo).context("`geo` メタデータをJSONにできない")
+}
+
+/// DuckDBの `ST_GeometryType` が返す名前を、GeoParquetの `geometry_types` の
+/// 表記に直す。知らない名前はエラーにする (綴りを推測して黙って通すと、
+/// 読み手が種別で分岐したときに気付けない)。
+pub fn geoparquet_geometry_type(duckdb_name: &str) -> Result<&'static str> {
+    Ok(match duckdb_name.trim().to_ascii_uppercase().as_str() {
+        "POINT" => "Point",
+        "LINESTRING" => "LineString",
+        "POLYGON" => "Polygon",
+        "MULTIPOINT" => "MultiPoint",
+        "MULTILINESTRING" => "MultiLineString",
+        "MULTIPOLYGON" => "MultiPolygon",
+        "GEOMETRYCOLLECTION" => "GeometryCollection",
+        other => bail!("未知のジオメトリ種別: {other:?}"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,5 +181,49 @@ mod tests {
     fn rejects_nested_covering_path() {
         let nested = GEO.replace(r#"["bbox", "xmin"]"#, r#"["a", "b", "c"]"#);
         assert!(covering_bbox(&nested).is_err());
+    }
+
+    // 書いたものを自分で読み戻せること。covering の宣言が本題なので、
+    // ここが通らなければ配信用の最適化にかけられない。
+    #[test]
+    fn writes_metadata_that_can_be_read_back() {
+        let covering = CoveringBbox {
+            column: "bbox".to_string(),
+            xmin: "xmin".to_string(),
+            ymin: "ymin".to_string(),
+            xmax: "xmax".to_string(),
+            ymax: "ymax".to_string(),
+        };
+        let json = geo_metadata_json(
+            "geometry",
+            &covering,
+            &["Polygon".to_string(), "MultiPolygon".to_string()],
+            [122.0, 20.0, 154.0, 46.0],
+        )
+        .unwrap();
+
+        assert_eq!(covering_bbox(&json).unwrap(), covering);
+
+        // カタログ生成が読む項目も入っていること。
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let column = &value["columns"]["geometry"];
+        assert_eq!(value["version"], "1.1.0");
+        assert_eq!(column["geometry_types"][1], "MultiPolygon");
+        assert_eq!(column["bbox"][0], 122.0);
+    }
+
+    #[test]
+    fn maps_duckdb_geometry_type_names() {
+        assert_eq!(geoparquet_geometry_type("POLYGON").unwrap(), "Polygon");
+        assert_eq!(
+            geoparquet_geometry_type("MULTIPOLYGON").unwrap(),
+            "MultiPolygon"
+        );
+        assert_eq!(geoparquet_geometry_type("Point").unwrap(), "Point");
+    }
+
+    #[test]
+    fn rejects_unknown_geometry_type() {
+        assert!(geoparquet_geometry_type("TRIANGLE").is_err());
     }
 }

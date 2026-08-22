@@ -9,12 +9,12 @@ type TestWindow = { __map?: MapLibreMap };
  * 変換をまだ実行していない環境ではテストを失敗させずスキップする
  * (Rust側の tests/real_data.rs と同じ方針)。
  */
+/** 行政区域データセット。逆ジオコーディングと転送量の計測がこれを見る。 */
+const ADMIN_DATASET = '/data/overture_admin_jp.parquet';
+
 async function skipIfDataMissing(page: Page) {
-  const response = await page.request.head('/data/n03_all.parquet');
-  test.skip(
-    !response.ok(),
-    'data/output/n03_all.parquet が無い (READMEの手順で変換してください)',
-  );
+  const response = await page.request.head(ADMIN_DATASET);
+  test.skip(!response.ok(), `${ADMIN_DATASET} が無い (READMEの手順で用意してください)`);
 }
 
 /** 初期化 (DuckDB + 地図) の完了を待つ。 */
@@ -91,7 +91,7 @@ test('地図をクリックすると逆ジオコーディングされる', async
 });
 
 /**
- * 逆ジオコーディングは全国の行政区域 (200MB超) に対する点クエリなので、
+ * 逆ジオコーディングは全国の行政区域 (数十MB) に対する点クエリなので、
  * ファイル全体を読んでしまうと静的ホスティングでは成立しない。
  *
  * 成立させるには3つが噛み合う必要があり、どれが欠けても静かに全件取得に戻る。
@@ -103,7 +103,7 @@ test('地図をクリックすると逆ジオコーディングされる', async
  * どれも実行時に警告が出ないので、転送量そのものを見張る。
  */
 test('逆ジオコーディングはファイル全体のごく一部しか読まない', async ({ page }) => {
-  const dataset = '/data/n03_all.parquet';
+  const dataset = ADMIN_DATASET;
   const totalBytes = Number((await page.request.head(dataset)).headers()['content-length']);
   expect(totalBytes).toBeGreaterThan(0);
 
@@ -128,6 +128,8 @@ test('逆ジオコーディングはファイル全体のごく一部しか読�
   });
 
   const measured = `${(fetchedBytes / 1024 / 1024).toFixed(1)} MB / ${(totalBytes / 1024 / 1024).toFixed(1)} MB`;
+  console.log(`逆ジオコーディングの転送量: ${measured}`);
+
   // 0バイトなら「絞り込めている」のではなく「計測できていない」ので、そちらも弾く。
   expect(fetchedBytes, `転送量を計測できていない: ${measured}`).toBeGreaterThan(0);
   expect(fetchedBytes, `読みすぎ: ${measured}`).toBeLessThan(totalBytes * 0.1);

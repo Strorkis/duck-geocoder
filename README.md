@@ -1,13 +1,29 @@
 # duck-geocoder
 
-国土交通省が公開している[国土数値情報](https://nlftp.mlit.go.jp/ksj/)と[位置参照情報](https://nlftp.mlit.go.jp/isj/)を
-Rustで加工してGeoParquetに変換し、DuckDB-WASMからブラウザ上で直接ジオコーディングするための実験プロジェクト。
+日本の地理空間データをGeoParquetに変換し、DuckDB-WASMからブラウザ上で直接クエリするための実験プロジェクト。
 
-サーバーを持たず、静的ホスティング (Cloudflare R2など) にGeoParquetを置くだけで動かすことを想定している。
+サーバーを持たない。静的ホスティング (Cloudflare R2など) にGeoParquetを置くだけで、
+全国の行政区域に対する逆ジオコーディングが数MBの転送で動く。
+ジオコーディングAPIと違って返すものが決まっていないので、隣接自治体や範囲内集計のような
+任意の空間クエリを足していける。
 
-- **[pipeline/](pipeline)**: ダウンロード済みのzipを読み、WGS84のGeoParquetに変換するRust CLI。
+- **[pipeline/](pipeline)**: 元データを読み、WGS84のGeoParquetに変換するRust CLI。
 - **[web/](web)**: 変換したGeoParquetをDuckDB-WASM + MapLibreで検索・表示するWebアプリ。
-- **data/**: 手動ダウンロードした元データと、変換後のGeoParquet (git管理外)。
+- **data/**: 元データと変換後のGeoParquet (git管理外)。
+
+## データの出所
+
+| データ | 出所 | ライセンス |
+| --- | --- | --- |
+| 行政区域 | [Overture Maps](https://docs.overturemaps.org/) (divisions) | ODbL 1.0 |
+| 建物 | Overture Maps (buildings) | ODbL 1.0 |
+| 大字・町丁目、街区 | [位置参照情報](https://nlftp.mlit.go.jp/isj/) (国土交通省) | PDL1.0 |
+| 地図タイル | [国土地理院](https://maps.gsi.go.jp/development/ichiran.html) | — |
+
+行政区域については[国土数値情報 (N03)](https://nlftp.mlit.go.jp/ksj/) の方が正確だが、
+配布データに測量法に基づく複製承認 (`R 7JHf 351`) が付いており、
+再配布には国土地理院への承認申請が要る。申請が下りるまではOvertureを使う。
+変換自体は `n03_to_geoparquet` で今も行える (出力する列はOverture版と揃えてある)。
 
 ## 必要なもの
 
@@ -25,6 +41,8 @@ sudo apt install -y build-essential cmake sqlite3 libsqlite3-dev
 ```
 
 ## データの入手
+
+Overture Mapsは後述の切り出しコマンドで取得できる。国土交通省のデータは以下の通り。
 
 **データは手動でダウンロードすること。** 公式のAPIが提供されていないため、
 配布ページのURLを推測してスクリプトで取得するようなことはしない。
@@ -80,15 +98,37 @@ PROJでWGS84 (EPSG:4326) に変換して書き出す。ハードコードはし�
 
 ```sh
 cd pipeline
-cargo run --release --bin extract_overture -- \
+
+# 建物 (bboxで範囲指定)
+cargo run --release --bin extract_overture -- buildings \
   ../data/output/overture_buildings_minato.parquet 139.73 35.63 139.78 35.68
+
+# 行政区域 (日本全体)
+cargo run --release --bin extract_overture -- divisions \
+  ../data/overture/divisions_jp.parquet
 ```
 
-S3上の全件をスキャンするため、範囲が狭くても数分かかる。
 ブラウザのDuckDB-WASMは `httpfs` 拡張を持たず `s3://` を直接読めないため、
 この切り出しは手元で行う必要がある。
 
-出力ファイル名が `overture_buildings` で始まっていれば、カタログが建物データとして認識する。
+**S3へのアクセスは最小限にすること。** Overtureは `bbox` covering列を持っているので、
+そこで絞ればrow group単位で読み飛ばせる (日本全体のdivisionsで約30秒)。
+国名や属性だけで絞ると、この読み飛ばしが効かず何倍も時間がかかる。
+
+行政区域は、切り出したものを手元で整形して使う。S3には触らないので、
+粒度の取り方を変えたくなったら何度でもやり直せる。
+
+```sh
+cargo run --release --bin overture_divisions_to_geoparquet -- \
+  ../data/overture/divisions_jp.parquet ../data/output/overture_admin_jp.parquet
+```
+
+Overtureの `locality` は市区町村(1,741)に郡(370)とOSM由来の雑多な地名を加えたもので、
+郡が混ざると1点が市区町村と郡の両方にヒットして逆ジオコーディングが壊れる。
+市・町・村・区で終わるものだけを採ると、ちょうど1,741件で市区町村の総数と一致する。
+
+出力ファイル名が `overture_admin` / `overture_buildings` で始まっていれば、
+カタログがそれぞれ行政区域・建物として認識する。
 
 ## 配信用の最適化
 
@@ -101,23 +141,24 @@ Parquetの統計はrow group単位なので、これでは「日本全国」と�
 ```sh
 cd pipeline
 cargo run --release --bin optimize_geoparquet -- \
-  ../data/output/n03_all.parquet ../data/output/n03_all.parquet
+  ../data/output/overture_admin_jp.parquet ../data/output/overture_admin_jp.parquet
 ```
 
 入力と同じパスを指定すれば上書きできる (一時ファイル経由で書くので、途中で落ちても元は壊れない)。
-row groupの行数は、1行あたりのバイト数から自動で決める
-(行政区域のポリゴンは約2KB/行、位置参照情報の点は約40バイト/行と桁が違うため)。
-第3引数で明示することもできる。
+row groupの行数は、1行あたりのバイト数から自動で決める。1行の重さはデータセットによって
+3桁ほど違う (行政区域のポリゴンは約43KB/行、位置参照情報の点は約40バイト/行) ので、
+行数で固定するとどれかが必ず不適切になる。第3引数で明示することもできる。
 
 中身は変えない。行数・列構成・`geo` メタデータはそのまま引き継ぎ、並び順とrow groupの区切り、
 それと圧縮 (変換直後は無圧縮なのでZSTD) だけを変える。
 
-全国の行政区域 (203MB) で1点を逆ジオコーディングしたときに、ブラウザが実際に転送した量:
+1点を逆ジオコーディングしたときに、ブラウザが実際に転送した量:
 
-| | 転送量 |
+| 行政区域データ | 転送量 |
 | --- | ---: |
-| 変換直後 (1 row group / 248MB) | 90.5 MB |
-| 最適化後 (125 row groups / 203MB) | **7.9 MB** |
+| 最適化前 (1 row group) | ファイルのほぼ全体 |
+| Overture 全国 (34 row groups / 64.1MB) | **2.2 MB** |
+| 国土数値情報 全国 (125 row groups / 203MB) | **7.9 MB** |
 
 ブラウザ側でこれが成立するには、DuckDB-WASMに `forceFullHTTPReads: false` を明示し、
 配信側がRangeリクエストを正しく扱う必要がある。どちらも欠けると警告なしに全件取得へ戻る
@@ -156,8 +197,12 @@ pnpm install
 pnpm dev
 ```
 
-`public/data` は `data/output/` へのシンボリックリンクなので、先に変換とカタログ生成を済ませておくこと。
+先に変換とカタログ生成を済ませておくこと。開発サーバーが `data/output/` を `/data/` として、
+DuckDB-WASM本体 (`node_modules/@duckdb/duckdb-wasm/dist/`) を `/duckdb/` として配信する
+([web/vite.config.ts](web/vite.config.ts))。どちらもビルド成果物には含めない。
+
 読み込むデータセットは `catalog.json` から決まるので、UI側にファイル名は書かれていない。
+地図に出る出典表示もカタログの `source` から組み立てるので、配信するデータと必ず一致する。
 
 ### E2Eテスト
 
@@ -171,7 +216,54 @@ pnpm test
 開発サーバーは Playwright が自動で起動する。
 Rust側の統合テストと同様、`data/output/` が無い環境ではスキップされる。
 
+## デプロイ
+
+アプリとデータを別々の場所に置く。
+
+| | 置き場所 | 理由 |
+| --- | --- | --- |
+| アプリ (`web/dist`, 約1.2MB) | Cloudflare Pages | 静的ファイルのみ |
+| GeoParquet (`data/output/`) | Cloudflare R2 | Pagesは1ファイル25MBまで |
+| DuckDB-WASM本体 (約76MB) | Cloudflare R2 | 同上 (1ファイル35〜40MB) |
+
+```sh
+cd web
+VITE_DATA_BASE_URL=https://<r2>/data \
+VITE_DUCKDB_BASE_URL=https://<r2>/duckdb \
+  pnpm build
+```
+
+R2に置くもの:
+
+```
+data/     data/output/ の中身 (catalog.json と *.parquet)
+duckdb/   node_modules/@duckdb/duckdb-wasm/dist/ の
+          duckdb-{eh,mvp}.wasm と duckdb-browser-{eh,mvp}.worker.js
+```
+
+**R2側のCORS設定が要る。** 別オリジンになるので、以下が返らないと
+DuckDB-WASMがファイルサイズを取得できず、部分取得に失敗して黙って全件取得に落ちる。
+
+```
+Access-Control-Allow-Origin: <アプリのオリジン>
+Access-Control-Expose-Headers: Content-Range, Content-Length, Accept-Ranges
+```
+
+置いたら、Rangeが正しく扱われることを確かめてから先に進むこと
+(開発サーバーで同じ箇所に嵌った。詳細は [docs/duckdb-wasm-range-requests.md](docs/duckdb-wasm-range-requests.md))。
+
+```sh
+URL=https://<r2>/data/overture_admin_jp.parquet
+curl -sI "$URL" | grep -i accept-ranges                      # Accept-Ranges: bytes
+curl -sI -H 'Range: bytes=0-' "$URL" | head -1               # 206
+curl -s -D- -o /dev/null -H 'Range: bytes=0-0' "$URL" | grep -i 'content-range\|content-length'
+curl -s -o /tmp/c.bin -H 'Range: bytes=100-199' "$URL" && stat -c%s /tmp/c.bin   # 100
+```
+
 ## ライセンス・出典
 
-- 国土数値情報、位置参照情報: 国土交通省 (利用にあたっては各データの利用約款を確認すること)
+- 行政区域・建物: Overture Maps (ODbL 1.0) © OpenStreetMap contributors
+- 位置参照情報: 『位置参照情報』（国土交通省）を加工して作成 (PDL1.0)
+- 国土数値情報 (使用する場合): 『国土数値情報（行政区域データ）』（国土交通省）を加工して作成。
+  再配布には測量法に基づく国土地理院への承認申請が要る
 - 地図タイル: [国土地理院](https://maps.gsi.go.jp/development/ichiran.html)

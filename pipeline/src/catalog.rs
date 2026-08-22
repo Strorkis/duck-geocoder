@@ -59,16 +59,26 @@ fn describe(file_stem: &str) -> Option<(DatasetKind, &'static str, &'static str)
         Some((
             DatasetKind::Admin,
             "行政区域",
-            "国土数値情報 行政区域データ (N03)",
+            "『国土数値情報（行政区域データ）』（国土交通省）を加工して作成",
+        ))
+    } else if file_stem.starts_with("overture_admin") {
+        Some((
+            DatasetKind::Admin,
+            "行政区域",
+            "Overture Maps (ODbL 1.0)",
         ))
     } else if file_stem.starts_with("isj_oaza") {
         Some((
             DatasetKind::Oaza,
             "大字・町丁目",
-            "位置参照情報 (大字・町丁目レベル)",
+            "『位置参照情報（大字・町丁目レベル）』（国土交通省）を加工して作成",
         ))
     } else if file_stem.starts_with("isj_block") {
-        Some((DatasetKind::Block, "街区", "位置参照情報 (街区レベル)"))
+        Some((
+            DatasetKind::Block,
+            "街区",
+            "『位置参照情報（街区レベル）』（国土交通省）を加工して作成",
+        ))
     } else if file_stem.starts_with("overture_buildings") {
         Some((
             DatasetKind::Buildings,
@@ -218,7 +228,9 @@ mod tests {
 
     #[test]
     fn maps_file_names_to_datasets() {
+        // 行政区域は出所が2つある (承認が下りるまではOverture、将来はN03も)。
         assert_eq!(describe("n03_all").unwrap().0, DatasetKind::Admin);
+        assert_eq!(describe("overture_admin_jp").unwrap().0, DatasetKind::Admin);
         assert_eq!(describe("isj_oaza_13").unwrap().0, DatasetKind::Oaza);
         assert_eq!(describe("isj_block_14").unwrap().0, DatasetKind::Block);
         assert_eq!(
@@ -226,5 +238,27 @@ mod tests {
             DatasetKind::Buildings
         );
         assert!(describe("unknown_data").is_none());
+    }
+
+    // 出典表示はライセンス上の義務なので、空にしない。
+    // 国土交通省のデータは加工して配信するため「加工して作成」の記載が要る。
+    #[test]
+    fn every_dataset_carries_a_source_credit() {
+        for stem in [
+            "n03_all",
+            "overture_admin_jp",
+            "isj_oaza_13",
+            "isj_block_14",
+            "overture_buildings_minato",
+        ] {
+            let (_, _, source) = describe(stem).unwrap();
+            assert!(!source.is_empty(), "{stem} に出典が無い");
+            if stem.starts_with("n03") || stem.starts_with("isj") {
+                assert!(
+                    source.contains("国土交通省") && source.contains("加工して作成"),
+                    "{stem} の出典が国土交通省の記載例に沿っていない: {source}",
+                );
+            }
+        }
     }
 }

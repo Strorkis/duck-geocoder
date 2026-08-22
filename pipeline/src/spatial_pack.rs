@@ -40,23 +40,30 @@ impl Bbox {
 /// (フッターはファイルを開くたびに全部読まれる)。
 const TARGET_ROW_GROUP_BYTES: usize = 2 * 1024 * 1024;
 
-/// row groupあたりの行数の下限と上限。
-/// 下限はフッターが肥大しすぎないように、上限は点データのように
-/// 1行が極端に小さい場合にrow groupが1個だけにならないように置いている。
-const MIN_ROW_GROUP_SIZE: usize = 1_000;
+/// row groupあたりの行数の上限。点データのように1行が極端に小さい場合に、
+/// row groupが1個だけになってしまうのを防ぐ。
 const MAX_ROW_GROUP_SIZE: usize = 100_000;
+
+/// row groupの個数の上限。
+///
+/// row groupごとの統計はフッターに入り、フッターはファイルを開くたびに
+/// 全部読まれる。数が増えすぎると、開くだけで待たされるようになる。
+/// 「1 row groupあたり何行以上」という形ではこれを表現できない
+/// (1行が重いデータでは、少ない行数でも十分な大きさになる) ので、個数で抑える。
+const MAX_ROW_GROUPS: usize = 2_000;
 
 /// ファイルサイズと行数から、row groupあたりの行数を決める。
 ///
-/// 1行あたりのバイト数はデータセットによって桁が違う
-/// (行政区域のポリゴンは約2KB/行、位置参照情報の点は約40バイト/行) ので、
-/// 行数で固定するとどちらかが必ず不適切になる。
+/// 1行あたりのバイト数はデータセットによって3桁ほど違う
+/// (Overtureの行政区域は約43KB/行、位置参照情報の点は約40バイト/行) ので、
+/// 行数で固定するとどれかが必ず不適切になる。
 pub fn default_row_group_size(file_bytes: u64, num_rows: usize) -> usize {
     if num_rows == 0 {
-        return MIN_ROW_GROUP_SIZE;
+        return 1;
     }
     let bytes_per_row = (file_bytes as usize).div_ceil(num_rows).max(1);
-    (TARGET_ROW_GROUP_BYTES / bytes_per_row).clamp(MIN_ROW_GROUP_SIZE, MAX_ROW_GROUP_SIZE)
+    let by_bytes = (TARGET_ROW_GROUP_BYTES / bytes_per_row).clamp(1, MAX_ROW_GROUP_SIZE);
+    by_bytes.max(num_rows.div_ceil(MAX_ROW_GROUPS))
 }
 
 /// STR (Sort-Tile-Recursive) バルクロードで、空間的に近い地物が同じrow groupに
@@ -160,7 +167,8 @@ mod tests {
     #[test]
     fn derives_row_group_size_from_bytes_per_row() {
         let datasets = [
-            ("行政区域 (全国)", 259_927_901u64, 125_130usize),
+            ("行政区域 Overture (全国)", 78_700_000u64, 1_741usize),
+            ("行政区域 N03 (全国)", 259_927_901, 125_130),
             ("街区 (神奈川県)", 24_718_663, 571_233),
             ("建物 (港区)", 3_213_930, 24_345),
         ];
@@ -185,12 +193,23 @@ mod tests {
     }
 
     #[test]
-    fn clamps_row_group_size_at_both_ends() {
-        // 1行が極端に重い場合でも下限を割らない。
-        assert_eq!(default_row_group_size(1_000_000_000, 100), MIN_ROW_GROUP_SIZE);
-        // 極端に軽い場合でも上限を超えない。
+    fn keeps_row_groups_large_enough_when_rows_are_tiny() {
+        // 1行が極端に軽くても、row groupあたりの行数には上限を置く。
         assert_eq!(default_row_group_size(1_000, 1_000_000), MAX_ROW_GROUP_SIZE);
-        assert_eq!(default_row_group_size(0, 0), MIN_ROW_GROUP_SIZE);
+    }
+
+    // 1行が重いデータでは行数が少なくなるが、row groupの個数が増えすぎると
+    // フッターが肥大してファイルを開くのが遅くなる。個数の側で歯止めをかける。
+    #[test]
+    fn caps_the_number_of_row_groups() {
+        // 1行10MBのデータを100万行。バイト数だけで決めると1行1 row groupになる。
+        let size = default_row_group_size(10_000_000_000_000, 1_000_000);
+        assert_eq!(1_000_000usize.div_ceil(size), MAX_ROW_GROUPS);
+    }
+
+    #[test]
+    fn handles_empty_file() {
+        assert_eq!(default_row_group_size(0, 0), 1);
     }
 
     #[test]

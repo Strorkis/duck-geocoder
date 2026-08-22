@@ -1,10 +1,12 @@
 import './style.css';
 import * as duckdb from '@duckdb/duckdb-wasm';
-import duckdb_wasm_mvp from '@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url';
-import mvp_worker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url';
-import duckdb_wasm_eh from '@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url';
-import eh_worker from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url';
-import { MapLibreMap, GeoJSONSource, Popup, type StyleSpecification } from 'maplibre-gl';
+import {
+  MapLibreMap,
+  GeoJSONSource,
+  Popup,
+  AttributionControl,
+  type StyleSpecification,
+} from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 /**
@@ -24,8 +26,38 @@ interface CatalogEntry {
   columns: { name: string; data_type: string }[];
 }
 
+/**
+ * GeoParquetの置き場所。
+ *
+ * 開発時は同一オリジンの /data/ (vite.config.ts が data/output/ を配信する)。
+ * 公開時はオブジェクトストレージのURLを VITE_DATA_BASE_URL で渡す。
+ * 別オリジンになるので、置き場所側のCORSで
+ * `Access-Control-Expose-Headers: Content-Range, Content-Length, Accept-Ranges`
+ * を返すこと。これが無いとDuckDB-WASMがファイルサイズを取得できず、
+ * 部分取得に失敗して黙って全件ダウンロードに落ちる。
+ */
+const DATA_BASE_URL = (import.meta.env.VITE_DATA_BASE_URL ?? '/data').replace(/\/$/, '');
+
+function dataUrl(file: string): string {
+  return new URL(`${DATA_BASE_URL}/${file}`, window.location.href).toString();
+}
+
+/**
+ * DuckDB-WASM本体の置き場所。
+ *
+ * バンドルに含めない。duckdb-eh.wasm が35MB、duckdb-mvp.wasm が40MBあり、
+ * Cloudflare Pagesの1ファイル25MB制限を超えるため。
+ * 開発時は vite.config.ts が node_modules から配信し、公開時は
+ * VITE_DUCKDB_BASE_URL でオブジェクトストレージのURLを渡す。
+ */
+const DUCKDB_BASE_URL = (import.meta.env.VITE_DUCKDB_BASE_URL ?? '/duckdb').replace(/\/$/, '');
+
+function duckdbUrl(file: string): string {
+  return new URL(`${DUCKDB_BASE_URL}/${file}`, window.location.href).toString();
+}
+
 async function fetchCatalog(): Promise<CatalogEntry[]> {
-  const response = await fetch('/data/catalog.json');
+  const response = await fetch(dataUrl('catalog.json'));
   if (!response.ok) {
     throw new Error(
       'catalog.json が読めません。`cargo run --bin build_catalog -- data/output data/output/catalog.json` を実行してください。',
@@ -37,28 +69,29 @@ async function fetchCatalog(): Promise<CatalogEntry[]> {
 
 /**
  * 検索結果は2種類ある。
- * - admin: 行政区域(N03、全国)。面を持つので選択するとポリゴンをハイライトする。
+ * - admin: 行政区域。面を持つので選択するとポリゴンをハイライトする。
  * - oaza:  大字・町丁目(位置参照情報)。代表点しか無いのでその地点へ飛ぶ。
  */
 type SearchResult =
-  | { kind: 'admin'; label: string; adminCode: string }
+  | { kind: 'admin'; label: string; adminId: string }
   | { kind: 'oaza'; label: string; lon: number; lat: number };
 
 async function initDuckDb(
   datasets: CatalogEntry[],
 ): Promise<{ conn: duckdb.AsyncDuckDBConnection; hasBuildings: boolean }> {
-  const MANUAL_BUNDLES: duckdb.DuckDBBundles = {
+  const bundle = await duckdb.selectBundle({
     mvp: {
-      mainModule: duckdb_wasm_mvp,
-      mainWorker: mvp_worker,
+      mainModule: duckdbUrl('duckdb-mvp.wasm'),
+      mainWorker: duckdbUrl('duckdb-browser-mvp.worker.js'),
     },
     eh: {
-      mainModule: duckdb_wasm_eh,
-      mainWorker: eh_worker,
+      mainModule: duckdbUrl('duckdb-eh.wasm'),
+      mainWorker: duckdbUrl('duckdb-browser-eh.worker.js'),
     },
-  };
-  const bundle = await duckdb.selectBundle(MANUAL_BUNDLES);
-  const worker = new Worker(bundle.mainWorker!);
+  });
+  // new Worker() は別オリジンのスクリプトを直接は読み込めない。createWorker は
+  // 取得してからBlob URLにして起動するので、WASM本体を別のドメインに置ける。
+  const worker = await duckdb.createWorker(bundle.mainWorker!);
   const logger = new duckdb.ConsoleLogger();
   const db = new duckdb.AsyncDuckDB(logger, worker);
   await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
@@ -102,7 +135,7 @@ async function initDuckDb(
   for (const file of [...oazaFiles, ...buildingFiles, adminDataset.file]) {
     await db.registerFileURL(
       file,
-      `${window.location.origin}/data/${file}`,
+      dataUrl(file),
       duckdb.DuckDBDataProtocol.HTTP,
       false,
     );
@@ -110,25 +143,25 @@ async function initDuckDb(
 
   const oazaList = oazaFiles.map((f) => `'${f}'`).join(', ');
   await conn.query(`CREATE VIEW isj_oaza AS SELECT * FROM read_parquet([${oazaList}]);`);
-  await conn.query(`CREATE VIEW n03 AS SELECT * FROM read_parquet('${adminDataset.file}');`);
+  await conn.query(`CREATE VIEW admin AS SELECT * FROM read_parquet('${adminDataset.file}');`);
 
   if (buildingFiles.length > 0) {
     const buildingList = buildingFiles.map((f) => `'${f}'`).join(', ');
     await conn.query(`CREATE VIEW buildings AS SELECT * FROM read_parquet([${buildingList}]);`);
   }
 
-  // N03は行政区域ごとに多数のポリゴン行を持つ (飛び地や島など) ので、
-  // 検索用に名前とコードだけを重複排除した小さなテーブルを作っておく。
+  // 行政区域は1つの自治体が複数のポリゴン行に分かれることがある (飛び地や島など) ので、
+  // 検索用に名前と識別子だけを重複排除した小さなテーブルを作っておく。
   // 名前の列だけを読むので、ファイル全体を読み込むわけではない。
   await conn.query(`
     CREATE TABLE admin_names AS
     SELECT DISTINCT
-      admin_code,
+      admin_id,
       pref_name,
       coalesce(county_name, '') AS county_name,
       coalesce(city_name, '') AS city_name,
       coalesce(ward_name, '') AS ward_name
-    FROM n03;
+    FROM admin;
   `);
 
   return { conn, hasBuildings: buildingFiles.length > 0 };
@@ -205,15 +238,15 @@ async function searchAddress(
   // 合計 MAX_RESULTS 件に収める (どちらか一方しか無い場合は残りをもう一方で埋める)。
   const adminExpr = `pref_name || county_name || city_name || ward_name`;
   const adminResult = await conn.query(`
-    SELECT admin_code, ${adminExpr} AS label
+    SELECT admin_id, ${adminExpr} AS label
     FROM admin_names
     WHERE ${buildMatchConditions(keyword, adminExpr)}
     ORDER BY length(label)
     LIMIT ${MAX_RESULTS};
   `);
   const admins: SearchResult[] = adminResult.toArray().map((row) => {
-    const r = row.toJSON() as unknown as { admin_code: string; label: string };
-    return { kind: 'admin', label: r.label, adminCode: r.admin_code };
+    const r = row.toJSON() as unknown as { admin_id: string; label: string };
+    return { kind: 'admin', label: r.label, adminId: r.admin_id };
   });
 
   const oazaExpr = `pref_name || city_name || oaza_name`;
@@ -243,12 +276,12 @@ async function reverseGeocode(
   conn: duckdb.AsyncDuckDBConnection,
   lon: number,
   lat: number,
-): Promise<{ label: string; adminCode: string } | null> {
+): Promise<{ label: string; adminId: string } | null> {
   const result = await conn.query(`
     SELECT pref_name || coalesce(county_name, '') || coalesce(city_name, '')
              || coalesce(ward_name, '') AS label,
-           admin_code
-    FROM n03
+           admin_id
+    FROM admin
     WHERE bbox.xmin <= ${lon} AND bbox.xmax >= ${lon}
       AND bbox.ymin <= ${lat} AND bbox.ymax >= ${lat}
       AND ST_Contains(geometry, ST_Point(${lon}, ${lat}))
@@ -256,20 +289,20 @@ async function reverseGeocode(
   `);
   const rows = result.toArray();
   if (rows.length === 0) return null;
-  const row = rows[0].toJSON() as unknown as { label: string; admin_code: string };
-  return { label: row.label, adminCode: row.admin_code };
+  const row = rows[0].toJSON() as unknown as { label: string; admin_id: string };
+  return { label: row.label, adminId: row.admin_id };
 }
 
 async function fetchAdminPolygon(
   conn: duckdb.AsyncDuckDBConnection,
-  cityCode: string,
+  adminId: string,
 ): Promise<{ geojson: GeoJSON.Geometry; bbox: [number, number, number, number] } | null> {
   const result = await conn.query(`
     SELECT ST_AsGeoJSON(ST_Union_Agg(geometry)) AS geojson,
            min(bbox.xmin) AS xmin, min(bbox.ymin) AS ymin,
            max(bbox.xmax) AS xmax, max(bbox.ymax) AS ymax
-    FROM n03
-    WHERE admin_code = '${cityCode}';
+    FROM admin
+    WHERE admin_id = '${adminId}';
   `);
   const rows = result.toArray();
   if (rows.length === 0) return null;
@@ -314,14 +347,25 @@ const EMPTY_FEATURE_COLLECTION: GeoJSON.FeatureCollection = {
   features: [],
 };
 
-/** 地図を生成し、スタイルのロードとハイライト用レイヤーの追加が終わるまで待つ。 */
-function initMap(): Promise<MapLibreMap> {
+/**
+ * 地図を生成し、スタイルのロードとハイライト用レイヤーの追加が終わるまで待つ。
+ *
+ * 出典表示はカタログの `source` から組み立てる。どのデータセットを配信するかは
+ * カタログ次第なので、ここに書き並べると実際に使っているものとずれる。
+ * 表示義務のある出典が抜けるのはライセンス違反になるため、データ側に追随させる。
+ */
+function initMap(datasets: CatalogEntry[]): Promise<MapLibreMap> {
+  const dataCredits = [...new Set(datasets.map((dataset) => dataset.source))].sort();
+
   const map = new MapLibreMap({
     container: 'map',
     style: GSI_PALE_STYLE,
     center: [139.767, 35.681],
     zoom: 9,
+    // 既定の出典表示を止め、カタログ由来の出典を足したものに差し替える。
+    attributionControl: false,
   });
+  map.addControl(new AttributionControl({ customAttribution: dataCredits }));
 
   map.on('error', (e) => console.error('[map] error', e.error ?? e));
 
@@ -399,7 +443,7 @@ async function main() {
   let hasBuildings = false;
   try {
     const datasets = await fetchCatalog();
-    const [db, createdMap] = await Promise.all([initDuckDb(datasets), initMap()]);
+    const [db, createdMap] = await Promise.all([initDuckDb(datasets), initMap(datasets)]);
     conn = db.conn;
     hasBuildings = db.hasBuildings;
     map = createdMap;
@@ -453,9 +497,9 @@ async function main() {
     // 行政区域は面をハイライトして全体が入るように寄る。
     // ポリゴン取得を待たずにカメラを動かすと、後から呼ぶ fitBounds が
     // アニメーションを横取りしてしまうので、取得を終えてから1回だけ動かす。
-    const polygon = await fetchAdminPolygon(conn, result.adminCode);
+    const polygon = await fetchAdminPolygon(conn, result.adminId);
     if (!polygon) {
-      console.warn('admin polygon not found for admin_code', result.adminCode);
+      console.warn('admin polygon not found for admin_id', result.adminId);
       return;
     }
 
@@ -615,7 +659,7 @@ async function main() {
         popup.setText(hit.label);
         input.value = hit.label;
         clearButton.hidden = false;
-        await showResult({ kind: 'admin', label: hit.label, adminCode: hit.adminCode });
+        await showResult({ kind: 'admin', label: hit.label, adminId: hit.adminId });
       })
       .catch((err: unknown) => {
         console.error('[reverseGeocode] failed', err);
