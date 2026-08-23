@@ -5,9 +5,18 @@ import {
   GeoJSONSource,
   Popup,
   AttributionControl,
+  setWorkerUrl,
   type StyleSpecification,
 } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+// MapLibreは既定では new URL(`./${名前}`, import.meta.url) でワーカーを探すが、
+// 名前が変数なのでバンドラが静的に検出できず、ビルド成果物に出力されない。
+// 結果、本番だけGeoJSONソースが一切描画されなくなる (地図タイルもポップアップも
+// 動くので気付きにくい)。?worker&url で Vite にワーカーとしてバンドルさせ、
+// 解決済みのURLを setWorkerUrl で明示する。
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
+
+setWorkerUrl(maplibreWorkerUrl);
 
 /**
  * カタログ (data/output/catalog.json)。
@@ -20,6 +29,7 @@ interface CatalogEntry {
   kind: 'admin' | 'oaza' | 'block' | 'buildings';
   title: string;
   source: string;
+  source_url: string;
   geometry_types: string[];
   bbox: [number, number, number, number] | null;
   row_count: number;
@@ -343,8 +353,18 @@ async function fetchAdminPolygon(
   };
 }
 
+/**
+ * 出典表示のリンク。
+ *
+ * 国土交通省の利用約款も国土地理院の利用規約も、出典に当該ページのURLを求めている。
+ * 表示義務のあるものなので、組み立ては1箇所に置く。
+ */
+function creditLink(url: string, label: string): string {
+  return `<a href="${url}" target="_blank" rel="noreferrer">${label}</a>`;
+}
+
 // 国土地理院タイル (淡色地図)。利用規約により出典表示 (attribution) が必須。
-// https://maps.gsi.go.jp/development/ichiran.html
+const GSI_TERMS_URL = 'https://maps.gsi.go.jp/development/ichiran.html';
 const GSI_PALE_STYLE: StyleSpecification = {
   version: 8,
   sources: {
@@ -353,7 +373,7 @@ const GSI_PALE_STYLE: StyleSpecification = {
       tiles: ['https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png'],
       tileSize: 256,
       maxzoom: 18,
-      attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">国土地理院</a>',
+      attribution: creditLink(GSI_TERMS_URL, '国土地理院'),
     },
   },
   layers: [
@@ -373,12 +393,17 @@ const EMPTY_FEATURE_COLLECTION: GeoJSON.FeatureCollection = {
 /**
  * 地図を生成し、スタイルのロードとハイライト用レイヤーの追加が終わるまで待つ。
  *
- * 出典表示はカタログの `source` から組み立てる。どのデータセットを配信するかは
- * カタログ次第なので、ここに書き並べると実際に使っているものとずれる。
- * 表示義務のある出典が抜けるのはライセンス違反になるため、データ側に追随させる。
+ * 出典表示はカタログから組み立てる。どのデータセットを配信するかはカタログ次第なので、
+ * ここに書き並べると実際に使っているものとずれる。表示義務のある出典が抜けるのは
+ * ライセンス違反になるため、データ側に追随させる。
  */
 function initMap(datasets: CatalogEntry[]): Promise<MapLibreMap> {
-  const dataCredits = [...new Set(datasets.map((dataset) => dataset.source))].sort();
+  // 出典が同じデータセット (位置参照情報の大字・町丁目と街区など) は1つにまとめる。
+  // 並べ替えは表示する文言で行う (組み立てたHTMLで並べると、順序がタグの中身に左右される)。
+  const credits = new Map(datasets.map((dataset) => [dataset.source, dataset.source_url]));
+  const dataCredits = [...credits]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([source, url]) => creditLink(url, source));
 
   const map = new MapLibreMap({
     container: 'map',
@@ -395,14 +420,10 @@ function initMap(datasets: CatalogEntry[]): Promise<MapLibreMap> {
   return new Promise((resolve) => {
     map.on('load', () => {
       // 建物はハイライトより先に追加して、下に敷く。
-      // OvertureのbuildingsはODbL 1.0で、OpenStreetMap由来を含むため
-      // 帰属表示が必須。https://docs.overturemaps.org/attribution/
+      // 出典表示はカタログ由来のものが上の AttributionControl に入っている。
       map.addSource('buildings', {
         type: 'geojson',
         data: EMPTY_FEATURE_COLLECTION,
-        attribution:
-          '© <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap contributors</a>, ' +
-          '<a href="https://overturemaps.org" target="_blank">Overture Maps Foundation</a>',
       });
       map.addLayer({
         id: 'buildings-fill',

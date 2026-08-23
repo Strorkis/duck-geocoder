@@ -65,8 +65,10 @@ function highlightFeatureCount(page: Page) {
 }
 
 test.beforeEach(async ({ page }) => {
+  // './' であって '/' ではない。baseURL は new URL(url, baseURL) で解決されるので、
+  // '/' だとサブパス配信 (GitHub Pagesなど) のときにサイトのルートへ飛んでしまう。
   // URLの解決をアプリに任せるので、先にページを開く。
-  await page.goto('/');
+  await page.goto('./');
   await skipIfDataMissing(page);
   await waitForReady(page);
 });

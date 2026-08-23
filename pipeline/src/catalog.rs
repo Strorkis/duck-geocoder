@@ -16,8 +16,11 @@ pub struct DatasetEntry {
     pub kind: DatasetKind,
     /// 人間向けの名称。
     pub title: String,
-    /// 出典。
+    /// 出典表示。地図上にそのまま出す。
     pub source: String,
+    /// 出典元のURL。国土交通省の記載例が出典にURLを求めているため、
+    /// `source` と対で持ち、UIはリンクとして出す。
+    pub source_url: String,
     /// ジオメトリの種類 (Point / MultiPolygon など)。UIの表示方法がこれで決まる。
     pub geometry_types: Vec<String>,
     /// 収録範囲 [xmin, ymin, xmax, ymax] (WGS84)。
@@ -27,7 +30,7 @@ pub struct DatasetEntry {
 }
 
 /// データセットの種別。ジオメトリの型と用途が種別ごとに決まる。
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, PartialEq, Eq, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum DatasetKind {
     /// 行政区域 (面)。ハイライトや逆ジオコーディングに使う。
@@ -52,42 +55,95 @@ pub struct Catalog {
     pub datasets: Vec<DatasetEntry>,
 }
 
-/// ファイル名からデータセットの素性を引く。
+/// 出典表示。表示する文言と、その出典元のURL。
+///
+/// 2つを別々の定数で持つと組み合わせを間違えても気付けないので、対にして扱う。
+struct Attribution {
+    text: &'static str,
+    url: &'static str,
+}
+
+/// 国土交通省のコンテンツ。
+///
+/// 利用約款の記載例は「コンテンツ名」「（国土交通省）」「当該ページのURL」に加え、
+/// 加工した場合は加工した旨を求めている。このパイプラインは座標系を変換し、
+/// 行を空間的に並べ替えているので、いずれも「もとに作成」にあたる。
+/// <https://nlftp.mlit.go.jp/ksj/other/agreement.html>
+const MLIT_ISJ: Attribution = Attribution {
+    text: "「位置参照情報ダウンロードサービス」（国土交通省）をもとに作成",
+    url: "https://nlftp.mlit.go.jp/isj/",
+};
+const MLIT_KSJ: Attribution = Attribution {
+    text: "「国土数値情報（行政区域データ）」（国土交通省）をもとに作成",
+    url: "https://nlftp.mlit.go.jp/ksj/",
+};
+
+/// Overture Maps は ODbL 1.0。OpenStreetMap由来を含むため両方を示す。
+/// <https://docs.overturemaps.org/attribution/>
+const OVERTURE: Attribution = Attribution {
+    text: "Overture Maps / © OpenStreetMap contributors (ODbL 1.0)",
+    url: "https://docs.overturemaps.org/attribution/",
+};
+
+/// データセットの素性。ファイル名の接頭辞から引く。
+struct Description {
+    kind: DatasetKind,
+    /// 人間向けの名称。
+    title: &'static str,
+    attribution: Attribution,
+}
+
+/// ファイル名の接頭辞と、そのデータセットの素性。
 /// 変換バイナリの出力名 (n03_*.parquet など) と対応している。
-fn describe(file_stem: &str) -> Option<(DatasetKind, &'static str, &'static str)> {
-    if file_stem.starts_with("n03") {
-        Some((
-            DatasetKind::Admin,
-            "行政区域",
-            "『国土数値情報（行政区域データ）』（国土交通省）を加工して作成",
-        ))
-    } else if file_stem.starts_with("overture_admin") {
-        Some((
-            DatasetKind::Admin,
-            "行政区域",
-            "Overture Maps (ODbL 1.0)",
-        ))
-    } else if file_stem.starts_with("isj_oaza") {
-        Some((
-            DatasetKind::Oaza,
-            "大字・町丁目",
-            "『位置参照情報（大字・町丁目レベル）』（国土交通省）を加工して作成",
-        ))
-    } else if file_stem.starts_with("isj_block") {
-        Some((
-            DatasetKind::Block,
-            "街区",
-            "『位置参照情報（街区レベル）』（国土交通省）を加工して作成",
-        ))
-    } else if file_stem.starts_with("overture_buildings") {
-        Some((
-            DatasetKind::Buildings,
-            "建物",
-            "Overture Maps (ODbL 1.0)",
-        ))
-    } else {
-        None
-    }
+/// 前方一致で引くので、長い接頭辞を先に置くこと。
+const DESCRIPTIONS: &[(&str, Description)] = &[
+    (
+        "n03",
+        Description {
+            kind: DatasetKind::Admin,
+            title: "行政区域",
+            attribution: MLIT_KSJ,
+        },
+    ),
+    (
+        "overture_admin",
+        Description {
+            kind: DatasetKind::Admin,
+            title: "行政区域",
+            attribution: OVERTURE,
+        },
+    ),
+    (
+        "overture_buildings",
+        Description {
+            kind: DatasetKind::Buildings,
+            title: "建物",
+            attribution: OVERTURE,
+        },
+    ),
+    (
+        "isj_oaza",
+        Description {
+            kind: DatasetKind::Oaza,
+            title: "大字・町丁目",
+            attribution: MLIT_ISJ,
+        },
+    ),
+    (
+        "isj_block",
+        Description {
+            kind: DatasetKind::Block,
+            title: "街区",
+            attribution: MLIT_ISJ,
+        },
+    ),
+];
+
+fn describe(file_stem: &str) -> Option<&'static Description> {
+    DESCRIPTIONS
+        .iter()
+        .find(|(prefix, _)| file_stem.starts_with(prefix))
+        .map(|(_, description)| description)
 }
 
 /// GeoParquetの `geo` メタデータ (GeoParquet仕様のJSON) から
@@ -137,7 +193,7 @@ pub fn describe_parquet(path: &Path) -> Result<DatasetEntry> {
         .and_then(|s| s.to_str())
         .context("ファイル名が取得できない")?;
 
-    let (kind, title, source) =
+    let described =
         describe(file_stem).with_context(|| format!("未知のデータセットです: {file_name}"))?;
 
     let file = File::open(path).with_context(|| format!("開けません: {}", path.display()))?;
@@ -168,9 +224,10 @@ pub fn describe_parquet(path: &Path) -> Result<DatasetEntry> {
     Ok(DatasetEntry {
         id: file_stem.to_string(),
         file: file_name.to_string(),
-        kind,
-        title: title.to_string(),
-        source: source.to_string(),
+        kind: described.kind,
+        title: described.title.to_string(),
+        source: described.attribution.text.to_string(),
+        source_url: described.attribution.url.to_string(),
         geometry_types,
         bbox,
         row_count: file_metadata.num_rows(),
@@ -229,36 +286,61 @@ mod tests {
     #[test]
     fn maps_file_names_to_datasets() {
         // 行政区域は出所が2つある (承認が下りるまではOverture、将来はN03も)。
-        assert_eq!(describe("n03_all").unwrap().0, DatasetKind::Admin);
-        assert_eq!(describe("overture_admin_jp").unwrap().0, DatasetKind::Admin);
-        assert_eq!(describe("isj_oaza_13").unwrap().0, DatasetKind::Oaza);
-        assert_eq!(describe("isj_block_14").unwrap().0, DatasetKind::Block);
+        assert_eq!(describe("n03_all").unwrap().kind, DatasetKind::Admin);
+        assert_eq!(describe("overture_admin_jp").unwrap().kind, DatasetKind::Admin);
+        assert_eq!(describe("isj_oaza_13").unwrap().kind, DatasetKind::Oaza);
+        assert_eq!(describe("isj_block_14").unwrap().kind, DatasetKind::Block);
         assert_eq!(
-            describe("overture_buildings_minato").unwrap().0,
+            describe("overture_buildings_minato").unwrap().kind,
             DatasetKind::Buildings
         );
         assert!(describe("unknown_data").is_none());
     }
 
-    // 出典表示はライセンス上の義務なので、空にしない。
-    // 国土交通省のデータは加工して配信するため「加工して作成」の記載が要る。
+    // 前方一致で引くので、より長い接頭辞が短いものに隠れないこと。
+    // (`overture_admin` が `overture_buildings` より後ろにあっても両方引ける)
     #[test]
-    fn every_dataset_carries_a_source_credit() {
-        for stem in [
-            "n03_all",
-            "overture_admin_jp",
-            "isj_oaza_13",
-            "isj_block_14",
-            "overture_buildings_minato",
-        ] {
-            let (_, _, source) = describe(stem).unwrap();
-            assert!(!source.is_empty(), "{stem} に出典が無い");
-            if stem.starts_with("n03") || stem.starts_with("isj") {
-                assert!(
-                    source.contains("国土交通省") && source.contains("加工して作成"),
-                    "{stem} の出典が国土交通省の記載例に沿っていない: {source}",
-                );
-            }
+    fn longer_prefixes_are_not_shadowed() {
+        for (prefix, _) in DESCRIPTIONS {
+            let described = describe(&format!("{prefix}_jp")).expect(prefix);
+            assert!(
+                std::ptr::eq(described, describe(prefix).unwrap()),
+                "{prefix} が別の定義に吸われている",
+            );
         }
+    }
+
+    // 出典表示はライセンス上の義務。データセットを増やしたときに書き忘れないよう、
+    // 表の全項目を見る (ファイル名で licensor を判定し直すと、その判定自体が
+    // 増えたデータセットを取りこぼす)。
+    #[test]
+    fn every_dataset_carries_an_attribution() {
+        for (prefix, described) in DESCRIPTIONS {
+            let Attribution { text, url } = described.attribution;
+            assert!(!text.is_empty(), "{prefix} に出典が無い");
+            assert!(url.starts_with("https://"), "{prefix} に出典元のURLが無い: {url}");
+        }
+    }
+
+    // 国土交通省の利用約款は、出典に「コンテンツ名」「（国土交通省）」「当該ページのURL」を、
+    // 加工した場合はその旨を求めている。座標系変換と空間的な並べ替えをしているので、
+    // どれも加工にあたる。
+    #[test]
+    fn mlit_attributions_follow_the_required_form() {
+        for Attribution { text, url } in [MLIT_ISJ, MLIT_KSJ] {
+            assert!(text.contains("（国土交通省）"), "作成者の表示が無い: {text}");
+            assert!(text.contains("もとに作成"), "加工した旨の記載が無い: {text}");
+            assert!(
+                url.contains("nlftp.mlit.go.jp"),
+                "当該ページのURLが国土交通省のものでない: {url}",
+            );
+        }
+    }
+
+    // Overtureは ODbL 1.0 で、OpenStreetMap由来を含むため両方の表示が要る。
+    #[test]
+    fn overture_attribution_credits_odbl_and_openstreetmap() {
+        assert!(OVERTURE.text.contains("ODbL"), "{}", OVERTURE.text);
+        assert!(OVERTURE.text.contains("OpenStreetMap"), "{}", OVERTURE.text);
     }
 }
