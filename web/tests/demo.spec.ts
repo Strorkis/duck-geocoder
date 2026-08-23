@@ -1,20 +1,44 @@
 import { test, expect, type Page } from '@playwright/test';
 import type { MapLibreMap, GeoJSONSource } from 'maplibre-gl';
 
-/** main.ts がテスト用に公開している地図インスタンス。 */
-type TestWindow = { __map?: MapLibreMap };
+/** main.ts がテスト用に公開しているもの。 */
+type TestWindow = { __map?: MapLibreMap; __dataUrl?: (file: string) => string };
+
+/** 行政区域データセット。逆ジオコーディングと転送量の計測がこれを見る。 */
+const ADMIN_DATASET = 'overture_admin_jp.parquet';
+/** 建物データセット。無くても他の機能は動くので、無ければスキップする。 */
+const BUILDINGS_DATASET = 'overture_buildings_minato.parquet';
+
+/** 建物データが配信されているか。 */
+async function hasBuildings(page: Page): Promise<boolean> {
+  const url = await datasetUrl(page, BUILDINGS_DATASET);
+  return page.request.head(url).then((response) => response.ok());
+}
 
 /**
- * このデモは data/output/ のGeoParquetを読む。data/ はgit管理外なので、
+ * データセットの実際のURLをアプリに解決させる。
+ *
+ * データは開発時と公開時で置き場所が変わる (同一オリジンの /data/ か、
+ * オブジェクトストレージか)。テストにURLを書くと公開URLに対して流せなくなるので、
+ * アプリが使っているのと同じ組み立てを借りる。
+ */
+function datasetUrl(page: Page, file: string): Promise<string> {
+  return page.evaluate((name) => {
+    const resolve = (window as unknown as TestWindow).__dataUrl;
+    if (!resolve) throw new Error('__dataUrl が公開されていない');
+    return resolve(name);
+  }, file);
+}
+
+/**
+ * このデモは変換済みのGeoParquetを読む。data/ はgit管理外なので、
  * 変換をまだ実行していない環境ではテストを失敗させずスキップする
  * (Rust側の tests/real_data.rs と同じ方針)。
  */
-/** 行政区域データセット。逆ジオコーディングと転送量の計測がこれを見る。 */
-const ADMIN_DATASET = '/data/overture_admin_jp.parquet';
-
 async function skipIfDataMissing(page: Page) {
-  const response = await page.request.head(ADMIN_DATASET);
-  test.skip(!response.ok(), `${ADMIN_DATASET} が無い (READMEの手順で用意してください)`);
+  const url = await datasetUrl(page, ADMIN_DATASET);
+  const response = await page.request.head(url);
+  test.skip(!response.ok(), `${url} が読めない (READMEの手順で用意してください)`);
 }
 
 /** 初期化 (DuckDB + 地図) の完了を待つ。 */
@@ -41,8 +65,9 @@ function highlightFeatureCount(page: Page) {
 }
 
 test.beforeEach(async ({ page }) => {
-  await skipIfDataMissing(page);
+  // URLの解決をアプリに任せるので、先にページを開く。
   await page.goto('/');
+  await skipIfDataMissing(page);
   await waitForReady(page);
 });
 
@@ -97,20 +122,22 @@ test('地図をクリックすると逆ジオコーディングされる', async
  * 成立させるには3つが噛み合う必要があり、どれが欠けても静かに全件取得に戻る。
  * - GeoParquetが空間的に並べ替えられ、row groupに分かれていること
  *   (pipeline/src/spatial_pack.rs)
- * - DuckDB-WASMに forceFullHTTPReads: false を明示していること (web/src/main.ts)
- * - 配信側がRangeリクエストを正しく扱うこと (vite.config.ts)
+ * - DuckDB-WASMの filesystem 設定 (web/src/main.ts)
+ * - 配信側がRangeリクエストを正しく扱うこと (開発時は vite.config.ts、
+ *   公開時はオブジェクトストレージのCORS設定)
  *
  * どれも実行時に警告が出ないので、転送量そのものを見張る。
+ * 公開URLに対しても流せるよう、URLはアプリに解決させている。
  */
 test('逆ジオコーディングはファイル全体のごく一部しか読まない', async ({ page }) => {
-  const dataset = ADMIN_DATASET;
+  const dataset = await datasetUrl(page, ADMIN_DATASET);
   const totalBytes = Number((await page.request.head(dataset)).headers()['content-length']);
   expect(totalBytes).toBeGreaterThan(0);
 
   // 初期化を含めて、このファイルの取得量を数える。
   let fetchedBytes = 0;
   page.on('response', (response) => {
-    if (!response.url().endsWith(dataset)) return;
+    if (response.url() !== dataset) return;
     // HEADは本文を返さないが Content-Length に全体サイズを載せるので数えない。
     if (response.request().method() === 'HEAD') return;
     fetchedBytes += Number(response.headers()['content-length'] ?? 0);
@@ -136,10 +163,7 @@ test('逆ジオコーディングはファイル全体のごく一部しか読�
 });
 
 test('十分に寄ると建物が表示され、離すと消える', async ({ page }) => {
-  const hasBuildings = await page.request
-    .head('/data/overture_buildings_minato.parquet')
-    .then((r) => r.ok());
-  test.skip(!hasBuildings, '建物データ (Overture) が無い');
+  test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
 
   // 港区あたり。建物データを切り出した範囲の中に入る。
   await page.evaluate(() => {
@@ -157,10 +181,7 @@ test('十分に寄ると建物が表示され、離すと消える', async ({ pa
 });
 
 test('建物はホバーで情報が出て、地図は動かない', async ({ page }) => {
-  const hasBuildings = await page.request
-    .head('/data/overture_buildings_minato.parquet')
-    .then((r) => r.ok());
-  test.skip(!hasBuildings, '建物データ (Overture) が無い');
+  test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
 
   // 高輪ゲートウェイ駅。建物が確実にある地点を画面中央に置く。
   await page.evaluate(() => {

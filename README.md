@@ -222,42 +222,62 @@ Rust側の統合テストと同様、`data/output/` が無い環境ではスキ�
 
 | | 置き場所 | 理由 |
 | --- | --- | --- |
-| アプリ (`web/dist`, 約1.2MB) | Cloudflare Pages | 静的ファイルのみ |
-| GeoParquet (`data/output/`) | Cloudflare R2 | Pagesは1ファイル25MBまで |
-| DuckDB-WASM本体 (約76MB) | Cloudflare R2 | 同上 (1ファイル35〜40MB) |
+| アプリ (約1.2MB) | GitHub Pages | — |
+| DuckDB-WASM本体 (約77MB) | GitHub Pages | アプリと同一オリジンから配る。1ファイル35〜40MBあるので、1ファイル25MiB制限のあるホスティングには置けない |
+| GeoParquet (約88MB) | Cloudflare R2 | 容量の天井が無く、egressが無料。N03やPLATEAUを足しても困らない |
 
-```sh
-cd web
-VITE_DATA_BASE_URL=https://<r2>/data \
-VITE_DUCKDB_BASE_URL=https://<r2>/duckdb \
-  pnpm build
-```
+WASMはgitに入れない。ビルド時に `node_modules` から `dist/duckdb/` へコピーされる
+([web/vite.config.ts](web/vite.config.ts) の `bundle-duckdb-runtime`)。
+アプリのバンドルと同じ `node_modules` を見るので、`pnpm update` してもバージョンがずれない。
 
-R2に置くもの:
+### R2にデータを置く
 
-```
-data/     data/output/ の中身 (catalog.json と *.parquet)
-duckdb/   node_modules/@duckdb/duckdb-wasm/dist/ の
-          duckdb-{eh,mvp}.wasm と duckdb-browser-{eh,mvp}.worker.js
-```
-
-**R2側のCORS設定が要る。** 別オリジンになるので、以下が返らないと
-DuckDB-WASMがファイルサイズを取得できず、部分取得に失敗して黙って全件取得に落ちる。
+`data/output/` の中身 (catalog.json と *.parquet) をアップロードし、CORSを設定する。
 
 ```
-Access-Control-Allow-Origin: <アプリのオリジン>
+Access-Control-Allow-Origin: https://<user>.github.io
 Access-Control-Expose-Headers: Content-Range, Content-Length, Accept-Ranges
 ```
 
-置いたら、Rangeが正しく扱われることを確かめてから先に進むこと
-(開発サーバーで同じ箇所に嵌った。詳細は [docs/duckdb-wasm-range-requests.md](docs/duckdb-wasm-range-requests.md))。
+`Expose-Headers` が無いとDuckDB-WASMがファイルサイズを取得できず、部分取得に失敗して
+黙って全件取得に落ちる。
+
+置いたら、**Rangeが正しく扱われることを確かめてから先に進むこと**。
+開発サーバーが `Range: bytes=0-0` を誤って処理していて嵌った箇所
+(詳細は [docs/duckdb-wasm-range-requests.md](docs/duckdb-wasm-range-requests.md))。
 
 ```sh
-URL=https://<r2>/data/overture_admin_jp.parquet
-curl -sI "$URL" | grep -i accept-ranges                      # Accept-Ranges: bytes
-curl -sI -H 'Range: bytes=0-' "$URL" | head -1               # 206
-curl -s -D- -o /dev/null -H 'Range: bytes=0-0' "$URL" | grep -i 'content-range\|content-length'
+URL=https://<r2>/overture_admin_jp.parquet
+curl -sI "$URL" | grep -i accept-ranges                                          # bytes
+curl -s -D- -o /dev/null -H 'Range: bytes=0-0' "$URL" | grep -iE 'content-(range|length)'
+                                                    # 206 / bytes 0-0/… / 1
 curl -s -o /tmp/c.bin -H 'Range: bytes=100-199' "$URL" && stat -c%s /tmp/c.bin   # 100
+curl -sI -H 'Origin: https://<user>.github.io' "$URL" | grep -i access-control
+```
+
+### GitHub Pages にアプリを載せる
+
+[.github/workflows/deploy.yml](.github/workflows/deploy.yml) が `main` への push で動く。
+リポジトリの設定で以下を用意する。
+
+- **Settings → Pages → Source**: GitHub Actions
+- **Settings → Secrets and variables → Actions → Variables**: `DATA_BASE_URL` にR2の公開URL
+
+手元で確認する場合:
+
+```sh
+cd web
+VITE_BASE_PATH=/duck-geocoder/ VITE_DATA_BASE_URL=https://<r2> pnpm build
+```
+
+### 公開後の確認
+
+公開URLに対してE2Eを流し、転送量を実測する。ローカルで通っても本番のヘッダ設定で
+壊れうる箇所なので、必ず確かめる。
+
+```sh
+cd web
+PLAYWRIGHT_BASE_URL=https://<user>.github.io/duck-geocoder/ pnpm test
 ```
 
 ## ライセンス・出典

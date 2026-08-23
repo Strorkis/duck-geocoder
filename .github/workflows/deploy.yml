@@ -1,0 +1,68 @@
+name: Deploy to GitHub Pages
+
+# アプリとDuckDB-WASM本体を GitHub Pages に載せる。
+# GeoParquetはここには含めない (Cloudflare R2 に置き、URLを VITE_DATA_BASE_URL で渡す)。
+#
+# WASMは35〜40MBあるのでgitには入れていない。ビルド時に node_modules から
+# dist/duckdb/ にコピーされ (web/vite.config.ts の bundle-duckdb-runtime)、
+# Pagesのアーティファクトとしてアップロードされる。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同時に走らせない。実行中のデプロイは中断しない (公開中のサイトを壊さないため)。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      # package.json に packageManager を書いていないので、ここでメジャーを指定する
+      # (mise.toml 側は pnpm = "latest" なので、細かく固定しすぎない)。
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm exec tsc --noEmit
+
+      - run: pnpm build
+        env:
+          # リポジトリ名のサブパスで配信されるため。
+          VITE_BASE_PATH: /${{ github.event.repository.name }}/
+          # データの置き場所。リポジトリの Variables で設定する。
+          VITE_DATA_BASE_URL: ${{ vars.DATA_BASE_URL }}
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

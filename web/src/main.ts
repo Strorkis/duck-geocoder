@@ -36,21 +36,38 @@ interface CatalogEntry {
  * を返すこと。これが無いとDuckDB-WASMがファイルサイズを取得できず、
  * 部分取得に失敗して黙って全件ダウンロードに落ちる。
  */
-const DATA_BASE_URL = (import.meta.env.VITE_DATA_BASE_URL ?? '/data').replace(/\/$/, '');
+const DATA_BASE_URL = (
+  import.meta.env.VITE_DATA_BASE_URL ?? `${import.meta.env.BASE_URL}data`
+).replace(/\/$/, '');
 
 function dataUrl(file: string): string {
   return new URL(`${DATA_BASE_URL}/${file}`, window.location.href).toString();
 }
 
+/** E2Eテストのために公開するもの。アプリ本体はこれを参照しない。 */
+interface TestHooks {
+  __map?: MapLibreMap;
+  __dataUrl?: (file: string) => string;
+}
+
+// データの実際のURLは、テストがデータの有無を確かめるのに要る。
+// 初期化に失敗した場合でも参照できるよう、ここで公開しておく
+// (データが無くて初期化できないこと自体が、判定したい状態のひとつなので)。
+(window as unknown as TestHooks).__dataUrl = dataUrl;
+
 /**
  * DuckDB-WASM本体の置き場所。
  *
- * バンドルに含めない。duckdb-eh.wasm が35MB、duckdb-mvp.wasm が40MBあり、
- * Cloudflare Pagesの1ファイル25MB制限を超えるため。
- * 開発時は vite.config.ts が node_modules から配信し、公開時は
- * VITE_DUCKDB_BASE_URL でオブジェクトストレージのURLを渡す。
+ * バンドルには含めず、アプリと同じオリジンの /duckdb/ から配る。
+ * duckdb-eh.wasm が35MB、duckdb-mvp.wasm が40MBあり、バンドラに通すと
+ * ホスティングのファイルサイズ制限に当たるため (Cloudflare Pagesは25MiBまで)。
+ * 開発時は vite.config.ts が node_modules から配信し、ビルド時は同じ場所から
+ * dist/duckdb/ にコピーされる。別の場所に置きたい場合は
+ * VITE_DUCKDB_BASE_URL で上書きできる。
  */
-const DUCKDB_BASE_URL = (import.meta.env.VITE_DUCKDB_BASE_URL ?? '/duckdb').replace(/\/$/, '');
+const DUCKDB_BASE_URL = (
+  import.meta.env.VITE_DUCKDB_BASE_URL ?? `${import.meta.env.BASE_URL}duckdb`
+).replace(/\/$/, '');
 
 function duckdbUrl(file: string): string {
   return new URL(`${DUCKDB_BASE_URL}/${file}`, window.location.href).toString();
@@ -95,12 +112,18 @@ async function initDuckDb(
   const logger = new duckdb.ConsoleLogger();
   const db = new duckdb.AsyncDuckDB(logger, worker);
   await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-  // これを明示しないと、DuckDB-WASMはRangeリクエストを一切出さずに
-  // ファイル全体をダウンロードする。既定値は false のはずだが、指定しないと
-  // そうならない (指定した場合としない場合で挙動が変わることを実測で確認)。
-  // 全国の行政区域は200MB超あるので、これが有るか無いかで転送量が
-  // 7.9MB と 202.6MB になる。詳細: docs/duckdb-wasm-range-requests.md
-  await db.open({ filesystem: { forceFullHTTPReads: false } });
+  // どちらも指定しないと、警告も出さずにファイル全体のダウンロードに落ちる。
+  // 詳細: docs/duckdb-wasm-range-requests.md
+  //
+  // forceFullHTTPReads: これを明示しないとRangeリクエストを一切出さない。
+  //   既定値は false のはずだが、指定した場合としない場合で挙動が変わることを実測で確認。
+  // reliableHeadRequests: DuckDB-WASMはまず「HEADにRangeを付けて206が返るか」で
+  //   部分取得の可否を判断するが、GitHub Pagesなど200を返すサーバーがある。
+  //   false にすると「GET bytes=0-0 で206を確認し、通常のHEADでサイズを取る」経路に
+  //   なり、配信元の流儀に左右されにくくなる。
+  await db.open({
+    filesystem: { forceFullHTTPReads: false, reliableHeadRequests: false },
+  });
 
   const conn = await db.connect();
   // duckdb-wasmはCRSメタデータ付きのGeoParquetをread_parquetすると
@@ -452,9 +475,11 @@ async function main() {
     loadingEl.innerHTML = '<p>初期化に失敗しました。コンソールを確認してください。</p>';
     return;
   }
-  // E2Eテストから地図の状態 (ハイライトされている地物など) を検証するための足がかり。
-  // アプリ本体はこれを参照しない。
-  (window as unknown as { __map?: MapLibreMap }).__map = map;
+  // E2Eテストから地図の状態 (ハイライトされている地物など) を検証したり、
+  // データの実際のURLを知るための足がかり。アプリ本体はこれを参照しない。
+  // dataUrl を公開しているのは、データが別オリジン (オブジェクトストレージ) に
+  // 移っても、テスト側を書き換えずに公開URLへ流せるようにするため。
+  (window as unknown as TestHooks).__map = map;
 
   loadingEl.hidden = true;
   input.disabled = false;
