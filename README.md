@@ -26,8 +26,8 @@
 
 | データ | 出所 | ライセンス |
 | --- | --- | --- |
-| 行政区域 | [Overture Maps](https://docs.overturemaps.org/) (divisions) | ODbL 1.0 |
-| 建物 | Overture Maps (buildings) | ODbL 1.0 |
+| 行政区域 | Overture Maps [divisions](https://docs.overturemaps.org/guides/divisions/) | ODbL 1.0 |
+| 建物 | Overture Maps [buildings](https://docs.overturemaps.org/guides/buildings/) | ODbL 1.0 |
 | 大字・町丁目、街区 | [位置参照情報](https://nlftp.mlit.go.jp/isj/) (国土交通省) | PDL1.0 |
 | 地図タイル | [国土地理院](https://maps.gsi.go.jp/development/ichiran.html) | — |
 
