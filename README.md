@@ -282,8 +282,21 @@ PLAYWRIGHT_BASE_URL=https://<user>.github.io/duck-geocoder/ pnpm test
 
 ## ライセンス・出典
 
+このリポジトリの**コード**は [MIT License](LICENSE)。**データは別のライセンスに従う。**
+
+### 配信しているデータ
+
+行政区域と建物はOverture Mapsから切り出したもので、**ODbL 1.0の派生データベースにあたる**。
+ODbLは派生データベースを公に利用する場合に同一ライセンスでの提供を求めるため、
+ここで配信しているGeoParquet (`overture_admin_jp.parquet`、`overture_buildings_minato.parquet`) も
+**ODbL 1.0で提供する**。出典表示だけでは要件を満たさない。
+
 - 行政区域・建物: Overture Maps (ODbL 1.0) © OpenStreetMap contributors
 - 位置参照情報: 『位置参照情報』（国土交通省）を加工して作成 (PDL1.0)
-- 国土数値情報 (使用する場合): 『国土数値情報（行政区域データ）』（国土交通省）を加工して作成。
-  再配布には測量法に基づく国土地理院への承認申請が要る
 - 地図タイル: [国土地理院](https://maps.gsi.go.jp/development/ichiran.html)
+
+### 使う場合に注意が要るもの
+
+- 国土数値情報: 『国土数値情報（行政区域データ）』（国土交通省）を加工して作成 (CC BY 4.0)。
+  ただし配布データに測量法に基づく複製承認 (`R 7JHf 351`) が付いており、
+  再配布には国土地理院への承認申請が要る。このため現在は配信していない
