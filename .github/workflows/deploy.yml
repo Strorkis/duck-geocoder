@@ -29,14 +29,18 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
+      # Node.js 20 で動くアクションは非推奨になっているので、
+      # Node.js 24 で動くメジャーバージョンを使う。
+      - uses: actions/checkout@v7
 
       # package.json に packageManager を書いていないので、ここでメジャーを指定する
       # (mise.toml 側は pnpm = "latest" なので、細かく固定しすぎない)。
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11
-      - uses: actions/setup-node@v4
+      # v6以降、packageManager を見た自動キャッシュはnpmだけになったが、
+      # ここでは cache を明示しているので pnpm でも効く。
+      - uses: actions/setup-node@v7
         with:
           node-version: lts/*
           cache: pnpm
