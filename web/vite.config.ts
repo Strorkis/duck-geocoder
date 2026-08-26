@@ -2,7 +2,7 @@ import { copyFileSync, createReadStream, mkdirSync, statSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Connect, type Plugin } from 'vite';
-import { BASE_PATH } from './base-path';
+import { BASE_PATH } from './base-path.ts';
 
 /** DuckDB-WASM本体の在り処。開発時の配信元と、ビルド時のコピー元を兼ねる。 */
 const DUCKDB_DIST = './node_modules/@duckdb/duckdb-wasm/dist/';

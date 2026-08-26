@@ -61,6 +61,51 @@ body,
   color: #333;
 }
 
+/* 出典表示 (MapLibreの既定は右下) と重ならないよう左下に置く。 */
+#help {
+  position: absolute;
+  bottom: 1rem;
+  left: 1rem;
+  z-index: 1;
+  width: 20rem;
+  max-width: calc(100vw - 2rem);
+  padding: 0.5rem 0.8rem;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 0.4rem;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  font-size: 0.85rem;
+  color: #333;
+}
+
+#help summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+#help ul {
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+  line-height: 1.6;
+}
+
+#help button {
+  margin-top: 0.6rem;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.85rem;
+  border: 1px solid #ccc;
+  border-radius: 0.3rem;
+  background: white;
+  cursor: pointer;
+}
+
+#help button:hover {
+  background: #f0f4ff;
+}
+
+#help button[hidden] {
+  display: none;
+}
+
 #loading {
   position: absolute;
   inset: 0;
@@ -124,6 +169,16 @@ body,
 
 #results li:hover {
   background: #f0f4ff;
+}
+
+/* 該当が無かったことを伝えるだけの項目。選べないので見た目を変える。 */
+#results li.empty {
+  color: #888;
+  cursor: default;
+}
+
+#results li.empty:hover {
+  background: white;
 }
 
 .badge {

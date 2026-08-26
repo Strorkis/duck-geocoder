@@ -78,6 +78,16 @@ test('初期化が完了し、地図と検索欄が使える状態になる', as
   await expect(page.locator('#search-input')).toBeFocused();
 });
 
+// 検索欄と地図しか無いと、クリックやホバーで何が起きるのか分からない。
+// 公開して最初に触る人がここで止まるので、操作は画面に書いておく。
+test('使い方に3種類の操作が書かれている', async ({ page }) => {
+  const help = page.locator('#help');
+  await expect(help).toBeVisible();
+  await expect(help).toContainText('検索');
+  await expect(help).toContainText('クリック');
+  await expect(help).toContainText('カーソルを合わせる');
+});
+
 test('地名を入力すると候補が表示される', async ({ page }) => {
   await page.locator('#search-input').fill('港区');
 
@@ -85,6 +95,14 @@ test('地名を入力すると候補が表示される', async ({ page }) => {
   await expect(results.first()).toBeVisible();
   // 行政区域(全国)と地名(東京都・神奈川県)の両方から引くので、種別バッジが付く。
   await expect(results.first()).toContainText('港区');
+});
+
+// 該当が無いときに一覧ごと消えると、読み込み中と区別がつかない。
+// 地名は収録した都道府県の分しか無いので、この状態には普通に到達する。
+test('該当しない地名を検索するとその旨が出る', async ({ page }) => {
+  await page.locator('#search-input').fill('ぬけぬけ村');
+
+  await expect(page.locator('#results li')).toHaveText('該当する地名がありません');
 });
 
 test('行政区域を選ぶとポリゴンがハイライトされる', async ({ page }) => {
@@ -162,6 +180,19 @@ test('逆ジオコーディングはファイル全体のごく一部しか読�
   // 0バイトなら「絞り込めている」のではなく「計測できていない」ので、そちらも弾く。
   expect(fetchedBytes, `転送量を計測できていない: ${measured}`).toBeGreaterThan(0);
   expect(fetchedBytes, `読みすぎ: ${measured}`).toBeLessThan(totalBytes * 0.1);
+});
+
+// 建物は一部の範囲しか収録しておらず、しかも寄らないと出てこない。
+// 偶然そこへ行かないと機能に気づけないので、移動する手段を用意してある。
+// 移動先はカタログの収録範囲から決まるため、データを差し替えても追随する。
+test('ボタンを押すと建物のある範囲へ移動する', async ({ page }) => {
+  test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
+
+  expect(await sourceFeatureCount(page, 'buildings')).toBe(0);
+
+  await page.locator('#goto-buildings').click();
+
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
 });
 
 test('十分に寄ると建物が表示され、離すと消える', async ({ page }) => {

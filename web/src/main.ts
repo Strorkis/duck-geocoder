@@ -103,9 +103,30 @@ type SearchResult =
   | { kind: 'admin'; label: string; adminId: string }
   | { kind: 'oaza'; label: string; lon: number; lat: number };
 
-async function initDuckDb(
-  datasets: CatalogEntry[],
-): Promise<{ conn: duckdb.AsyncDuckDBConnection; hasBuildings: boolean }> {
+/** 範囲 [xmin, ymin, xmax, ymax] (WGS84)。 */
+type Bbox = [number, number, number, number];
+
+/** 複数の範囲を包む範囲。データセットが分割されていても1つに畳める。 */
+function unionBbox(boxes: Bbox[]): Bbox | null {
+  return boxes.reduce<Bbox | null>(
+    (union, box) =>
+      union === null
+        ? box
+        : [
+            Math.min(union[0], box[0]),
+            Math.min(union[1], box[1]),
+            Math.max(union[2], box[2]),
+            Math.max(union[3], box[3]),
+          ],
+    null,
+  );
+}
+
+async function initDuckDb(datasets: CatalogEntry[]): Promise<{
+  conn: duckdb.AsyncDuckDBConnection;
+  /** 建物の収録範囲。建物データが無ければ null。 */
+  buildingsBbox: Bbox | null;
+}> {
   const bundle = await duckdb.selectBundle({
     mvp: {
       mainModule: duckdbUrl('duckdb-mvp.wasm'),
@@ -155,7 +176,8 @@ async function initDuckDb(
     throw new Error('カタログに必要なデータセット (oaza / admin) がありません。');
   }
   // 建物は任意。無ければ建物レイヤーを出さないだけで、他の機能は動く。
-  const buildingFiles = datasets.filter((d) => d.kind === 'buildings').map((d) => d.file);
+  const buildingDatasets = datasets.filter((d) => d.kind === 'buildings');
+  const buildingFiles = buildingDatasets.map((d) => d.file);
   console.info(
     '[catalog] 行政区域:',
     adminDataset.id,
@@ -197,7 +219,12 @@ async function initDuckDb(
     FROM admin;
   `);
 
-  return { conn, hasBuildings: buildingFiles.length > 0 };
+  // 収録範囲はカタログが実際のParquetメタデータから作っているので、
+  // データを差し替えれば移動先も自動で追随する。
+  const buildingsBbox = unionBbox(
+    buildingDatasets.map((d) => d.bbox).filter((bbox): bbox is Bbox => bbox !== null),
+  );
+  return { conn, buildingsBbox };
 }
 
 /** 建物1件分の表示用データ。 */
@@ -478,18 +505,19 @@ async function main() {
   const clearButton = document.querySelector<HTMLButtonElement>('#clear-button')!;
   const loadingEl = document.querySelector<HTMLDivElement>('#loading')!;
   const loadingMessageEl = document.querySelector<HTMLParagraphElement>('#loading-message')!;
+  const gotoBuildingsButton = document.querySelector<HTMLButtonElement>('#goto-buildings')!;
 
   // DuckDB-WASMの初期化とParquetの読み込みには数秒かかるので、
   // 準備が終わるまでは操作できないことが分かるようにしておく。
   loadingMessageEl.textContent = '地図とデータベースを準備中…';
   let conn: duckdb.AsyncDuckDBConnection;
   let map: MapLibreMap;
-  let hasBuildings = false;
+  let buildingsBbox: Bbox | null = null;
   try {
     const datasets = await fetchCatalog();
     const [db, createdMap] = await Promise.all([initDuckDb(datasets), initMap(datasets)]);
     conn = db.conn;
-    hasBuildings = db.hasBuildings;
+    buildingsBbox = db.buildingsBbox;
     map = createdMap;
   } catch (e) {
     console.error('[init] failed', e);
@@ -564,6 +592,17 @@ async function main() {
 
   const renderResults = (rows: SearchResult[]) => {
     resultsEl.innerHTML = '';
+
+    // 何も出さないと一覧ごと消えて (#results:empty)、読み込み中と区別がつかない。
+    // 地名は収録した都道府県の分しか無いので、この状態には普通に到達する。
+    if (rows.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'empty';
+      li.textContent = '該当する地名がありません';
+      resultsEl.appendChild(li);
+      return;
+    }
+
     for (const row of rows) {
       const li = document.createElement('li');
       const badge = document.createElement('span');
@@ -646,9 +685,24 @@ async function main() {
     });
   };
 
-  if (hasBuildings) {
+  if (buildingsBbox) {
     map.on('moveend', () => {
       refreshBuildings().catch((e: unknown) => console.error('[buildings] failed', e));
+    });
+
+    // 建物は一部の範囲しか収録していないうえ、寄らないと出てこない。
+    // 偶然そこへ行かないと機能に気づけないので、移動する手段を出しておく。
+    const [west, south, east, north] = buildingsBbox;
+    gotoBuildingsButton.hidden = false;
+    gotoBuildingsButton.addEventListener('click', () => {
+      // 収録範囲の全体を映すのではなく、その中心に寄る。
+      // fitBounds だと範囲が広いときに BUILDINGS_MIN_ZOOM を下回り、
+      // 移動した先で建物が出ないという逆の結果になる。
+      map.flyTo({
+        center: [(west + east) / 2, (south + north) / 2],
+        zoom: BUILDINGS_MIN_ZOOM + 1,
+        duration: 1500,
+      });
     });
   }
 
@@ -665,7 +719,7 @@ async function main() {
     offset: 12,
   });
 
-  if (hasBuildings) {
+  if (buildingsBbox) {
     map.on('mousemove', 'buildings-fill', (e) => {
       const building = e.features?.[0];
       if (!building) return;

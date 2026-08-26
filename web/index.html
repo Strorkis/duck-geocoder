@@ -21,6 +21,19 @@
         <ul id="results"></ul>
       </div>
       <div id="map"></div>
+      <!-- 開閉にJavaScriptが要らないので details を使う。 -->
+      <details id="help" open>
+        <summary>使い方</summary>
+        <ul>
+          <li>市区町村や地名を<b>検索</b>すると、その場所へ移動します</li>
+          <li>地図を<b>クリック</b>すると、その地点の市区町村を判定します</li>
+          <li>建物に<b>カーソルを合わせる</b>と、名称と用途が出ます (拡大したとき)</li>
+        </ul>
+        <!-- 建物は一部の範囲しか収録していない。偶然そこへ行かないと
+             機能があること自体に気づけないので、移動する手段を置く。
+             データが無いときはJavaScript側で隠したままにする。 -->
+        <button id="goto-buildings" type="button" hidden>建物のある範囲へ移動</button>
+      </details>
       <div id="loading">
         <div class="spinner"></div>
         <p id="loading-message">読み込み中…</p>
