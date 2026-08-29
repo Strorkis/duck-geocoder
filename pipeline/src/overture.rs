@@ -290,7 +290,11 @@ mod tests {
     // ジオメトリはBLOBとして書き、メタデータは自前のものを渡す。
     #[test]
     fn admin_sql_writes_its_own_geo_metadata() {
-        let sql = build_admin_sql("/tmp/div.parquet", "/tmp/admin.parquet", r#"{"version":"1.1.0"}"#);
+        let sql = build_admin_sql(
+            "/tmp/div.parquet",
+            "/tmp/admin.parquet",
+            r#"{"version":"1.1.0"}"#,
+        );
 
         assert!(sql.contains("ST_AsWKB(geometry)::BLOB AS geometry"));
         assert!(sql.contains(r#"KV_METADATA { geo: '{"version":"1.1.0"}' }"#));

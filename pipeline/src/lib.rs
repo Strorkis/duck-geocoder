@@ -134,7 +134,10 @@ mod tests {
 
     #[test]
     fn read_zip_entry_bytes_errors_on_no_match() {
-        let path = write_test_zip("duck_geocoder_test_no_match.zip", &[("foo.csv", b"data" as &[u8])]);
+        let path = write_test_zip(
+            "duck_geocoder_test_no_match.zip",
+            &[("foo.csv", b"data" as &[u8])],
+        );
 
         let err = read_zip_entry_bytes(&path, ".geojson").unwrap_err();
         assert!(err.to_string().contains("no matching entry"));

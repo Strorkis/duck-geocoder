@@ -287,7 +287,10 @@ mod tests {
     fn maps_file_names_to_datasets() {
         // 行政区域は出所が2つある (承認が下りるまではOverture、将来はN03も)。
         assert_eq!(describe("n03_all").unwrap().kind, DatasetKind::Admin);
-        assert_eq!(describe("overture_admin_jp").unwrap().kind, DatasetKind::Admin);
+        assert_eq!(
+            describe("overture_admin_jp").unwrap().kind,
+            DatasetKind::Admin
+        );
         assert_eq!(describe("isj_oaza_13").unwrap().kind, DatasetKind::Oaza);
         assert_eq!(describe("isj_block_14").unwrap().kind, DatasetKind::Block);
         assert_eq!(
@@ -318,7 +321,10 @@ mod tests {
         for (prefix, described) in DESCRIPTIONS {
             let Attribution { text, url } = described.attribution;
             assert!(!text.is_empty(), "{prefix} に出典が無い");
-            assert!(url.starts_with("https://"), "{prefix} に出典元のURLが無い: {url}");
+            assert!(
+                url.starts_with("https://"),
+                "{prefix} に出典元のURLが無い: {url}"
+            );
         }
     }
 
@@ -328,8 +334,14 @@ mod tests {
     #[test]
     fn mlit_attributions_follow_the_required_form() {
         for Attribution { text, url } in [MLIT_ISJ, MLIT_KSJ] {
-            assert!(text.contains("（国土交通省）"), "作成者の表示が無い: {text}");
-            assert!(text.contains("もとに作成"), "加工した旨の記載が無い: {text}");
+            assert!(
+                text.contains("（国土交通省）"),
+                "作成者の表示が無い: {text}"
+            );
+            assert!(
+                text.contains("もとに作成"),
+                "加工した旨の記載が無い: {text}"
+            );
             assert!(
                 url.contains("nlftp.mlit.go.jp"),
                 "当該ページのURLが国土交通省のものでない: {url}",

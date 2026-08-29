@@ -46,9 +46,8 @@ fn main() -> Result<()> {
     let bboxes = read_bboxes(&batch, &covering)?;
 
     let input_bytes = std::fs::metadata(&input)?.len();
-    let row_group_size = requested_size.unwrap_or_else(|| {
-        spatial_pack::default_row_group_size(input_bytes, batch.num_rows())
-    });
+    let row_group_size = requested_size
+        .unwrap_or_else(|| spatial_pack::default_row_group_size(input_bytes, batch.num_rows()));
 
     let order = spatial_pack::pack(&bboxes, row_group_size)?;
     let indices = UInt32Array::from(order);

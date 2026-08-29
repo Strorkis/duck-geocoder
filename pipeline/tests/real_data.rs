@@ -1,6 +1,5 @@
 use duck_geocoder::{
-    decode_sjis, extract_epsg_from_isj_metadata_xml, isj_block, isj_oaza, n03,
-    read_zip_entry_bytes,
+    decode_sjis, extract_epsg_from_isj_metadata_xml, isj_block, isj_oaza, n03, read_zip_entry_bytes,
 };
 use std::path::Path;
 
@@ -45,7 +44,10 @@ fn isj_oaza_kanagawa_parses_all_rows() {
     let xml_bytes = read_zip_entry_bytes(path, ".xml").unwrap();
     let xml_text = decode_sjis(&xml_bytes);
     let source_epsg = extract_epsg_from_isj_metadata_xml(&xml_text).unwrap();
-    assert_eq!(source_epsg, 4612, "oaza-level metadata should declare JGD2000");
+    assert_eq!(
+        source_epsg, 4612,
+        "oaza-level metadata should declare JGD2000"
+    );
 
     let rows = isj_oaza::parse_csv(&csv_text, source_epsg).unwrap();
 
@@ -67,12 +69,15 @@ fn isj_block_kanagawa_parses_all_rows() {
     let xml_bytes = read_zip_entry_bytes(path, ".xml").unwrap();
     let xml_text = decode_sjis(&xml_bytes);
     let source_epsg = extract_epsg_from_isj_metadata_xml(&xml_text).unwrap();
-    assert_eq!(source_epsg, 4612, "block-level metadata should declare JGD2000");
+    assert_eq!(
+        source_epsg, 4612,
+        "block-level metadata should declare JGD2000"
+    );
 
     let rows = isj_block::parse_csv(&csv_text, source_epsg).unwrap();
 
     assert_eq!(rows.len(), 571233);
-    assert!(rows
-        .iter()
-        .any(|r| r.city_name == "横浜市鶴見区" && r.oaza_name == "上の宮二丁目" && r.block_number == "6"));
+    assert!(rows.iter().any(|r| r.city_name == "横浜市鶴見区"
+        && r.oaza_name == "上の宮二丁目"
+        && r.block_number == "6"));
 }

@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use duck_geocoder::isj_block::{self, Row};
 use duck_geocoder::{decode_sjis, extract_epsg_from_isj_metadata_xml, read_zip_entry_bytes};
 use geoparquet_batch_writer::GeoParquetBatchWriter;

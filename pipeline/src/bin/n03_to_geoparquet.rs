@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use duck_geocoder::n03::{self, Row};
 use duck_geocoder::read_zip_entry;
 use geoparquet_batch_writer::GeoParquetBatchWriter;

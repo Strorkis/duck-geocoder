@@ -48,19 +48,18 @@ fn extract_epsg(foreign_members: Option<&geojson::JsonObject>) -> Result<u32> {
 
 /// MultiPolygon の全頂点を変換する。
 fn transform_multi_polygon(mp: MultiPolygon<f64>, proj: &Proj) -> Result<MultiPolygon<f64>> {
-    let polygons = mp
-        .0
-        .into_iter()
-        .map(|polygon| {
-            let (exterior, interiors) = polygon.into_inner();
-            let exterior = transform_ring(exterior, proj)?;
-            let interiors = interiors
-                .into_iter()
-                .map(|ring| transform_ring(ring, proj))
-                .collect::<Result<Vec<_>>>()?;
-            Ok(Polygon::new(exterior, interiors))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let polygons =
+        mp.0.into_iter()
+            .map(|polygon| {
+                let (exterior, interiors) = polygon.into_inner();
+                let exterior = transform_ring(exterior, proj)?;
+                let interiors = interiors
+                    .into_iter()
+                    .map(|ring| transform_ring(ring, proj))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(Polygon::new(exterior, interiors))
+            })
+            .collect::<Result<Vec<_>>>()?;
     Ok(MultiPolygon(polygons))
 }
 

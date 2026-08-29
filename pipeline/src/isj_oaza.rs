@@ -63,12 +63,12 @@ pub fn parse_csv(csv_text: &str, source_epsg: u32) -> Result<Vec<Row>> {
 
     let mut points: Vec<(f64, f64)> = csv_rows.iter().map(|r| (r.lon, r.lat)).collect();
     if !points.is_empty() {
-        let (west, east) = points.iter().fold((f64::MAX, f64::MIN), |(w, e), p| {
-            (w.min(p.0), e.max(p.0))
-        });
-        let (south, north) = points.iter().fold((f64::MAX, f64::MIN), |(s, n), p| {
-            (s.min(p.1), n.max(p.1))
-        });
+        let (west, east) = points
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(w, e), p| (w.min(p.0), e.max(p.0)));
+        let (south, north) = points
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(s, n), p| (s.min(p.1), n.max(p.1)));
         let proj = wgs84_transformer(source_epsg, (west, south, east, north))?;
         proj.convert_array(&mut points)?;
     }

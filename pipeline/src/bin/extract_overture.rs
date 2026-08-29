@@ -11,7 +11,12 @@ use std::process::Command;
 /// `duckdb` は mise.toml で管理しているものを使う。
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let sql = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    let sql = match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
         [_, "buildings", output, xmin, ymin, xmax, ymax] => {
             let bbox = BoundingBox::parse(xmin, ymin, xmax, ymax)?;
             eprintln!("Overture から建物を抽出しています (範囲: {bbox:?})...");

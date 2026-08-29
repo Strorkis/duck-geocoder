@@ -28,7 +28,10 @@ impl Bbox {
     }
 
     fn is_finite(&self) -> bool {
-        self.xmin.is_finite() && self.ymin.is_finite() && self.xmax.is_finite() && self.ymax.is_finite()
+        self.xmin.is_finite()
+            && self.ymin.is_finite()
+            && self.xmax.is_finite()
+            && self.ymax.is_finite()
     }
 }
 
@@ -101,7 +104,11 @@ fn pack_recursive(rows: &mut [u32], bboxes: &[Bbox], row_group_size: usize) {
     let split_x = extent.width() >= extent.height();
     let key = |row: &u32| {
         let bbox = &bboxes[*row as usize];
-        if split_x { bbox.center_x() } else { bbox.center_y() }
+        if split_x {
+            bbox.center_x()
+        } else {
+            bbox.center_y()
+        }
     };
     // bboxが有限であることは pack() で確認済みなので、比較は必ず成立する。
     rows.sort_unstable_by(|a, b| key(a).partial_cmp(&key(b)).unwrap_or(Ordering::Equal));
@@ -230,8 +237,14 @@ mod tests {
         let extents = row_group_extents(&order, &bboxes, 25);
         assert_eq!(extents.len(), 4);
         for extent in extents {
-            assert!(extent.width() <= 4.0, "row group が横に広すぎる: {extent:?}");
-            assert!(extent.height() <= 4.0, "row group が縦に広すぎる: {extent:?}");
+            assert!(
+                extent.width() <= 4.0,
+                "row group が横に広すぎる: {extent:?}"
+            );
+            assert!(
+                extent.height() <= 4.0,
+                "row group が縦に広すぎる: {extent:?}"
+            );
         }
     }
 
