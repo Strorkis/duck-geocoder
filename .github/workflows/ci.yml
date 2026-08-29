@@ -1,0 +1,52 @@
+name: CI
+
+# 変換パイプライン (Rust) の検証。
+#
+# デプロイとは分けてある。パイプラインが壊れていても、公開中のアプリは
+# 既に配信済みのGeoParquetで動き続けるので、デプロイを止める理由がない。
+# Web側の検証は deploy.yml が本番ビルドに対して行う。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pipeline
+    steps:
+      - uses: actions/checkout@v7
+
+      # proj クレートはPROJをソースからビルドする
+      # (ディストリビューション同梱のlibprojはバージョンが古く使えない)。
+      - name: PROJのビルドに必要なパッケージ
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake sqlite3 libsqlite3-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      # PROJのビルドが重いので、target/ ごとキャッシュする。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pipeline
+
+      # 整形はPROJのビルドを待たずに判定できるので先に置く。
+      - run: cargo fmt --check
+
+      - run: cargo clippy --all-targets -- -D warnings
+
+      # tests/real_data.rs は data/ 配下の実ファイルを使うが、
+      # git管理外なのでCIではスキップされる (失敗はしない)。
+      - run: cargo test

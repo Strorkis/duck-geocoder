@@ -53,9 +53,12 @@
 ## 変更を入れるとき
 
 ```sh
-cd pipeline && cargo test
+cd pipeline && cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test
 cd web && pnpm exec tsc --noEmit && pnpm test && pnpm test:dist
 ```
+
+CIも同じものを回す (`.github/workflows/`)。Web側の検証はデプロイの手前に置いてあるので、
+落ちれば公開されない。
 
 コミットメッセージはConventional Commits (`feat:` `fix:` `perf:` `refactor:` `docs:` `test:`)。
 

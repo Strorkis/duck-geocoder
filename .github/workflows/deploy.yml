@@ -4,8 +4,12 @@ name: Deploy to GitHub Pages
 # GeoParquetはここには含めない (Cloudflare R2 に置き、URLを VITE_DATA_BASE_URL で渡す)。
 #
 # WASMは35〜40MBあるのでgitには入れていない。ビルド時に node_modules から
-# dist/duckdb/ にコピーされ (web/vite.config.ts の bundle-duckdb-runtime)、
+# dist/duckdb/ にコピーされ (web/vite.config.ts の copy-duckdb-runtime)、
 # Pagesのアーティファクトとしてアップロードされる。
+#
+# デプロイ前に本番ビルドに対してE2Eを流す。MapLibreのワーカーがビルド成果物に
+# 含まれず、公開してからGeoJSONが一切描画されない状態になったことがあり、
+# 開発サーバーでは再現しなかったため。
 
 on:
   push:
@@ -50,12 +54,39 @@ jobs:
 
       - run: pnpm exec tsc --noEmit
 
-      - run: pnpm build
+      # 未設定のままだとデータのURLが空でビルドされ、E2Eは「データが無い」と
+      # 判断して全件スキップする。テストが素通りしたまま壊れたものが公開されるので、
+      # ここで止める。
+      - name: データの配信先が設定されているか確認
+        run: |
+          test -n "${{ vars.DATA_BASE_URL }}" || {
+            echo "リポジトリ変数 DATA_BASE_URL が未設定です" >&2
+            exit 1
+          }
+
+      - run: pnpm exec playwright install --with-deps chromium
+
+      # ビルドしてから、その成果物に対してE2Eを流す (test:dist が両方を行う)。
+      # ここを通ったものだけをアップロードするので、テストが落ちればデプロイされない。
+      #
+      # データは公開中のオブジェクトストレージから読む。配信側のCORSとRangeの設定も
+      # 一緒に検証されるが、そのぶん初期化に往復の遅延が乗るので5分ほどかかる。
+      # オブジェクトストレージ側で localhost:4173 (vite preview) を
+      # AllowedOrigins に含めておくこと。
+      - run: pnpm test:dist
         env:
           # リポジトリ名のサブパスで配信されるため。
           VITE_BASE_PATH: /${{ github.event.repository.name }}/
           # データの置き場所。リポジトリの Variables で設定する。
           VITE_DATA_BASE_URL: ${{ vars.DATA_BASE_URL }}
+
+      # ヘッドレスでの失敗はログだけでは追いにくいので、トレースを残す。
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-trace
+          path: web/test-results/
+          retention-days: 7
 
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -36,13 +36,22 @@ const local =
 
 const remoteURL = process.env.PLAYWRIGHT_BASE_URL;
 
+// 待ち時間を決めるのはアプリの置き場所ではなく、データの置き場所。
+// 初期化だけで数十回のRangeリクエストが走るので、データが別オリジンにあると
+// 往復の遅延が積み上がって数十秒かかる (実測で約24秒)。
+// アプリを手元の preview で動かしていても、データがR2なら同じだけ待つ。
+const readsRemoteData =
+  Boolean(remoteURL) || /^https?:/.test(process.env.VITE_DATA_BASE_URL ?? '');
+
 export default defineConfig({
   testDir: './tests',
-  // DuckDB-WASMの初期化とParquetの読み込みに数秒かかるので、既定より長めに取る。
-  // 公開URL相手はネットワーク越しなのでさらに余裕を持たせる。
-  timeout: remoteURL ? 180_000 : 60_000,
-  expect: { timeout: remoteURL ? 60_000 : 15_000 },
+  // DuckDB-WASMの初期化とParquetの読み込みには時間がかかるので、既定より長く取る。
+  timeout: readsRemoteData ? 180_000 : 60_000,
+  expect: { timeout: readsRemoteData ? 60_000 : 15_000 },
   fullyParallel: false,
+  // CIはネットワーク越しにデータを読むので、1回だけやり直す。
+  // 再実行でトレースが残るため、ヘッドレスでの失敗を後から追える。
+  retries: process.env.CI ? 1 : 0,
   use: {
     baseURL: remoteURL ?? local.url,
     trace: 'on-first-retry',

@@ -50,10 +50,13 @@ VITE_BASE_PATH=/duck-geocoder/ pnpm test:dist
 `data/output/` の中身 (catalog.json と *.parquet) をバケット直下にアップロードし、
 CORSを設定する。
 
+`http://localhost:4173` は `vite preview` の既定ポート。CIの `pnpm test:dist` が
+ここからR2を読むので、含めておく (含めないとブラウザがCORSで弾き、E2Eが全件落ちる)。
+
 ```json
 [
   {
-    "AllowedOrigins": ["https://<user>.github.io"],
+    "AllowedOrigins": ["https://<user>.github.io", "http://localhost:4173"],
     "AllowedMethods": ["GET", "HEAD"],
     "AllowedHeaders": ["range"],
     "ExposeHeaders": ["Content-Range", "Content-Length", "Accept-Ranges", "ETag"],
