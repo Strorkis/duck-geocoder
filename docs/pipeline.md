@@ -121,7 +121,29 @@ row groupの行数は1行あたりのバイト数から自動で決める。1行
 
 ブラウザ側でこれが成立する条件は [duckdb-wasm-range-requests.md](duckdb-wasm-range-requests.md) を参照。
 
-## 5. カタログを作る
+## 5. 検索用の名称を抜き出す
+
+```sh
+cargo run --release --bin build_admin_names -- \
+  ../data/output/overture_admin_jp.parquet ../data/output/overture_admin_names_jp.parquet
+```
+
+UIは地名検索のために全行政区域の名称を必要とするが、これを行政区域の
+GeoParquetから直接引くと**HTTP越しでは極端に遅くなる**。名称の列は合計65KB程度しか
+ないのに、64MBのファイル全体に row group の数だけ散らばっているためで、
+実測では42回のRangeリクエストと約24秒を要した。転送量ではなく往復回数の問題。
+
+抜き出したファイルは76KB・1 row group で、初期化のリクエストは11回に減る。
+
+ジオメトリを持たないのでGeoParquetではなく素のParquetになる。
+ファイル名が `overture_admin_names` / `n03_names` で始まっていれば、
+カタログが検索用の名称として認識する
+(行政区域そのものより**前**に判定される必要があるので、
+`pipeline/src/catalog.rs` の表では長い接頭辞を先に置いている)。
+
+無くてもUIは動くが、その場合は行政区域から都度作るので初期化が遅くなる。
+
+## 6. カタログを作る
 
 ```sh
 cargo run --release --bin build_catalog -- ../data/output ../data/output/catalog.json
@@ -136,6 +158,7 @@ Webアプリはこれを読んでどのデータセットを使うかを決め�
 | 接頭辞 | 種別 |
 | --- | --- |
 | `overture_admin` / `n03` | 行政区域 |
+| `overture_admin_names` / `n03_names` | 行政区域の名称 (検索用) |
 | `overture_buildings` | 建物 |
 | `isj_oaza` | 大字・町丁目 |
 | `isj_block` | 街区 |

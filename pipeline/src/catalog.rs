@@ -35,6 +35,9 @@ pub struct DatasetEntry {
 pub enum DatasetKind {
     /// 行政区域 (面)。ハイライトや逆ジオコーディングに使う。
     Admin,
+    /// 行政区域の名称だけを抜き出したもの。ジオメトリを持たない。
+    /// 地名検索の候補をこれで引く (`crate::admin_names` を参照)。
+    AdminNames,
     /// 大字・町丁目 (点)。住所検索に使う。
     Oaza,
     /// 街区 (点)。より細かい住所検索に使う。
@@ -95,14 +98,31 @@ struct Description {
 
 /// ファイル名の接頭辞と、そのデータセットの素性。
 /// 変換バイナリの出力名 (n03_*.parquet など) と対応している。
-/// 前方一致で引くので、長い接頭辞を先に置くこと。
+/// **前方一致で引くので、長い接頭辞を先に置くこと**
+/// (`overture_admin_names` が `overture_admin` に吸われないように)。
 const DESCRIPTIONS: &[(&str, Description)] = &[
+    (
+        "n03_names",
+        Description {
+            kind: DatasetKind::AdminNames,
+            title: "行政区域の名称",
+            attribution: MLIT_KSJ,
+        },
+    ),
     (
         "n03",
         Description {
             kind: DatasetKind::Admin,
             title: "行政区域",
             attribution: MLIT_KSJ,
+        },
+    ),
+    (
+        "overture_admin_names",
+        Description {
+            kind: DatasetKind::AdminNames,
+            title: "行政区域の名称",
+            attribution: OVERTURE,
         },
     ),
     (
@@ -207,9 +227,15 @@ pub fn describe_parquet(path: &Path) -> Result<DatasetEntry> {
     let geo_json = file_metadata
         .key_value_metadata()
         .and_then(|kv| kv.iter().find(|entry| entry.key == "geo"))
-        .and_then(|entry| entry.value.as_deref())
-        .with_context(|| format!("GeoParquetの `geo` メタデータがありません: {file_name}"))?;
-    let (geometry_types, bbox) = read_geo_metadata(geo_json)?;
+        .and_then(|entry| entry.value.as_deref());
+    // 検索用の名称のようにジオメトリを持たないデータセットもあるので、
+    // `geo` の有無は種別で判断する。空間データに `geo` が無ければ、
+    // 収録範囲も読めず配信用の最適化もかけられないのでエラーにする。
+    let (geometry_types, bbox) = match (geo_json, described.kind) {
+        (Some(geo_json), _) => read_geo_metadata(geo_json)?,
+        (None, DatasetKind::AdminNames) => (Vec::new(), None),
+        (None, _) => bail!("GeoParquetの `geo` メタデータがありません: {file_name}"),
+    };
 
     let columns = file_metadata
         .schema_descr()

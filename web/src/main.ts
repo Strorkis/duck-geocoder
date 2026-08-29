@@ -26,7 +26,7 @@ setWorkerUrl(maplibreWorkerUrl);
 interface CatalogEntry {
   id: string;
   file: string;
-  kind: 'admin' | 'oaza' | 'block' | 'buildings';
+  kind: 'admin' | 'admin_names' | 'oaza' | 'block' | 'buildings';
   title: string;
   source: string;
   source_url: string;
@@ -178,16 +178,24 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
   // 建物は任意。無ければ建物レイヤーを出さないだけで、他の機能は動く。
   const buildingDatasets = datasets.filter((d) => d.kind === 'buildings');
   const buildingFiles = buildingDatasets.map((d) => d.file);
+  // 検索用の名称を抜き出したものがあれば使う。無ければ行政区域から作るが、
+  // そちらは名称の列がファイル全体に散らばっているため、HTTP越しだと
+  // 往復が積み上がって初期化が数十秒かかる。
+  const adminNamesDataset = datasets.find((d) => d.kind === 'admin_names');
   console.info(
     '[catalog] 行政区域:',
     adminDataset.id,
+    '/ 名称:',
+    adminNamesDataset?.id ?? '(行政区域から都度作成)',
     '/ 地名:',
     oazaFiles.join(', '),
     '/ 建物:',
     buildingFiles.join(', ') || 'なし',
   );
 
-  for (const file of [...oazaFiles, ...buildingFiles, adminDataset.file]) {
+  const registered = [...oazaFiles, ...buildingFiles, adminDataset.file];
+  if (adminNamesDataset) registered.push(adminNamesDataset.file);
+  for (const file of registered) {
     await db.registerFileURL(
       file,
       dataUrl(file),
@@ -206,18 +214,25 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
   }
 
   // 行政区域は1つの自治体が複数のポリゴン行に分かれることがある (飛び地や島など) ので、
-  // 検索用に名前と識別子だけを重複排除した小さなテーブルを作っておく。
-  // 名前の列だけを読むので、ファイル全体を読み込むわけではない。
-  await conn.query(`
-    CREATE TABLE admin_names AS
-    SELECT DISTINCT
-      admin_id,
-      pref_name,
-      coalesce(county_name, '') AS county_name,
-      coalesce(city_name, '') AS city_name,
-      coalesce(ward_name, '') AS ward_name
-    FROM admin;
-  `);
+  // 検索には名称を重複排除したものを使う。
+  //
+  // 専用のファイルがあればそれを読む。無い場合は行政区域から作るが、名称の列は
+  // 合計65KB程度しかないのに row group の数だけ散らばっているため、HTTP越しでは
+  // 往復回数が効いて極端に遅くなる (実測で42リクエスト・約24秒)。
+  // 転送量ではなく往復の問題なので、pipeline の build_admin_names で
+  // まとまった小さなファイルを作っておくこと。
+  await conn.query(
+    adminNamesDataset
+      ? `CREATE VIEW admin_names AS SELECT * FROM read_parquet('${adminNamesDataset.file}');`
+      : `CREATE TABLE admin_names AS
+           SELECT DISTINCT
+             admin_id,
+             pref_name,
+             coalesce(county_name, '') AS county_name,
+             coalesce(city_name, '') AS city_name,
+             coalesce(ward_name, '') AS ward_name
+           FROM admin;`,
+  );
 
   // 収録範囲はカタログが実際のParquetメタデータから作っているので、
   // データを差し替えれば移動先も自動で追随する。

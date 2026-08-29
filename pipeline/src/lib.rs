@@ -3,6 +3,7 @@ use proj::{Area, Proj};
 use std::fs::File;
 use std::path::Path;
 
+pub mod admin_names;
 pub mod catalog;
 pub mod geoparquet;
 pub mod isj_block;
