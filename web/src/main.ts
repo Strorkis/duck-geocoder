@@ -106,6 +106,15 @@ type SearchResult =
 /** 範囲 [xmin, ymin, xmax, ymax] (WGS84)。 */
 type Bbox = [number, number, number, number];
 
+/**
+ * 初回に一度だけ実行し、以降は同じ結果を返す。
+ * 並行して呼ばれても実行は1回で、両方とも完了を待てる。
+ */
+function once(run: () => Promise<void>): () => Promise<void> {
+  let started: Promise<void> | undefined;
+  return () => (started ??= run());
+}
+
 /** 複数の範囲を包む範囲。データセットが分割されていても1つに畳める。 */
 function unionBbox(boxes: Bbox[]): Bbox | null {
   return boxes.reduce<Bbox | null>(
@@ -126,6 +135,12 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
   conn: duckdb.AsyncDuckDBConnection;
   /** 建物の収録範囲。建物データが無ければ null。 */
   buildingsBbox: Bbox | null;
+  /** 空間関数を使う前に呼ぶ。 */
+  ensureSpatial: () => Promise<void>;
+  /** 地名 (isj_oaza) を引く前に呼ぶ。 */
+  ensureOaza: () => Promise<void>;
+  /** 建物を引く前に呼ぶ。 */
+  ensureBuildings: () => Promise<void>;
 }> {
   const bundle = await duckdb.selectBundle({
     mvp: {
@@ -157,14 +172,19 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
   });
 
   const conn = await db.connect();
+  // 空間関数は逆ジオコーディングと建物表示にしか要らない。拡張の取得に
+  // 数秒かかるので、起動時ではなく最初に必要になったときに読む。
+  //
   // duckdb-wasmはCRSメタデータ付きのGeoParquetをread_parquetすると
   // "stoi: no conversion" でクラッシュすることがある (PROJ初期化のタイミング問題、
   // duckdb/duckdb-wasm#2199)。spatial拡張を明示ロードする"前"に
   // duckdb_coordinate_systems() を一度呼んでおくと回避できる
   // (逆に LOAD spatial の後に呼ぶとクラッシュを再現してしまうので順序に注意)。
   // https://github.com/duckdb/duckdb-wasm/issues/2199#issuecomment-4205882097
-  await conn.query(`SELECT * FROM duckdb_coordinate_systems();`);
-  await conn.query(`INSTALL spatial; LOAD spatial;`);
+  const ensureSpatial = once(async () => {
+    await conn.query(`SELECT * FROM duckdb_coordinate_systems();`);
+    await conn.query(`INSTALL spatial; LOAD spatial;`);
+  });
 
   const oazaFiles = datasets.filter((d) => d.kind === 'oaza').map((d) => d.file);
   // 行政区域は全国版と都道府県版が同居しうる。範囲の広いもの (=件数が最多) を採用する。
@@ -204,14 +224,27 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
     );
   }
 
-  const oazaList = oazaFiles.map((f) => `'${f}'`).join(', ');
-  await conn.query(`CREATE VIEW isj_oaza AS SELECT * FROM read_parquet([${oazaList}]);`);
+  // ビューを作るだけでもDuckDBはスキーマ検証のためにフッターを読むので、
+  // 1ファイルあたり数回の往復が発生する。起動時に要るのは行政区域と名称だけで、
+  // 地名は検索時、建物はズームしたときにしか使わないので、そのときまで作らない。
   await conn.query(`CREATE VIEW admin AS SELECT * FROM read_parquet('${adminDataset.file}');`);
 
-  if (buildingFiles.length > 0) {
-    const buildingList = buildingFiles.map((f) => `'${f}'`).join(', ');
+  const oazaList = oazaFiles.map((f) => `'${f}'`).join(', ');
+  const ensureOaza = once(async () => {
+    await conn.query(`CREATE VIEW isj_oaza AS SELECT * FROM read_parquet([${oazaList}]);`);
+    // ビューを作るだけではデータを読まないので、検索に使う列に一度触れておく。
+    // ここを省くと、読み込みの待ち時間が最初の検索にそのまま乗る。
+    await conn.query(`
+      SELECT count(pref_name || city_name || oaza_name) FROM isj_oaza;
+      SELECT count(pref_name || county_name || city_name || ward_name) FROM admin_names;
+    `);
+  });
+
+  const buildingList = buildingFiles.map((f) => `'${f}'`).join(', ');
+  const ensureBuildings = once(async () => {
+    await ensureSpatial();
     await conn.query(`CREATE VIEW buildings AS SELECT * FROM read_parquet([${buildingList}]);`);
-  }
+  });
 
   // 行政区域は1つの自治体が複数のポリゴン行に分かれることがある (飛び地や島など) ので、
   // 検索には名称を重複排除したものを使う。
@@ -239,7 +272,7 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
   const buildingsBbox = unionBbox(
     buildingDatasets.map((d) => d.bbox).filter((bbox): bbox is Bbox => bbox !== null),
   );
-  return { conn, buildingsBbox };
+  return { conn, buildingsBbox, ensureSpatial, ensureOaza, ensureBuildings };
 }
 
 /** 建物1件分の表示用データ。 */
@@ -326,7 +359,9 @@ async function searchAddress(
 
   const oazaExpr = `pref_name || city_name || oaza_name`;
   const oazaResult = await conn.query(`
-    SELECT ${oazaExpr} AS label, ST_X(geometry) AS lon, ST_Y(geometry) AS lat
+    -- 位置参照情報は点データなので、covering bbox がそのまま経緯度になる。
+    -- ST_X/ST_Y を使うと地名検索のためだけに spatial 拡張の取得を待つことになる。
+    SELECT ${oazaExpr} AS label, bbox.xmin AS lon, bbox.ymin AS lat
     FROM isj_oaza
     WHERE ${buildMatchConditions(keyword, oazaExpr)}
     ORDER BY length(label)
@@ -528,11 +563,15 @@ async function main() {
   let conn: duckdb.AsyncDuckDBConnection;
   let map: MapLibreMap;
   let buildingsBbox: Bbox | null = null;
+  let ensureSpatial: () => Promise<void>;
+  let ensureOaza: () => Promise<void>;
+  let ensureBuildings: () => Promise<void>;
   try {
     const datasets = await fetchCatalog();
     const [db, createdMap] = await Promise.all([initDuckDb(datasets), initMap(datasets)]);
     conn = db.conn;
     buildingsBbox = db.buildingsBbox;
+    ({ ensureSpatial, ensureOaza, ensureBuildings } = db);
     map = createdMap;
   } catch (e) {
     console.error('[init] failed', e);
@@ -546,6 +585,12 @@ async function main() {
   (window as unknown as TestHooks).__map = map;
 
   loadingEl.hidden = true;
+
+  // 操作できるようになった後、使われそうなものを裏で用意しておく。
+  // 待たないので操作は妨げないが、実際に使うころには済んでいることが多い。
+  // (用意していないと、最初の検索やクリックでその場の待ち時間になる)
+  void ensureOaza().catch((e: unknown) => console.error('[warmup] oaza', e));
+  void ensureSpatial().catch((e: unknown) => console.error('[warmup] spatial', e));
   input.disabled = false;
   input.focus();
 
@@ -586,6 +631,7 @@ async function main() {
     // 行政区域は面をハイライトして全体が入るように寄る。
     // ポリゴン取得を待たずにカメラを動かすと、後から呼ぶ fitBounds が
     // アニメーションを横取りしてしまうので、取得を終えてから1回だけ動かす。
+    await ensureSpatial();
     const polygon = await fetchAdminPolygon(conn, result.adminId);
     if (!polygon) {
       console.warn('admin polygon not found for admin_id', result.adminId);
@@ -643,7 +689,8 @@ async function main() {
       return;
     }
     debounceTimer = window.setTimeout(() => {
-      searchAddress(conn, keyword)
+      ensureOaza()
+        .then(() => searchAddress(conn, keyword))
         .then(renderResults)
         .catch((e: unknown) => console.error('[searchAddress] failed', e));
     }, debounceMs);
@@ -682,6 +729,7 @@ async function main() {
     // 連続して地図を動かすと古い結果が後から届くことがあるので、
     // 最新の要求以外は捨てる。
     const token = ++buildingsToken;
+    await ensureBuildings();
     const b = map.getBounds();
     const rows = await fetchBuildingsInView(
       conn,
@@ -765,7 +813,8 @@ async function main() {
     const { lng, lat } = e.lngLat;
     popup.setLngLat(e.lngLat).setText('判定中…').addTo(map);
 
-    reverseGeocode(conn, lng, lat)
+    ensureSpatial()
+      .then(() => reverseGeocode(conn, lng, lat))
       .then(async (hit) => {
         if (!hit) {
           popup.setText('該当する行政区域はありません (海上など)');
