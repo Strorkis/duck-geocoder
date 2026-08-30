@@ -1,11 +1,12 @@
+use crate::geoparquet;
 use crate::wgs84_transformer;
 use anyhow::{Context, Result, bail};
 use geo_types::{LineString, MultiPolygon, Polygon};
-use geoparquet_batch_writer::GeoParquetRowData;
 use proj::Proj;
+use std::path::Path;
 
 /// 国土数値情報 行政区域データ (N03) の1行。
-#[derive(Debug, GeoParquetRowData)]
+#[derive(Debug)]
 pub struct Row {
     /// N03_001 (都道府県名)
     pub pref_name: String,
@@ -25,8 +26,20 @@ pub struct Row {
     /// WGS84 (EPSG:4326) に変換済み。
     /// 元データの座標系はGeoJSONの `crs` フィールドから実行時に読み取っている
     /// (このファイルではJGD2011/EPSG:6668だが決め打ちしていない)。
-    #[geo(geometry)]
     pub geometry: MultiPolygon<f64>,
+}
+
+/// MultiPolygonの外接矩形 `[xmin, ymin, xmax, ymax]`。全頂点を舐めて求める。
+fn multi_polygon_bbox(mp: &MultiPolygon<f64>) -> [f64; 4] {
+    mp.0.iter()
+        .flat_map(|p| std::iter::once(p.exterior()).chain(p.interiors()))
+        .flat_map(|ring| ring.coords())
+        .fold(
+            [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
+            |[xmin, ymin, xmax, ymax], c| {
+                [xmin.min(c.x), ymin.min(c.y), xmax.max(c.x), ymax.max(c.y)]
+            },
+        )
 }
 
 /// GeoJSON の `crs` フィールド (例: "urn:ogc:def:crs:EPSG::6668") からEPSGコードを取り出す。
@@ -113,15 +126,11 @@ pub fn parse_geojson(geojson_str: &str) -> Result<Vec<Row>> {
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let (west, south, east, north) = rows_with_source_geometry.iter().fold(
-        (f64::MAX, f64::MAX, f64::MIN, f64::MIN),
-        |(west, south, east, north), (_, mp)| {
-            mp.0.iter()
-                .flat_map(|p| std::iter::once(p.exterior()).chain(p.interiors()))
-                .flat_map(|ring| ring.coords())
-                .fold((west, south, east, north), |(w, s, e, n), c| {
-                    (w.min(c.x), s.min(c.y), e.max(c.x), n.max(c.y))
-                })
+    let [west, south, east, north] = rows_with_source_geometry.iter().fold(
+        [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
+        |[west, south, east, north], (_, mp)| {
+            let [w, s, e, n] = multi_polygon_bbox(mp);
+            [west.min(w), south.min(s), east.max(e), north.max(n)]
         },
     );
 
@@ -134,6 +143,49 @@ pub fn parse_geojson(geojson_str: &str) -> Result<Vec<Row>> {
             Ok(row)
         })
         .collect()
+}
+
+/// パースした行をGeoParquetとして書き出す。
+pub fn write_geoparquet(rows: Vec<Row>, output: &Path) -> Result<()> {
+    let mut pref_name = Vec::with_capacity(rows.len());
+    let mut subprefecture_name = Vec::with_capacity(rows.len());
+    let mut county_name = Vec::with_capacity(rows.len());
+    let mut city_name = Vec::with_capacity(rows.len());
+    let mut ward_name = Vec::with_capacity(rows.len());
+    let mut admin_id = Vec::with_capacity(rows.len());
+    let mut geometries = Vec::with_capacity(rows.len());
+    for row in rows {
+        pref_name.push(row.pref_name);
+        subprefecture_name.push(row.subprefecture_name);
+        county_name.push(row.county_name);
+        city_name.push(row.city_name);
+        ward_name.push(row.ward_name);
+        admin_id.push(row.admin_id);
+        geometries.push(row.geometry);
+    }
+
+    let (geometry, bbox, file_bbox) =
+        geoparquet::geometry_columns(&geometries, multi_polygon_bbox)?;
+
+    let columns = vec![
+        geoparquet::utf8_column("pref_name", pref_name.into_iter()),
+        geoparquet::utf8_nullable_column("subprefecture_name", subprefecture_name.into_iter()),
+        geoparquet::utf8_nullable_column("county_name", county_name.into_iter()),
+        geoparquet::utf8_nullable_column("city_name", city_name.into_iter()),
+        geoparquet::utf8_nullable_column("ward_name", ward_name.into_iter()),
+        geoparquet::utf8_column("admin_id", admin_id.into_iter()),
+    ];
+
+    geoparquet::write(
+        output,
+        columns,
+        "geometry",
+        geometry,
+        bbox,
+        &["MultiPolygon".to_string()],
+        file_bbox,
+    )
+    .with_context(|| format!("書き出しに失敗しました: {}", output.display()))
 }
 
 #[cfg(test)]

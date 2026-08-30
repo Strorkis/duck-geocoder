@@ -57,6 +57,11 @@ cargo run --release --bin n03_to_geoparquet -- \
 座標系は元データのメタデータ (GeoJSONの `crs` / 位置参照情報のメタデータXML) から
 実行時に読み取り、PROJでWGS84 (EPSG:4326) に変換する。ハードコードしていない。
 
+GeoParquetの書き出し (WKBへの変換、`covering.bbox` 列、`geo` メタデータ) は
+`pipeline/src/geoparquet.rs` が自前で行う。以前は `geoparquet-batch-writer` を使っていたが、
+それが固定する `parquet ^56` 経由で `thrift 0.17.0` ([GHSA-2f9f-gq7v-9h6m](https://github.com/advisories/GHSA-2f9f-gq7v-9h6m))
+が入り込んでいたため、依存を外して `wkb` crateで直接書く形にした。
+
 ## 3. Overture Maps を切り出す
 
 Overtureは最初からGeoParquetなので、変換は不要で必要な範囲を切り出すだけでよい。

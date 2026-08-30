@@ -1,7 +1,6 @@
 use anyhow::{Result, bail};
-use duck_geocoder::isj_oaza::{self, Row};
+use duck_geocoder::isj_oaza;
 use duck_geocoder::{decode_sjis, extract_epsg_from_isj_metadata_xml, read_zip_entry_bytes};
-use geoparquet_batch_writer::GeoParquetBatchWriter;
 use std::path::PathBuf;
 
 /// 位置参照情報 (大字・町丁目レベル) の CSV (Shift-JIS) を読み、
@@ -21,15 +20,6 @@ fn main() -> Result<()> {
     let source_epsg = extract_epsg_from_isj_metadata_xml(&xml_text)?;
 
     let rows = isj_oaza::parse_csv(&csv_text, source_epsg)?;
-
-    if let Some(parent) = output.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut writer: GeoParquetBatchWriter<Row> =
-        GeoParquetBatchWriter::new(&output, Default::default())?;
-    for row in rows {
-        writer.add_row(row)?;
-    }
-    writer.finish()?;
+    isj_oaza::write_geoparquet(rows, &output)?;
     Ok(())
 }

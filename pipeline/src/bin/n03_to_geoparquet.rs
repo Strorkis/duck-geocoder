@@ -1,7 +1,6 @@
 use anyhow::{Context, Result, bail};
-use duck_geocoder::n03::{self, Row};
+use duck_geocoder::n03;
 use duck_geocoder::read_zip_entry;
-use geoparquet_batch_writer::GeoParquetBatchWriter;
 use std::path::PathBuf;
 
 /// 国土数値情報 行政区域データ (N03) の GML/Shapefile zip に同梱された
@@ -21,15 +20,6 @@ fn main() -> Result<()> {
     let geojson_str =
         String::from_utf8(geojson_bytes).context("N03 geojson is expected to be UTF-8")?;
     let rows = n03::parse_geojson(&geojson_str)?;
-
-    if let Some(parent) = output.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut writer: GeoParquetBatchWriter<Row> =
-        GeoParquetBatchWriter::new(&output, Default::default())?;
-    for row in rows {
-        writer.add_row(row)?;
-    }
-    writer.finish()?;
+    n03::write_geoparquet(rows, &output)?;
     Ok(())
 }

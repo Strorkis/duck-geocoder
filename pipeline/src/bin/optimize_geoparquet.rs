@@ -3,11 +3,11 @@ use arrow::array::{Array, Float64Array, RecordBatch, StructArray, UInt32Array};
 use arrow::compute::{concat_batches, take_record_batch};
 use duck_geocoder::geoparquet::{CoveringBbox, covering_bbox};
 use duck_geocoder::spatial_pack::{self, Bbox};
-use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
+use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
-use parquet::format::KeyValue;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -160,7 +160,7 @@ fn write(
     // 変換直後のファイルは無圧縮 (arrow-rsの既定値) になっている。
     // 静的ホスティングでは転送量がそのままコストと待ち時間になるので圧縮する。
     let properties = WriterProperties::builder()
-        .set_max_row_group_size(row_group_size)
+        .set_max_row_group_row_count(Some(row_group_size))
         .set_compression(Compression::ZSTD(ZstdLevel::default()))
         .build();
     let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(properties))?;

@@ -1,8 +1,9 @@
+use crate::geoparquet;
 use crate::wgs84_transformer;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use geo_types::Point;
-use geoparquet_batch_writer::GeoParquetRowData;
 use serde::Deserialize;
+use std::path::Path;
 
 #[derive(Debug, Deserialize)]
 struct CsvRow {
@@ -27,7 +28,7 @@ struct CsvRow {
 }
 
 /// 位置参照情報 (街区レベル) の1行。
-#[derive(Debug, GeoParquetRowData)]
+#[derive(Debug)]
 pub struct Row {
     /// 都道府県名
     pub pref_name: String,
@@ -45,7 +46,6 @@ pub struct Row {
     pub representative_flag: String,
     /// WGS84 (EPSG:4326) に変換済み。元データの座標系は同梱のメタデータXMLから
     /// 読み取った `source_epsg` (このファイルではJGD2000/EPSG:4612)。
-    #[geo(geometry)]
     pub geometry: Point<f64>,
 }
 
@@ -83,6 +83,55 @@ pub fn parse_csv(csv_text: &str, source_epsg: u32) -> Result<Vec<Row>> {
             geometry: Point::new(lon, lat),
         })
         .collect())
+}
+
+/// パースした行をGeoParquetとして書き出す。
+pub fn write_geoparquet(rows: Vec<Row>, output: &Path) -> Result<()> {
+    let mut pref_name = Vec::with_capacity(rows.len());
+    let mut city_name = Vec::with_capacity(rows.len());
+    let mut oaza_name = Vec::with_capacity(rows.len());
+    let mut koaza_name = Vec::with_capacity(rows.len());
+    let mut block_number = Vec::with_capacity(rows.len());
+    let mut residential_display_flag = Vec::with_capacity(rows.len());
+    let mut representative_flag = Vec::with_capacity(rows.len());
+    let mut geometries = Vec::with_capacity(rows.len());
+    for row in rows {
+        pref_name.push(row.pref_name);
+        city_name.push(row.city_name);
+        oaza_name.push(row.oaza_name);
+        koaza_name.push(row.koaza_name);
+        block_number.push(row.block_number);
+        residential_display_flag.push(row.residential_display_flag);
+        representative_flag.push(row.representative_flag);
+        geometries.push(row.geometry);
+    }
+
+    let (geometry, bbox, file_bbox) =
+        geoparquet::geometry_columns(&geometries, |p| [p.x(), p.y(), p.x(), p.y()])?;
+
+    let columns = vec![
+        geoparquet::utf8_column("pref_name", pref_name.into_iter()),
+        geoparquet::utf8_column("city_name", city_name.into_iter()),
+        geoparquet::utf8_column("oaza_name", oaza_name.into_iter()),
+        geoparquet::utf8_column("koaza_name", koaza_name.into_iter()),
+        geoparquet::utf8_column("block_number", block_number.into_iter()),
+        geoparquet::utf8_column(
+            "residential_display_flag",
+            residential_display_flag.into_iter(),
+        ),
+        geoparquet::utf8_column("representative_flag", representative_flag.into_iter()),
+    ];
+
+    geoparquet::write(
+        output,
+        columns,
+        "geometry",
+        geometry,
+        bbox,
+        &["Point".to_string()],
+        file_bbox,
+    )
+    .with_context(|| format!("書き出しに失敗しました: {}", output.display()))
 }
 
 #[cfg(test)]
