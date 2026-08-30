@@ -52,6 +52,16 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # spatial/parquet拡張 (DuckDB本体と同じく自前配信にしてある。
+      # web/duckdb-extensions.ts を参照)。DuckDBのバージョンは
+      # duckdb-wasm (pnpm-lock.yaml) に紐づくので、それをキーにする。
+      # 無ければ vite build 時に取得されるが、キャッシュがあれば約47MBの
+      # ダウンロードを毎回省ける。
+      - uses: actions/cache@v4
+        with:
+          path: web/.duckdb-extensions
+          key: duckdb-extensions-${{ hashFiles('web/pnpm-lock.yaml') }}
+
       - run: pnpm exec tsc --noEmit
 
       # 未設定のままだとデータのURLが空でビルドされ、E2Eは「データが無い」と

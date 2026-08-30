@@ -6,11 +6,25 @@
 | --- | --- | --- |
 | アプリ (約1.2MB) | GitHub Pages | — |
 | DuckDB-WASM本体 (約77MB) | GitHub Pages | アプリと同一オリジンから配る。1ファイル35〜40MBあり、1ファイル25MiB制限のあるホスティングには置けない |
+| DuckDBの拡張 (spatial/parquet、約50MB) | GitHub Pages | 本家 (extensions.duckdb.org) への実行時の依存を無くすため。詳細は下記 |
 | GeoParquet (約88MB) | Cloudflare R2 | 容量の天井が無く、egressが無料。N03やPLATEAUを足しても困らない |
 
 DuckDB-WASM本体はgitに入れない。ビルド時に `node_modules` から `dist/duckdb/` へコピーされる
 ([web/vite.config.ts](../web/vite.config.ts) の `copy-duckdb-runtime`)。
 アプリのバンドルと同じ `node_modules` を見るので、`pnpm update` してもバージョンがずれない。
+
+DuckDBの拡張 (spatial、それとread_parquet()が暗黙に要求するparquet) も同じ理由で自前配信にしてある。
+こちらはnode_modulesに同梱されておらず、`web/duckdb-extensions.ts` が実行時に
+duckdb-wasmの積んでいるDuckDB本体のバージョンを読み、本家から署名済みの原本を
+`web/.duckdb-extensions/` に落としてくる (gitには入れない)。
+`vite.config.ts` は開発サーバー・ビルドどちらでもこれを待ってから設定を解決するので、
+`pnpm dev` / `pnpm build` の最初の一度だけ、ネットワークに数秒〜十数秒かかる
+(2回目以降はキャッシュがあるので即座)。ビルド成果物は `dist/duckdb/extensions/` に置かれ、
+`dist/duckdb/` 全体で約77MB→約127MBに増える。
+
+拡張のバージョンはduckdb-wasmに追従するので、`pnpm update` で上がったときは
+`web/.duckdb-extensions/` ごと再取得される (古いバージョンのファイルは残り続けるが、
+サイズ以外の実害は無い。気になれば手動で消してよい)。
 
 ## 開発
 

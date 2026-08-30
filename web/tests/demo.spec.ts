@@ -182,6 +182,25 @@ test('逆ジオコーディングはファイル全体のごく一部しか読�
   expect(fetchedBytes, `読みすぎ: ${measured}`).toBeLessThan(totalBytes * 0.1);
 });
 
+// spatial拡張はDuckDB本体と同じく自前配信にしてある (web/duckdb-extensions.ts と
+// web/vite.config.ts)。本家 (extensions.duckdb.org) への通信を断ってもINSTALLが
+// 成立することを確かめないと、自前配信が効いていなくても他のテストは素通りしてしまう
+// (INSTALLはキャッシュがあれば本家へは行かないため)。
+test('extensions.duckdb.org を遮断しても逆ジオコーディングできる', async ({ page }) => {
+  await page.route('https://extensions.duckdb.org/**', (route) => route.abort());
+  await page.reload();
+  await waitForReady(page);
+
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7671, 35.6812], zoom: 13 });
+  });
+  await page.locator('#map canvas').click({ position: { x: 400, y: 300 } });
+  await expect(page.locator('.maplibregl-popup-content')).toContainText('東京都', {
+    timeout: 30_000,
+  });
+});
+
 // 建物は一部の範囲しか収録しておらず、しかも寄らないと出てこない。
 // 偶然そこへ行かないと機能に気づけないので、移動する手段を用意してある。
 // 移動先はカタログの収録範囲から決まるため、データを差し替えても追随する。

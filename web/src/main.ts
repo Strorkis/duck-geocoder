@@ -83,6 +83,16 @@ function duckdbUrl(file: string): string {
   return new URL(`${DUCKDB_BASE_URL}/${file}`, window.location.href).toString();
 }
 
+/**
+ * spatialなど拡張の置き場所。DuckDB本体と同じく自前配信にしてある
+ * (`web/duckdb-extensions.ts` が実行時にDuckDB本体のバージョンへ合わせて取得し、
+ * `web/vite.config.ts` が `duckdb/extensions/` として配る)。
+ *
+ * 本家 (extensions.duckdb.org) にあるのと同じ署名済みファイルをそのまま
+ * 置いているだけなので、`allowUnsignedExtensions` は要らない。
+ */
+const DUCKDB_EXTENSIONS_URL = duckdbUrl('extensions');
+
 async function fetchCatalog(): Promise<CatalogEntry[]> {
   const response = await fetch(dataUrl('catalog.json'));
   if (!response.ok) {
@@ -172,6 +182,13 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
   });
 
   const conn = await db.connect();
+  // 拡張の取得元をここで切り替えておく。read_parquet() は直後の行政区域の
+  // ビュー作成 (このすぐ下) で使うため、遅延させると初期化そのものが
+  // 本家 (extensions.duckdb.org) に依存したままになる。
+  // parquet拡張は明示LOADしていないが、read_parquet()の時点でDuckDBが自動取得する
+  // (autoload) ので、取得元さえ切り替えておけば以降は暗黙に自前配信から読まれる。
+  await conn.query(`SET custom_extension_repository = '${DUCKDB_EXTENSIONS_URL}';`);
+
   // 空間関数は逆ジオコーディングと建物表示にしか要らない。拡張の取得に
   // 数秒かかるので、起動時ではなく最初に必要になったときに読む。
   //

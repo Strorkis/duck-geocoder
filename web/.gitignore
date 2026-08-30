@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# spatialなど拡張のダウンロード先。vite.config.ts が実行時に用意する。
+.duckdb-extensions
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -1,8 +1,15 @@
-import { copyFileSync, createReadStream, mkdirSync, statSync } from 'node:fs';
-import { extname, join, normalize } from 'node:path';
+import { copyFileSync, createReadStream, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { dirname, extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Connect, type Plugin } from 'vite';
 import { BASE_PATH } from './base-path.ts';
+import { ensureDuckDbExtensions } from './duckdb-extensions.ts';
+
+/**
+ * spatial拡張などのキャッシュ置き場。gitには入れない (23.5MB×プラットフォーム数)。
+ * DuckDB本体のバージョンでディレクトリが切られる (`duckdb-extensions.ts` を参照)。
+ */
+const DUCKDB_EXTENSIONS_CACHE = fileURLToPath(new URL('./.duckdb-extensions/', import.meta.url));
 
 /** DuckDB-WASM本体の在り処。開発時の配信元と、ビルド時のコピー元を兼ねる。 */
 const DUCKDB_DIST = './node_modules/@duckdb/duckdb-wasm/dist/';
@@ -118,6 +125,33 @@ function serveLikeObjectStorage(urlPath: string, directory: string): Plugin {
   };
 }
 
+/**
+ * コピー元とサイズ・更新日時が同じならコピーを飛ばす。
+ * DuckDB本体・拡張とも合計100MB超あり、変わっていないものまで毎回コピーすると遅い
+ * (node_modules 側もキャッシュ側も、更新されるのは `pnpm update` や
+ * バージョン変更のときだけ)。
+ */
+function copyFileIfChanged(from: string, to: string): void {
+  const original = statSync(from);
+  const copied = statSync(to, { throwIfNoEntry: false });
+  if (copied?.size === original.size && copied.mtimeMs >= original.mtimeMs) return;
+  mkdirSync(dirname(to), { recursive: true });
+  copyFileSync(from, to);
+}
+
+/** ディレクトリを再帰的にコピーする。拡張のキャッシュは version/platform の階層を持つため。 */
+function copyDirIfChanged(source: string, destination: string): void {
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    const from = join(source, entry.name);
+    const to = join(destination, entry.name);
+    if (entry.isDirectory()) {
+      copyDirIfChanged(from, to);
+    } else {
+      copyFileIfChanged(from, to);
+    }
+  }
+}
+
 /** DuckDB-WASM本体をビルド成果物の `duckdb/` に置く。 */
 function copyDuckDbRuntime(): Plugin {
   const source = fileURLToPath(new URL(DUCKDB_DIST, import.meta.url));
@@ -127,27 +161,39 @@ function copyDuckDbRuntime(): Plugin {
     apply: 'build',
     writeBundle(options) {
       const destination = join(options.dir ?? 'dist', 'duckdb');
-      mkdirSync(destination, { recursive: true });
       for (const file of DUCKDB_FILES) {
-        const from = join(source, file);
-        const to = join(destination, file);
-        // 合計77MBあるので、変わっていないものは触らない。
-        // node_modules 側は pnpm update まで変わらない。
-        const original = statSync(from);
-        const copied = statSync(to, { throwIfNoEntry: false });
-        if (copied?.size === original.size && copied.mtimeMs >= original.mtimeMs) continue;
-        copyFileSync(from, to);
+        copyFileIfChanged(join(source, file), join(destination, file));
       }
     },
   };
 }
 
-export default defineConfig({
-  base: BASE_PATH,
-  plugins: [
-    serveLikeObjectStorage('/data', '../data/output/'),
-    // 開発時はDuckDB-WASM本体を node_modules から配る (ビルド時はコピーする)。
-    serveLikeObjectStorage('/duckdb', DUCKDB_DIST),
-    copyDuckDbRuntime(),
-  ],
+/** spatialなど拡張のWASM本体をビルド成果物の `duckdb/extensions/` に置く。 */
+function copyDuckDbExtensions(cacheDir: string): Plugin {
+  return {
+    name: 'copy-duckdb-extensions',
+    apply: 'build',
+    writeBundle(options) {
+      copyDirIfChanged(cacheDir, join(options.dir ?? 'dist', 'duckdb', 'extensions'));
+    },
+  };
+}
+
+export default defineConfig(async () => {
+  // ビルド・開発サーバー起動のどちらでも、設定を解決する前に揃えておく。
+  // 配信を始めた後に用意すると、間に合わなかったリクエストが404になる窓ができる。
+  await ensureDuckDbExtensions(DUCKDB_EXTENSIONS_CACHE);
+
+  return {
+    base: BASE_PATH,
+    plugins: [
+      serveLikeObjectStorage('/data', '../data/output/'),
+      // node_modules 由来のパスと衝突しないよう、拡張のキャッシュを先にマウントする。
+      serveLikeObjectStorage('/duckdb/extensions', DUCKDB_EXTENSIONS_CACHE),
+      // 開発時はDuckDB-WASM本体を node_modules から配る (ビルド時はコピーする)。
+      serveLikeObjectStorage('/duckdb', DUCKDB_DIST),
+      copyDuckDbRuntime(),
+      copyDuckDbExtensions(DUCKDB_EXTENSIONS_CACHE),
+    ],
+  };
 });
