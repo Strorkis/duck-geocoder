@@ -44,6 +44,12 @@ pub enum DatasetKind {
     Block,
     /// 建物 (面)。名称・用途・高さなどを持つ。
     Buildings,
+    /// PLATEAUの建物 (面)。高さ・用途・階数がほぼ全件に入っており、絞り込みに使える。
+    ///
+    /// [`DatasetKind::Buildings`] と分けているのは列構成が違うため。
+    /// 同じ種別にすると `read_parquet([...])` で1つのビューに束ねられてしまい、
+    /// スキーマが合わずに壊れる。
+    PlateauBuildings,
 }
 
 #[derive(Debug, Serialize)]
@@ -86,6 +92,15 @@ const MLIT_KSJ: Attribution = Attribution {
 const OVERTURE: Attribution = Attribution {
     text: "Overture Maps / © OpenStreetMap contributors (ODbL 1.0)",
     url: "https://docs.overturemaps.org/attribution/",
+};
+
+/// PLATEAU (3D都市モデル) は政府標準利用規約に準じたPDL1.0。
+/// 加工した場合はその旨を示すことを求めているので、他の国土交通省コンテンツと
+/// 同じく「をもとに作成」の形にする。
+/// <https://www.mlit.go.jp/plateau/site-policy/>
+const MLIT_PLATEAU: Attribution = Attribution {
+    text: "「3D都市モデル（Project PLATEAU）」（国土交通省）をもとに作成",
+    url: "https://www.mlit.go.jp/plateau/",
 };
 
 /// データセットの素性。ファイル名の接頭辞から引く。
@@ -139,6 +154,14 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             kind: DatasetKind::Buildings,
             title: "建物",
             attribution: OVERTURE,
+        },
+    ),
+    (
+        "plateau_bldg",
+        Description {
+            kind: DatasetKind::PlateauBuildings,
+            title: "建物 (PLATEAU)",
+            attribution: MLIT_PLATEAU,
         },
     ),
     (

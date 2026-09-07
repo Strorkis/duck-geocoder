@@ -13,7 +13,19 @@ encoding_rs = "0.8.35"
 geo-traits = "0.3"
 geo-types = "0.7.20"
 geojson = "1.0.0"
+# CityGML(PLATEAU)のパーサ。PLATEAU公式コンバータ (MIERUNE/PLATEAU-GIS-Converter) の
+# 一部で、MITライセンス。crates.ioには公開されていないのでgit依存で入れる。
+#
+# **rev を固定すること。** crates.ioの版管理が無いため、固定しないとビルドが再現しない。
+#
+# nusamai-plateau の codelist::Resolver は `.zip/` を含むパスを解釈して
+# zip内のコードリストを直接引くので、zipを展開せずに用途コードを日本語へ解決できる。
+nusamai-citygml = { git = "https://github.com/MIERUNE/PLATEAU-GIS-Converter", rev = "a458950d73f3b94395f9c07ff5c4806edc8e668d" }
+nusamai-plateau = { git = "https://github.com/MIERUNE/PLATEAU-GIS-Converter", rev = "a458950d73f3b94395f9c07ff5c4806edc8e668d" }
 parquet = "59"
+quick-xml = "0.38"
+# nusamai_citygml::ParseContext::new が Url を要求するため。
+url = "2.5"
 proj = "0.31.0"
 roxmltree = "0.21.1"
 serde = { version = "1.0.229", features = ["derive"] }

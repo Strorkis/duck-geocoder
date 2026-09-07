@@ -10,6 +10,7 @@ pub mod isj_block;
 pub mod isj_oaza;
 pub mod n03;
 pub mod overture;
+pub mod plateau;
 pub mod spatial_pack;
 
 /// 指定したEPSGコードからWGS84 (EPSG:4326) への変換器を作る。
@@ -81,6 +82,50 @@ pub fn read_zip_entry(zip_path: &Path, matches: impl Fn(&str) -> bool) -> Result
 /// [`read_zip_entry`] の、名前が `extension` で終わることだけを条件にする版。
 pub fn read_zip_entry_bytes(zip_path: &Path, extension: &str) -> Result<Vec<u8>> {
     read_zip_entry(zip_path, |name| name.ends_with(extension))
+}
+
+/// zipアーカイブの中で `matches` に一致するエントリを、名前順に1つずつ読んで `handle` に渡す。
+///
+/// [`read_zip_entry`] と違い複数件を前提にする。PLATEAUのCityGMLのように
+/// 「1つのzipに同種のファイルが何十本も入っていて、そのうち一部だけが要る」場合に使う。
+///
+/// **アーカイブは一度しか開かない。** 中央ディレクトリの読み直しを繰り返さないため。
+/// また展開したバイト列は1エントリずつ渡して捨てるので、zip全体を展開せずに済む
+/// (PLATEAUの港区は展開後8.85GBだが、必要な建物のGMLだけなら1本あたり最大204MB)。
+pub fn for_each_zip_entry(
+    zip_path: &Path,
+    matches: impl Fn(&str) -> bool,
+    mut handle: impl FnMut(&str, Vec<u8>) -> Result<()>,
+) -> Result<()> {
+    let file =
+        File::open(zip_path).with_context(|| format!("開けません: {}", zip_path.display()))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .with_context(|| format!("zipとして読めません: {}", zip_path.display()))?;
+
+    // 名前を先に集める。読み出し中は archive を可変で借りるため、
+    // 反復しながら by_name を呼べない。
+    let mut names: Vec<String> = (0..archive.len())
+        .map(|i| Ok(archive.by_index(i)?.name().to_string()))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|name| matches(name))
+        .collect();
+    names.sort();
+
+    if names.is_empty() {
+        bail!("一致するエントリがありません: {}", zip_path.display());
+    }
+
+    for name in &names {
+        let mut entry = archive
+            .by_name(name)
+            .with_context(|| format!("エントリを開けません: {name}"))?;
+        let mut buf = Vec::with_capacity(entry.size() as usize);
+        std::io::copy(&mut entry, &mut buf)
+            .with_context(|| format!("エントリを読めません: {name}"))?;
+        handle(name, buf)?;
+    }
+    Ok(())
 }
 
 /// Shift-JISのバイト列をUTF-8の文字列にデコードする。

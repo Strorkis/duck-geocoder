@@ -147,6 +147,24 @@ pub fn utf8_nullable_column(
     (Field::new(name, DataType::Utf8, true), array)
 }
 
+/// 浮動小数点1列分。NULLを許す (PLATEAUの高さなど、欠けうる数値用)。
+pub fn f64_nullable_column(
+    name: &str,
+    values: impl Iterator<Item = Option<f64>>,
+) -> (Field, ArrayRef) {
+    let array: ArrayRef = Arc::new(Float64Array::from_iter(values));
+    (Field::new(name, DataType::Float64, true), array)
+}
+
+/// 整数1列分。NULLを許す (PLATEAUの階数など、「不明」がありうる数値用)。
+pub fn i32_nullable_column(
+    name: &str,
+    values: impl Iterator<Item = Option<i32>>,
+) -> (Field, ArrayRef) {
+    let array: ArrayRef = Arc::new(arrow::array::Int32Array::from_iter(values));
+    (Field::new(name, DataType::Int32, true), array)
+}
+
 /// ジオメトリの列から、WKBのバイナリ列と `covering.bbox` 用のstruct列を作る。
 ///
 /// `bbox` はジオメトリ1件から外接矩形 `[xmin, ymin, xmax, ymax]` を求める関数。
