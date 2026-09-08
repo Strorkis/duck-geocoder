@@ -34,6 +34,25 @@
              データが無いときはJavaScript側で隠したままにする。 -->
         <button id="goto-buildings" type="button" hidden>建物のある範囲へ移動</button>
       </details>
+      <!-- 建物の出所と絞り込み。データが無ければJavaScript側で隠す。 -->
+      <div id="buildings-panel" hidden>
+        <div class="field">
+          <label for="building-source">建物データ</label>
+          <select id="building-source"></select>
+        </div>
+        <!-- 絞り込みは属性が揃っている出所 (PLATEAU) でだけ出す。 -->
+        <div id="building-filters" hidden>
+          <div class="field">
+            <label for="min-height">高さ <output id="min-height-value">0 m</output> 以上</label>
+            <input id="min-height" type="range" min="0" max="200" step="5" value="0" />
+          </div>
+          <div class="field">
+            <label>用途</label>
+            <div id="usage-options"></div>
+          </div>
+          <p id="building-count" class="note"></p>
+        </div>
+      </div>
       <div id="loading">
         <div class="spinner"></div>
         <p id="loading-message">読み込み中…</p>

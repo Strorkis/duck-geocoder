@@ -26,7 +26,7 @@ setWorkerUrl(maplibreWorkerUrl);
 interface CatalogEntry {
   id: string;
   file: string;
-  kind: 'admin' | 'admin_names' | 'oaza' | 'block' | 'buildings';
+  kind: 'admin' | 'admin_names' | 'oaza' | 'block' | 'buildings' | 'plateau_buildings';
   title: string;
   source: string;
   source_url: string;
@@ -141,16 +141,39 @@ function unionBbox(boxes: Bbox[]): Bbox | null {
   );
 }
 
+/**
+ * 建物データの出所。出所ごとに別のビューを持つ。
+ *
+ * OvertureとPLATEAUは列構成が違うので、1つのビューに束ねられない
+ * (`read_parquet([a, b])` はスキーマが揃っていることを前提にする)。
+ * 持っている属性も違うため、絞り込みができるかどうかも出所ごとに変わる。
+ */
+interface BuildingSource {
+  /** カタログ上の識別子。 */
+  id: string;
+  /** UIに出す名前。 */
+  label: string;
+  /** DuckDB上のビュー名。 */
+  view: string;
+  /** 収録範囲。 */
+  bbox: Bbox | null;
+  /**
+   * 高さ・用途で絞り込めるか。
+   * Overtureは高さが1.5%・用途が8.9%しか入っておらず絞る材料にならないので false。
+   */
+  filterable: boolean;
+  /** このビューを引く前に呼ぶ。 */
+  ensure: () => Promise<void>;
+}
+
 async function initDuckDb(datasets: CatalogEntry[]): Promise<{
   conn: duckdb.AsyncDuckDBConnection;
-  /** 建物の収録範囲。建物データが無ければ null。 */
-  buildingsBbox: Bbox | null;
+  /** 建物データの出所。カタログにあるものだけが並ぶ。 */
+  buildingSources: BuildingSource[];
   /** 空間関数を使う前に呼ぶ。 */
   ensureSpatial: () => Promise<void>;
   /** 地名 (isj_oaza) を引く前に呼ぶ。 */
   ensureOaza: () => Promise<void>;
-  /** 建物を引く前に呼ぶ。 */
-  ensureBuildings: () => Promise<void>;
 }> {
   const bundle = await duckdb.selectBundle({
     mvp: {
@@ -213,8 +236,19 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
     throw new Error('カタログに必要なデータセット (oaza / admin) がありません。');
   }
   // 建物は任意。無ければ建物レイヤーを出さないだけで、他の機能は動く。
-  const buildingDatasets = datasets.filter((d) => d.kind === 'buildings');
-  const buildingFiles = buildingDatasets.map((d) => d.file);
+  // 出所ごとに列構成が違うので、束ねずに別々のビューにする。
+  const buildingKinds = [
+    { kind: 'buildings' as const, label: 'Overture', view: 'buildings', filterable: false },
+    {
+      kind: 'plateau_buildings' as const,
+      label: 'PLATEAU',
+      view: 'plateau_buildings',
+      filterable: true,
+    },
+  ];
+  const buildingFiles = datasets
+    .filter((d) => d.kind === 'buildings' || d.kind === 'plateau_buildings')
+    .map((d) => d.file);
   // 検索用の名称を抜き出したものがあれば使う。無ければ行政区域から作るが、
   // そちらは名称の列がファイル全体に散らばっているため、HTTP越しだと
   // 往復が積み上がって初期化が数十秒かかる。
@@ -257,11 +291,28 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
     `);
   });
 
-  const buildingList = buildingFiles.map((f) => `'${f}'`).join(', ');
-  const ensureBuildings = once(async () => {
-    await ensureSpatial();
-    await conn.query(`CREATE VIEW buildings AS SELECT * FROM read_parquet([${buildingList}]);`);
-  });
+  // 出所ごとにビューを1つ作る。同じ出所のファイルが複数あれば、そこは束ねてよい
+  // (同じ変換器が書いたものなので列構成が揃っている)。
+  const buildingSources: BuildingSource[] = buildingKinds.flatMap(
+    ({ kind, label, view, filterable }) => {
+      const entries = datasets.filter((d) => d.kind === kind);
+      if (entries.length === 0) return [];
+      const list = entries.map((d) => `'${d.file}'`).join(', ');
+      return [
+        {
+          id: entries.map((d) => d.id).join('+'),
+          label,
+          view,
+          filterable,
+          bbox: unionBbox(entries.map((d) => d.bbox).filter((b): b is Bbox => b !== null)),
+          ensure: once(async () => {
+            await ensureSpatial();
+            await conn.query(`CREATE VIEW ${view} AS SELECT * FROM read_parquet([${list}]);`);
+          }),
+        },
+      ];
+    },
+  );
 
   // 行政区域は1つの自治体が複数のポリゴン行に分かれることがある (飛び地や島など) ので、
   // 検索には名称を重複排除したものを使う。
@@ -284,20 +335,24 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
            FROM admin;`,
   );
 
-  // 収録範囲はカタログが実際のParquetメタデータから作っているので、
-  // データを差し替えれば移動先も自動で追随する。
-  const buildingsBbox = unionBbox(
-    buildingDatasets.map((d) => d.bbox).filter((bbox): bbox is Bbox => bbox !== null),
-  );
-  return { conn, buildingsBbox, ensureSpatial, ensureOaza, ensureBuildings };
+  return { conn, buildingSources, ensureSpatial, ensureOaza };
 }
 
 /** 建物1件分の表示用データ。 */
 interface BuildingFeature {
   geojson: GeoJSON.Geometry;
   name: string | null;
-  class: string | null;
+  /** 用途 (PLATEAU) または種別 (Overture)。出所によって語彙が違う。 */
+  category: string | null;
   height: number | null;
+}
+
+/** 建物の絞り込み条件。PLATEAUのように属性が揃っている出所でだけ意味を持つ。 */
+interface BuildingFilter {
+  /** 高さの下限 (m)。0なら絞らない。 */
+  minHeight: number;
+  /** 対象の用途。null なら絞らない。 */
+  usages: string[] | null;
 }
 
 /**
@@ -312,14 +367,33 @@ interface BuildingFeature {
  */
 async function fetchBuildingsInView(
   conn: duckdb.AsyncDuckDBConnection,
+  source: BuildingSource,
   bounds: { west: number; south: number; east: number; north: number },
+  filter: BuildingFilter,
   limit: number,
 ): Promise<BuildingFeature[]> {
+  // 出所によって用途を表す列名が違う。Overtureは `class`、PLATEAUは `usage`。
+  const categoryColumn = source.filterable ? 'usage' : 'class';
+
+  // 絞り込みは **SQLに渡す**。取得後にJavaScript側で捨てると、
+  // 読む量も転送する量も減らないため。
+  const conditions = [
+    `bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}`,
+    `bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}`,
+  ];
+  if (source.filterable) {
+    if (filter.minHeight > 0) conditions.push(`height >= ${filter.minHeight}`);
+    if (filter.usages) {
+      // 用途が選択されていなければ1件も出さない (空のINは常に偽)。
+      const list = filter.usages.map((u) => `'${u.replace(/'/g, "''")}'`).join(', ');
+      conditions.push(list.length > 0 ? `${categoryColumn} IN (${list})` : 'false');
+    }
+  }
+
   const result = await conn.query(`
-    SELECT ST_AsGeoJSON(geometry) AS geojson, name, class, height
-    FROM buildings
-    WHERE bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}
-      AND bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}
+    SELECT ST_AsGeoJSON(geometry) AS geojson, name, ${categoryColumn} AS category, height
+    FROM ${source.view}
+    WHERE ${conditions.join('\n      AND ')}
     ORDER BY (bbox.xmax - bbox.xmin) * (bbox.ymax - bbox.ymin) DESC
     LIMIT ${limit};
   `);
@@ -327,16 +401,36 @@ async function fetchBuildingsInView(
     const r = row.toJSON() as unknown as {
       geojson: string;
       name: string | null;
-      class: string | null;
+      category: string | null;
       height: number | null;
     };
     return {
       geojson: JSON.parse(r.geojson) as GeoJSON.Geometry,
       name: r.name,
-      class: r.class,
+      category: r.category,
       height: r.height,
     };
   });
+}
+
+/**
+ * 用途の選択肢を、実データから引く。
+ *
+ * 値をコードに書かず、配信しているデータに追随させるため。
+ * 用途の列は小さい (row groupあたり3〜4KB) ので、全件走査しても軽い。
+ */
+async function fetchUsageOptions(
+  conn: duckdb.AsyncDuckDBConnection,
+  source: BuildingSource,
+): Promise<string[]> {
+  const result = await conn.query(`
+    SELECT usage, count(*) AS n
+    FROM ${source.view}
+    WHERE usage IS NOT NULL
+    GROUP BY usage
+    ORDER BY n DESC;
+  `);
+  return result.toArray().map((row) => (row.toJSON() as unknown as { usage: string }).usage);
 }
 
 /**
@@ -523,7 +617,29 @@ function initMap(datasets: CatalogEntry[]): Promise<MapLibreMap> {
         id: 'buildings-fill',
         type: 'fill',
         source: 'buildings',
-        paint: { 'fill-color': '#4a6785', 'fill-opacity': 0.5 },
+        paint: {
+          // 高さで塗り分ける。絞り込んだ結果がどう変わったかを目で追えるようにするため。
+          // 高さを持たないデータ (Overtureはほぼ全件がそう) では既定色のままになる。
+          'fill-color': [
+            'case',
+            ['==', ['get', 'height'], null],
+            '#4a6785',
+            [
+              'interpolate',
+              ['linear'],
+              ['get', 'height'],
+              0,
+              '#c6d4e4',
+              20,
+              '#8fabc9',
+              60,
+              '#4a6785',
+              150,
+              '#2d3f52',
+            ],
+          ],
+          'fill-opacity': 0.7,
+        },
       });
 
       map.addSource('highlight', {
@@ -573,22 +689,28 @@ async function main() {
   const loadingEl = document.querySelector<HTMLDivElement>('#loading')!;
   const loadingMessageEl = document.querySelector<HTMLParagraphElement>('#loading-message')!;
   const gotoBuildingsButton = document.querySelector<HTMLButtonElement>('#goto-buildings')!;
+  const buildingsPanel = document.querySelector<HTMLDivElement>('#buildings-panel')!;
+  const sourceSelect = document.querySelector<HTMLSelectElement>('#building-source')!;
+  const filtersEl = document.querySelector<HTMLDivElement>('#building-filters')!;
+  const minHeightInput = document.querySelector<HTMLInputElement>('#min-height')!;
+  const minHeightValue = document.querySelector<HTMLOutputElement>('#min-height-value')!;
+  const usageOptionsEl = document.querySelector<HTMLDivElement>('#usage-options')!;
+  const buildingCountEl = document.querySelector<HTMLParagraphElement>('#building-count')!;
 
   // DuckDB-WASMの初期化とParquetの読み込みには数秒かかるので、
   // 準備が終わるまでは操作できないことが分かるようにしておく。
   loadingMessageEl.textContent = '地図とデータベースを準備中…';
   let conn: duckdb.AsyncDuckDBConnection;
   let map: MapLibreMap;
-  let buildingsBbox: Bbox | null = null;
+  let buildingSources: BuildingSource[] = [];
   let ensureSpatial: () => Promise<void>;
   let ensureOaza: () => Promise<void>;
-  let ensureBuildings: () => Promise<void>;
   try {
     const datasets = await fetchCatalog();
     const [db, createdMap] = await Promise.all([initDuckDb(datasets), initMap(datasets)]);
     conn = db.conn;
-    buildingsBbox = db.buildingsBbox;
-    ({ ensureSpatial, ensureOaza, ensureBuildings } = db);
+    buildingSources = db.buildingSources;
+    ({ ensureSpatial, ensureOaza } = db);
     map = createdMap;
   } catch (e) {
     console.error('[init] failed', e);
@@ -734,56 +856,132 @@ async function main() {
   const BUILDINGS_LIMIT = 3000;
   let buildingsToken = 0;
 
+  // 選択中の出所と絞り込み条件。UIから書き換わる。
+  let activeSource: BuildingSource | undefined = buildingSources[0];
+  const filter: BuildingFilter = { minHeight: 0, usages: null };
+
   const refreshBuildings = async () => {
-    const source = map.getSource('buildings') as GeoJSONSource | undefined;
-    if (!source) return;
+    const mapSource = map.getSource('buildings') as GeoJSONSource | undefined;
+    if (!mapSource || !activeSource) return;
 
     if (map.getZoom() < BUILDINGS_MIN_ZOOM) {
-      await source.setData(EMPTY_FEATURE_COLLECTION);
+      await mapSource.setData(EMPTY_FEATURE_COLLECTION);
+      buildingCountEl.textContent = '';
       return;
     }
 
-    // 連続して地図を動かすと古い結果が後から届くことがあるので、
+    // 連続して地図を動かしたりスライダーを動かしたりすると古い結果が後から届くので、
     // 最新の要求以外は捨てる。
     const token = ++buildingsToken;
-    await ensureBuildings();
+    const source = activeSource;
+    await source.ensure();
     const b = map.getBounds();
     const rows = await fetchBuildingsInView(
       conn,
+      source,
       { west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth() },
+      filter,
       BUILDINGS_LIMIT,
     );
     if (token !== buildingsToken) return;
 
-    await source.setData({
+    await mapSource.setData({
       type: 'FeatureCollection',
       features: rows.map((row) => ({
         type: 'Feature',
-        properties: { name: row.name, class: row.class, height: row.height },
+        properties: { name: row.name, category: row.category, height: row.height },
         geometry: row.geojson,
       })),
     });
+    buildingCountEl.textContent =
+      rows.length >= BUILDINGS_LIMIT
+        ? `${BUILDINGS_LIMIT}件以上 (表示上限)`
+        : `${rows.length}件`;
   };
 
-  if (buildingsBbox) {
-    map.on('moveend', () => {
-      refreshBuildings().catch((e: unknown) => console.error('[buildings] failed', e));
+  const requestRefresh = () => {
+    refreshBuildings().catch((e: unknown) => console.error('[buildings] failed', e));
+  };
+
+  if (activeSource) {
+    map.on('moveend', requestRefresh);
+    buildingsPanel.hidden = false;
+
+    for (const source of buildingSources) {
+      const option = document.createElement('option');
+      option.value = source.id;
+      option.textContent = source.label;
+      sourceSelect.append(option);
+    }
+    // 出所が1つしか無ければ選ばせる意味がない。
+    sourceSelect.disabled = buildingSources.length < 2;
+
+    // 用途の選択肢は出所ごとに1度だけ引く。
+    const usageOptionsLoaded = new Set<string>();
+    const showFilters = async (source: BuildingSource) => {
+      filtersEl.hidden = !source.filterable;
+      if (!source.filterable || usageOptionsLoaded.has(source.id)) return;
+      usageOptionsLoaded.add(source.id);
+
+      await source.ensure();
+      const usages = await fetchUsageOptions(conn, source);
+      usageOptionsEl.replaceChildren();
+      for (const usage of usages) {
+        const label = document.createElement('label');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = usage;
+        checkbox.checked = true;
+        checkbox.addEventListener('change', () => {
+          const checked = [...usageOptionsEl.querySelectorAll<HTMLInputElement>('input:checked')];
+          // 全部入っているなら条件を付けない (SQLを短くするためではなく、
+          // 「絞っていない」ことをクエリの形でも表すため)。
+          filter.usages = checked.length === usages.length ? null : checked.map((c) => c.value);
+          requestRefresh();
+        });
+        label.append(checkbox, document.createTextNode(usage));
+        usageOptionsEl.append(label);
+      }
+    };
+
+    sourceSelect.addEventListener('change', () => {
+      activeSource = buildingSources.find((s) => s.id === sourceSelect.value);
+      if (!activeSource) return;
+      // 出所を変えたら絞り込みは初期状態に戻す。
+      // 用途の語彙が出所ごとに違うので、そのまま持ち越すと意味が変わる。
+      filter.usages = null;
+      void showFilters(activeSource).then(requestRefresh);
+    });
+    void showFilters(activeSource);
+
+    // スライダーは動かすたびにイベントが飛ぶので、少し待ってからクエリする。
+    let heightTimer: ReturnType<typeof setTimeout> | undefined;
+    minHeightInput.addEventListener('input', () => {
+      filter.minHeight = Number(minHeightInput.value);
+      minHeightValue.textContent = `${filter.minHeight} m`;
+      clearTimeout(heightTimer);
+      heightTimer = setTimeout(requestRefresh, 200);
     });
 
     // 建物は一部の範囲しか収録していないうえ、寄らないと出てこない。
     // 偶然そこへ行かないと機能に気づけないので、移動する手段を出しておく。
-    const [west, south, east, north] = buildingsBbox;
-    gotoBuildingsButton.hidden = false;
-    gotoBuildingsButton.addEventListener('click', () => {
-      // 収録範囲の全体を映すのではなく、その中心に寄る。
-      // fitBounds だと範囲が広いときに BUILDINGS_MIN_ZOOM を下回り、
-      // 移動した先で建物が出ないという逆の結果になる。
-      map.flyTo({
-        center: [(west + east) / 2, (south + north) / 2],
-        zoom: BUILDINGS_MIN_ZOOM + 1,
-        duration: 1500,
+    const bbox = unionBbox(
+      buildingSources.map((s) => s.bbox).filter((b): b is Bbox => b !== null),
+    );
+    if (bbox) {
+      const [west, south, east, north] = bbox;
+      gotoBuildingsButton.hidden = false;
+      gotoBuildingsButton.addEventListener('click', () => {
+        // 収録範囲の全体を映すのではなく、その中心に寄る。
+        // fitBounds だと範囲が広いときに BUILDINGS_MIN_ZOOM を下回り、
+        // 移動した先で建物が出ないという逆の結果になる。
+        map.flyTo({
+          center: [(west + east) / 2, (south + north) / 2],
+          zoom: BUILDINGS_MIN_ZOOM + 1,
+          duration: 1500,
+        });
       });
-    });
+    }
   }
 
   // 操作の役割分担:
@@ -799,7 +997,7 @@ async function main() {
     offset: 12,
   });
 
-  if (buildingsBbox) {
+  if (activeSource) {
     map.on('mousemove', 'buildings-fill', (e) => {
       const building = e.features?.[0];
       if (!building) return;
@@ -808,7 +1006,7 @@ async function main() {
       const props = building.properties;
       const text = [
         (props.name as string | null) ?? '(名称なし)',
-        props.class ? `用途: ${props.class as string}` : null,
+        props.category ? `用途: ${props.category as string}` : null,
         props.height ? `高さ: ${props.height as number}m` : null,
       ]
         .filter(Boolean)

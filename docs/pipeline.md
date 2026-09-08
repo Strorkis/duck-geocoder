@@ -30,6 +30,7 @@ Overture Mapsは後述の切り出しコマンドで取れる。国土交通省�
 | 位置参照情報 (大字・町丁目レベル) | [ダウンロードサービス](https://nlftp.mlit.go.jp/cgi-bin/isj/dls/_choose_method.cgi) | `data/isj/oaza/` |
 | 位置参照情報 (街区レベル) | 同上 | `data/isj/block/` |
 | 行政区域 (N03) ※現在は未配信 | [行政区域データ](https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N03-2026.html) | `data/ksj/N03/` |
+| PLATEAU 3D都市モデル (CityGML) | [G空間情報センター](https://www.geospatial.jp/ckan/dataset/plateau) | `data/plateau/` |
 
 ```
 data/
@@ -56,6 +57,29 @@ cargo run --release --bin n03_to_geoparquet -- \
 
 座標系は元データのメタデータ (GeoJSONの `crs` / 位置参照情報のメタデータXML) から
 実行時に読み取り、PROJでWGS84 (EPSG:4326) に変換する。ハードコードしていない。
+
+### PLATEAU (3D都市モデル)
+
+```sh
+cargo run --release --bin plateau_bldg_to_geoparquet -- \
+  ../data/plateau/13103_minato-ku_pref_2025_citygml_1_op.zip \
+  ../data/output/plateau_bldg_minato.parquet
+```
+
+**zipは展開しないこと。** 港区のCityGMLは2.0GBで、展開すると57,278ファイル・8.85GBになる。
+変換器は中央ディレクトリ経由で `udx/bldg/*.gml` (38本) とコードリストだけを取り出す。
+
+CityGMLのパースは自前で書かず、PLATEAU公式コンバータの
+[nusamai-citygml / nusamai-plateau](https://github.com/MIERUNE/PLATEAU-GIS-Converter) に任せている
+(MITライセンス。crates.io未公開なのでgit依存、`rev` 固定)。
+用途コードの日本語への解決 (`401` → 業務施設) も、zip内のコードリストを引く実装が向こうにある。
+
+使うのは `bldg:lod0RoofEdge` (屋根の外周線) だけ。全建物にある2Dのフットプリントで、
+地図表示にはこれと `measuredHeight` があれば足りる。
+
+**数値属性には「不明」を表す番兵値が混ざる。** `measuredHeight = -9999` が4.4%、
+`storeysAboveGround = 9999` が14.8%。そのまま通すと絞り込みが壊れ、
+row groupの統計まで汚れるのでNULLに落としている。
 
 GeoParquetの書き出し (WKBへの変換、`covering.bbox` 列、`geo` メタデータ) は
 `pipeline/src/geoparquet.rs` が自前で行う。以前は `geoparquet-batch-writer` を使っていたが、
@@ -165,6 +189,7 @@ Webアプリはこれを読んでどのデータセットを使うかを決め�
 | `overture_admin` / `n03` | 行政区域 |
 | `overture_admin_names` / `n03_names` | 行政区域の名称 (検索用) |
 | `overture_buildings` | 建物 |
+| `plateau_bldg` | 建物 (PLATEAU)。高さ・用途で絞り込める |
 | `isj_oaza` | 大字・町丁目 |
 | `isj_block` | 街区 |
 

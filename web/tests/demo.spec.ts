@@ -8,11 +8,28 @@ type TestWindow = { __map?: MapLibreMap; __dataUrl?: (file: string) => string };
 const ADMIN_DATASET = 'overture_admin_jp.parquet';
 /** 建物データセット。無くても他の機能は動くので、無ければスキップする。 */
 const BUILDINGS_DATASET = 'overture_buildings_minato.parquet';
+/** PLATEAUの建物。高さ・用途を持つので、絞り込みはこちらでしか出ない。 */
+const PLATEAU_DATASET = 'plateau_bldg_minato.parquet';
 
 /** 建物データが配信されているか。 */
 async function hasBuildings(page: Page): Promise<boolean> {
   const url = await datasetUrl(page, BUILDINGS_DATASET);
   return page.request.head(url).then((response) => response.ok());
+}
+
+async function hasPlateau(page: Page): Promise<boolean> {
+  const url = await datasetUrl(page, PLATEAU_DATASET);
+  return page.request.head(url).then((response) => response.ok());
+}
+
+/** PLATEAUの建物が見える状態にする (出所を選び、収録範囲へ寄る)。 */
+async function showPlateauBuildings(page: Page) {
+  await page.locator('#building-source').selectOption({ label: 'PLATEAU' });
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7454, 35.6586], zoom: 16 });
+  });
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
 }
 
 /**
@@ -270,6 +287,49 @@ test('建物はホバーで情報が出て、地図は動かない', async ({ pa
     () => (window as unknown as TestWindow).__map!.getZoom(),
   );
   expect(zoomAfter).toBe(zoomBefore);
+});
+
+// 建物の出所ごとに持っている属性が違う。Overtureは高さが1.5%・用途が8.9%しか
+// 入っておらず絞る材料にならないので、絞り込みはPLATEAUでだけ出す。
+test('PLATEAUを選んだときだけ絞り込みが出る', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  await expect(page.locator('#buildings-panel')).toBeVisible();
+  await page.locator('#building-source').selectOption({ label: 'Overture' });
+  await expect(page.locator('#building-filters')).toBeHidden();
+
+  await page.locator('#building-source').selectOption({ label: 'PLATEAU' });
+  await expect(page.locator('#building-filters')).toBeVisible();
+
+  // 用途の選択肢はコードに書かず、配信しているデータから引いている。
+  await expect
+    .poll(() => page.locator('#usage-options label').count())
+    .toBeGreaterThan(5);
+});
+
+test('高さの下限を上げると建物が減る', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  await showPlateauBuildings(page);
+  const before = await sourceFeatureCount(page, 'buildings');
+
+  await page.locator('#min-height').fill('60');
+  await page.locator('#min-height').dispatchEvent('input');
+
+  // 60m以上の建物は港区でもごく一部しかない。
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeLessThan(before);
+});
+
+test('用途を外すと建物が減る', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  await showPlateauBuildings(page);
+  const before = await sourceFeatureCount(page, 'buildings');
+
+  // 最も件数の多い用途 (住宅) を外す。選択肢は件数の多い順に並んでいる。
+  await page.locator('#usage-options input').first().uncheck();
+
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeLessThan(before);
 });
 
 test('クリアするとハイライトが消える', async ({ page }) => {
