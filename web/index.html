@@ -42,12 +42,19 @@
         </div>
         <!-- 絞り込みは属性が揃っている出所 (PLATEAU) でだけ出す。 -->
         <div id="building-filters" hidden>
-          <div class="field">
+          <div class="field" id="height-field">
             <label for="min-height">高さ <output id="min-height-value">0 m</output> 以上</label>
             <input id="min-height" type="range" min="0" max="200" step="5" value="0" />
           </div>
-          <div class="field">
-            <label>用途</label>
+          <div class="field" id="usage-field">
+            <!-- 1つだけ見たいときに全部外させないための一括操作。 -->
+            <label
+              >用途
+              <span class="bulk">
+                <button id="usage-all" type="button">すべて</button>
+                <button id="usage-none" type="button">なし</button>
+              </span>
+            </label>
             <div id="usage-options"></div>
           </div>
           <p id="building-count" class="note"></p>

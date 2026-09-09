@@ -22,9 +22,8 @@ async function hasPlateau(page: Page): Promise<boolean> {
   return page.request.head(url).then((response) => response.ok());
 }
 
-/** PLATEAUの建物が見える状態にする (出所を選び、収録範囲へ寄る)。 */
+/** PLATEAUの建物が見える状態にする。PLATEAUは既定の出所なので選び直さない。 */
 async function showPlateauBuildings(page: Page) {
-  await page.locator('#building-source').selectOption({ label: 'PLATEAU' });
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 16 });
@@ -229,6 +228,11 @@ test('ボタンを押すと建物のある範囲へ移動する', async ({ page 
   await page.locator('#goto-buildings').click();
 
   await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
+  // 建物は立体で描くので、移動と同時に傾ける。傾き0のままだと真上から見ることになり、
+  // 立体にした意味が伝わらない。真上に戻したいときはコンパスを押す。
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as TestWindow).__map!.getPitch()))
+    .toBeGreaterThan(0);
 });
 
 test('十分に寄ると建物が表示され、離すと消える', async ({ page }) => {
@@ -291,37 +295,63 @@ test('建物はホバーで情報が出て、地図は動かない', async ({ pa
 
 // 建物の出所ごとに持っている属性が違う。Overtureは高さが1.5%・用途が8.9%しか
 // 入っておらず絞る材料にならないので、絞り込みはPLATEAUでだけ出す。
-test('PLATEAUを選んだときだけ絞り込みが出る', async ({ page }) => {
+// 何で絞れるかは出所ごとに決め打ちせず、カタログの列構成から決めている。
+// 決め打ちにすると「高さがあって立体では見えているのに絞れない」という
+// 食い違いが起きる。どちらの出所も height 列を持つので、どちらでも絞れる。
+test('絞り込みは列の有無で決まる', async ({ page }) => {
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
 
   await expect(page.locator('#buildings-panel')).toBeVisible();
-  await page.locator('#building-source').selectOption({ label: 'Overture' });
-  await expect(page.locator('#building-filters')).toBeHidden();
-
-  await page.locator('#building-source').selectOption({ label: 'PLATEAU' });
+  // 属性の揃っているPLATEAUが既定。
+  await expect(page.locator('#building-source')).toHaveValue(/plateau/);
   await expect(page.locator('#building-filters')).toBeVisible();
+  await expect(page.locator('#height-field')).toBeVisible();
 
   // 用途の選択肢はコードに書かず、配信しているデータから引いている。
-  await expect
-    .poll(() => page.locator('#usage-options label').count())
-    .toBeGreaterThan(5);
+  await expect.poll(() => page.locator('#usage-options label').count()).toBeGreaterThan(5);
+
+  // Overtureも高さの列を持つので、高さでは絞れる。
+  await page.locator('#building-source').selectOption({ label: 'Overture' });
+  await expect(page.locator('#height-field')).toBeVisible();
 });
 
-// 建物は fill-extrusion で描いているが、傾き0度だと真上から見るので立体に見えない。
-// 高さを持つ出所を選んだときだけ傾ける (Overtureは高さが1.5%しか無く、傾けても
-// 平らな板が並ぶだけ)。2Dに戻す手段は NavigationControl のコンパスが担う。
-test('PLATEAUを選ぶと地図が傾き、Overtureに戻すと戻る', async ({ page }) => {
+// 1つの用途だけ見たいときに、残り13個を手で外させない。
+test('用途は一括で切り替えられる', async ({ page }) => {
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
 
-  const pitch = () =>
-    page.evaluate(() => (window as unknown as TestWindow).__map!.getPitch());
-  expect(await pitch()).toBe(0);
+  await showPlateauBuildings(page);
+  const checked = () => page.locator('#usage-options input:checked').count();
+  expect(await checked()).toBeGreaterThan(5);
 
-  await page.locator('#building-source').selectOption({ label: 'PLATEAU' });
-  await expect.poll(pitch).toBeGreaterThan(0);
+  await page.locator('#usage-none').click();
+  await expect.poll(checked).toBe(0);
+  // 何も選んでいなければ建物も出ない。
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBe(0);
 
-  await page.locator('#building-source').selectOption({ label: 'Overture' });
-  await expect.poll(pitch).toBe(0);
+  await page.locator('#usage-options input').first().check();
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
+
+  await page.locator('#usage-all').click();
+  await expect.poll(checked).toBeGreaterThan(5);
+});
+
+// 引くと建物は消えるので、どこにデータがあるかを枠で示す。
+// 偶然その場所へ行かないと機能に気づけない、という状態を避けるため。
+test('引くと収録範囲が枠で出る', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7454, 35.6586], zoom: 10 });
+  });
+  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBe(1);
+
+  // 寄れば建物が出て、枠は消える。
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7454, 35.6586], zoom: 16 });
+  });
+  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBe(0);
 });
 
 /**

@@ -126,6 +126,31 @@ function once(run: () => Promise<void>): () => Promise<void> {
   return () => (started ??= run());
 }
 
+/** 範囲を、地図に描ける矩形のポリゴンにする。 */
+function bboxFeatureCollection([west, south, east, north]: Bbox): GeoJSON.FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: [
+      {
+        type: 'Feature',
+        properties: {},
+        geometry: {
+          type: 'Polygon',
+          coordinates: [
+            [
+              [west, south],
+              [east, south],
+              [east, north],
+              [west, north],
+              [west, south],
+            ],
+          ],
+        },
+      },
+    ],
+  };
+}
+
 /** 複数の範囲を包む範囲。データセットが分割されていても1つに畳める。 */
 function unionBbox(boxes: Bbox[]): Bbox | null {
   return boxes.reduce<Bbox | null>(
@@ -147,7 +172,10 @@ function unionBbox(boxes: Bbox[]): Bbox | null {
  *
  * OvertureとPLATEAUは列構成が違うので、1つのビューに束ねられない
  * (`read_parquet([a, b])` はスキーマが揃っていることを前提にする)。
- * 持っている属性も違うため、絞り込みができるかどうかも出所ごとに変わる。
+ *
+ * **何で絞れるかは列の有無から決める。** 出所ごとに決め打ちすると、
+ * 「高さがあるのに立体では見えるのに絞れない」といった食い違いが起きる。
+ * カタログはGeoParquetの実際のメタデータから作られているので、そちらに従う。
  */
 interface BuildingSource {
   /** カタログ上の識別子。 */
@@ -158,11 +186,10 @@ interface BuildingSource {
   view: string;
   /** 収録範囲。 */
   bbox: Bbox | null;
-  /**
-   * 高さ・用途で絞り込めるか。
-   * Overtureは高さが1.5%・用途が8.9%しか入っておらず絞る材料にならないので false。
-   */
-  filterable: boolean;
+  /** 高さの列があるか。あれば高さで絞れるし、立体の高さにも使える。 */
+  hasHeight: boolean;
+  /** 用途・種別を表す列。無ければ null。出所によって列名が違う。 */
+  categoryColumn: string | null;
   /** このビューを引く前に呼ぶ。 */
   ensure: () => Promise<void>;
 }
@@ -238,14 +265,11 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
   }
   // 建物は任意。無ければ建物レイヤーを出さないだけで、他の機能は動く。
   // 出所ごとに列構成が違うので、束ねずに別々のビューにする。
+  // 並び順がそのまま選択肢の順になり、先頭が既定になる。
+  // 属性が揃っているPLATEAUを先に置く。
   const buildingKinds = [
-    { kind: 'buildings' as const, label: 'Overture', view: 'buildings', filterable: false },
-    {
-      kind: 'plateau_buildings' as const,
-      label: 'PLATEAU',
-      view: 'plateau_buildings',
-      filterable: true,
-    },
+    { kind: 'plateau_buildings' as const, label: 'PLATEAU', view: 'plateau_buildings' },
+    { kind: 'buildings' as const, label: 'Overture', view: 'buildings' },
   ];
   const buildingFiles = datasets
     .filter((d) => d.kind === 'buildings' || d.kind === 'plateau_buildings')
@@ -294,26 +318,28 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
 
   // 出所ごとにビューを1つ作る。同じ出所のファイルが複数あれば、そこは束ねてよい
   // (同じ変換器が書いたものなので列構成が揃っている)。
-  const buildingSources: BuildingSource[] = buildingKinds.flatMap(
-    ({ kind, label, view, filterable }) => {
-      const entries = datasets.filter((d) => d.kind === kind);
-      if (entries.length === 0) return [];
-      const list = entries.map((d) => `'${d.file}'`).join(', ');
-      return [
-        {
-          id: entries.map((d) => d.id).join('+'),
-          label,
-          view,
-          filterable,
-          bbox: unionBbox(entries.map((d) => d.bbox).filter((b): b is Bbox => b !== null)),
-          ensure: once(async () => {
-            await ensureSpatial();
-            await conn.query(`CREATE VIEW ${view} AS SELECT * FROM read_parquet([${list}]);`);
-          }),
-        },
-      ];
-    },
-  );
+  const buildingSources: BuildingSource[] = buildingKinds.flatMap(({ kind, label, view }) => {
+    const entries = datasets.filter((d) => d.kind === kind);
+    if (entries.length === 0) return [];
+    const list = entries.map((d) => `'${d.file}'`).join(', ');
+    // 何で絞れるかは列の有無から決める。用途を表す列名は出所によって違う
+    // (PLATEAUは usage、Overtureは class) ので、先に見つかった方を使う。
+    const columns = new Set(entries[0].columns.map((c) => c.name));
+    return [
+      {
+        id: entries.map((d) => d.id).join('+'),
+        label,
+        view,
+        hasHeight: columns.has('height'),
+        categoryColumn: ['usage', 'class'].find((c) => columns.has(c)) ?? null,
+        bbox: unionBbox(entries.map((d) => d.bbox).filter((b): b is Bbox => b !== null)),
+        ensure: once(async () => {
+          await ensureSpatial();
+          await conn.query(`CREATE VIEW ${view} AS SELECT * FROM read_parquet([${list}]);`);
+        }),
+      },
+    ];
+  });
 
   // 行政区域は1つの自治体が複数のポリゴン行に分かれることがある (飛び地や島など) ので、
   // 検索には名称を重複排除したものを使う。
@@ -385,23 +411,21 @@ async function fetchBuildingsInView(
   filter: BuildingFilter,
   limit: number,
 ): Promise<BuildingFeature[]> {
-  // 出所によって用途を表す列名が違う。Overtureは `class`、PLATEAUは `usage`。
-  const categoryColumn = source.filterable ? 'usage' : 'class';
-
   // 絞り込みは **SQLに渡す**。取得後にJavaScript側で捨てると、
   // 読む量も転送する量も減らないため。
   const conditions = [
     `bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}`,
     `bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}`,
   ];
-  if (source.filterable) {
-    if (filter.minHeight > 0) conditions.push(`height >= ${filter.minHeight}`);
-    if (filter.usages) {
-      // 用途が選択されていなければ1件も出さない (空のINは常に偽)。
-      const list = filter.usages.map((u) => `'${u.replace(/'/g, "''")}'`).join(', ');
-      conditions.push(list.length > 0 ? `${categoryColumn} IN (${list})` : 'false');
-    }
+  if (source.hasHeight && filter.minHeight > 0) {
+    conditions.push(`height >= ${filter.minHeight}`);
   }
+  if (source.categoryColumn && filter.usages) {
+    // 用途が1つも選ばれていなければ1件も出さない (空のINは常に偽)。
+    const list = filter.usages.map((u) => `'${u.replace(/'/g, "''")}'`).join(', ');
+    conditions.push(list.length > 0 ? `${source.categoryColumn} IN (${list})` : 'false');
+  }
+  const categorySelect = source.categoryColumn ?? 'NULL';
 
   // 緯度方向と経度方向で1度あたりの距離が違うので、経度差を縮めてから比べる
   // (東京付近では経度1度が緯度1度の約0.81倍)。並べ替えの順序だけの話なので、
@@ -409,7 +433,7 @@ async function fetchBuildingsInView(
   const lonScale = Math.cos((bounds.centerLat * Math.PI) / 180);
 
   const result = await conn.query(`
-    SELECT ST_AsGeoJSON(geometry) AS geojson, name, ${categoryColumn} AS category, height
+    SELECT ST_AsGeoJSON(geometry) AS geojson, name, ${categorySelect} AS category, height
     FROM ${source.view}
     WHERE ${conditions.join('\n      AND ')}
     ORDER BY
@@ -443,14 +467,15 @@ async function fetchUsageOptions(
   conn: duckdb.AsyncDuckDBConnection,
   source: BuildingSource,
 ): Promise<string[]> {
+  if (!source.categoryColumn) return [];
   const result = await conn.query(`
-    SELECT usage, count(*) AS n
+    SELECT ${source.categoryColumn} AS value, count(*) AS n
     FROM ${source.view}
-    WHERE usage IS NOT NULL
-    GROUP BY usage
+    WHERE ${source.categoryColumn} IS NOT NULL
+    GROUP BY value
     ORDER BY n DESC;
   `);
-  return result.toArray().map((row) => (row.toJSON() as unknown as { usage: string }).usage);
+  return result.toArray().map((row) => (row.toJSON() as unknown as { value: string }).value);
 }
 
 /**
@@ -625,8 +650,8 @@ function initMap(datasets: CatalogEntry[]): Promise<MapLibreMap> {
   // 建物を立体で描くので、傾きを操作する手段を出しておく。
   // visualizePitch を付けるとコンパスが傾きも表し、クリックで方位と傾きが
   // 0に戻る。つまり「2Dに戻す」手段が標準で付いてくるので、自前で切り替えUIを持たない。
-  // 右下は出典表示と重なるので左上に置く。
-  map.addControl(new NavigationControl({ visualizePitch: true }), 'top-left');
+  // 左上は検索欄、右下は出典表示があるので右上に置く。
+  map.addControl(new NavigationControl({ visualizePitch: true }), 'top-right');
 
   map.on('error', (e) => console.error('[map] error', e.error ?? e));
 
@@ -674,6 +699,25 @@ function initMap(datasets: CatalogEntry[]): Promise<MapLibreMap> {
           // わずかに透かす程度に留める。
           'fill-extrusion-opacity': 0.9,
         },
+      });
+
+      // 建物の収録範囲。引くと建物そのものは消えるので、どこにデータがあるかを
+      // 枠で示す。偶然その場所へ行かないと機能に気づけない、という状態を避ける。
+      map.addSource('buildings-coverage', {
+        type: 'geojson',
+        data: EMPTY_FEATURE_COLLECTION,
+      });
+      map.addLayer({
+        id: 'buildings-coverage-fill',
+        type: 'fill',
+        source: 'buildings-coverage',
+        paint: { 'fill-color': '#4a6785', 'fill-opacity': 0.08 },
+      });
+      map.addLayer({
+        id: 'buildings-coverage-outline',
+        type: 'line',
+        source: 'buildings-coverage',
+        paint: { 'line-color': '#4a6785', 'line-width': 1.5, 'line-dasharray': [3, 2] },
       });
 
       map.addSource('highlight', {
@@ -726,9 +770,13 @@ async function main() {
   const buildingsPanel = document.querySelector<HTMLDivElement>('#buildings-panel')!;
   const sourceSelect = document.querySelector<HTMLSelectElement>('#building-source')!;
   const filtersEl = document.querySelector<HTMLDivElement>('#building-filters')!;
+  const heightField = document.querySelector<HTMLDivElement>('#height-field')!;
+  const usageField = document.querySelector<HTMLDivElement>('#usage-field')!;
   const minHeightInput = document.querySelector<HTMLInputElement>('#min-height')!;
   const minHeightValue = document.querySelector<HTMLOutputElement>('#min-height-value')!;
   const usageOptionsEl = document.querySelector<HTMLDivElement>('#usage-options')!;
+  const usageAllButton = document.querySelector<HTMLButtonElement>('#usage-all')!;
+  const usageNoneButton = document.querySelector<HTMLButtonElement>('#usage-none')!;
   const buildingCountEl = document.querySelector<HTMLParagraphElement>('#building-count')!;
 
   // DuckDB-WASMの初期化とParquetの読み込みには数秒かかるので、
@@ -900,11 +948,20 @@ async function main() {
 
   const refreshBuildings = async () => {
     const mapSource = map.getSource('buildings') as GeoJSONSource | undefined;
+    const coverage = map.getSource('buildings-coverage') as GeoJSONSource | undefined;
     if (!mapSource || !activeSource) return;
 
-    if (map.getZoom() < BUILDINGS_MIN_ZOOM) {
+    // 建物が出ないズームでは、代わりに収録範囲の枠を出す。
+    const zoomedOut = map.getZoom() < BUILDINGS_MIN_ZOOM;
+    await coverage?.setData(
+      zoomedOut && activeSource.bbox
+        ? bboxFeatureCollection(activeSource.bbox)
+        : EMPTY_FEATURE_COLLECTION,
+    );
+
+    if (zoomedOut) {
       await mapSource.setData(EMPTY_FEATURE_COLLECTION);
-      buildingCountEl.textContent = '';
+      buildingCountEl.textContent = '拡大すると建物が出ます';
       return;
     }
 
@@ -963,14 +1020,29 @@ async function main() {
     sourceSelect.disabled = buildingSources.length < 2;
 
     // 用途の選択肢は出所ごとに1度だけ引く。
-    const usageOptionsLoaded = new Set<string>();
-    const showFilters = async (source: BuildingSource) => {
-      filtersEl.hidden = !source.filterable;
-      if (!source.filterable || usageOptionsLoaded.has(source.id)) return;
-      usageOptionsLoaded.add(source.id);
+    const usageOptionsLoaded = new Map<string, string[]>();
 
-      await source.ensure();
-      const usages = await fetchUsageOptions(conn, source);
+    /** チェック状態を条件に反映する。全部入っていれば「絞っていない」= null。 */
+    const syncUsageFilter = (all: string[]) => {
+      const checked = [...usageOptionsEl.querySelectorAll<HTMLInputElement>('input:checked')];
+      filter.usages = checked.length === all.length ? null : checked.map((c) => c.value);
+      requestRefresh();
+    };
+
+    const showFilters = async (source: BuildingSource) => {
+      heightField.hidden = !source.hasHeight;
+      usageField.hidden = source.categoryColumn === null;
+      filtersEl.hidden = !source.hasHeight && source.categoryColumn === null;
+
+      if (source.categoryColumn === null) return;
+      let usages = usageOptionsLoaded.get(source.id);
+      if (!usages) {
+        await source.ensure();
+        usages = await fetchUsageOptions(conn, source);
+        usageOptionsLoaded.set(source.id, usages);
+      }
+
+      // 出所ごとに語彙が違うので、切り替えのたびに作り直す。
       usageOptionsEl.replaceChildren();
       for (const usage of usages) {
         const label = document.createElement('label');
@@ -978,16 +1050,20 @@ async function main() {
         checkbox.type = 'checkbox';
         checkbox.value = usage;
         checkbox.checked = true;
-        checkbox.addEventListener('change', () => {
-          const checked = [...usageOptionsEl.querySelectorAll<HTMLInputElement>('input:checked')];
-          // 全部入っているなら条件を付けない (SQLを短くするためではなく、
-          // 「絞っていない」ことをクエリの形でも表すため)。
-          filter.usages = checked.length === usages.length ? null : checked.map((c) => c.value);
-          requestRefresh();
-        });
+        checkbox.addEventListener('change', () => syncUsageFilter(usages));
         label.append(checkbox, document.createTextNode(usage));
         usageOptionsEl.append(label);
       }
+
+      // 1つだけ見たいときに13個外させない。「なし」→目的の1つ、で済むようにする。
+      const setAll = (checked: boolean) => {
+        for (const input of usageOptionsEl.querySelectorAll<HTMLInputElement>('input')) {
+          input.checked = checked;
+        }
+        syncUsageFilter(usages);
+      };
+      usageAllButton.onclick = () => setAll(true);
+      usageNoneButton.onclick = () => setAll(false);
     };
 
     sourceSelect.addEventListener('change', () => {
@@ -996,12 +1072,13 @@ async function main() {
       // 出所を変えたら絞り込みは初期状態に戻す。
       // 用途の語彙が出所ごとに違うので、そのまま持ち越すと意味が変わる。
       filter.usages = null;
-      // 高さを持っている出所のときだけ傾ける。Overtureは高さが1.5%しか
-      // 入っておらず、傾けても平らな板が並ぶだけで意味がない。
-      map.easeTo({ pitch: activeSource.filterable ? BUILDINGS_PITCH : 0 });
+      // どちらの出所も高さの列を持ち立体で描かれるので、傾きは出所で変えない。
       void showFilters(activeSource).then(requestRefresh);
     });
     void showFilters(activeSource);
+    // 収録範囲の枠は refreshBuildings が出すが、その呼び出しは moveend でしか
+    // 起きない。起動直後にも一度呼んでおかないと、地図を動かすまで枠が出ない。
+    requestRefresh();
 
     // スライダーは動かすたびにイベントが飛ぶので、少し待ってからクエリする。
     let heightTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1027,7 +1104,8 @@ async function main() {
         map.flyTo({
           center: [(west + east) / 2, (south + north) / 2],
           zoom: BUILDINGS_MIN_ZOOM + 1,
-          pitch: activeSource?.filterable ? BUILDINGS_PITCH : 0,
+          // 立体で見せたいので傾ける。真上に戻したいときはコンパスを押す。
+          pitch: BUILDINGS_PITCH,
           duration: 1500,
         });
       });
