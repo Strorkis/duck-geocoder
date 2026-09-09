@@ -5,6 +5,7 @@ import {
   GeoJSONSource,
   Popup,
   AttributionControl,
+  NavigationControl,
   setWorkerUrl,
   type StyleSpecification,
 } from 'maplibre-gl';
@@ -360,15 +361,27 @@ interface BuildingFilter {
  *
  * 逆ジオコーディングと同じく、ジオメトリ本体を評価する前に bbox 列で絞る。
  *
- * 件数が多いと描画が重くなるので上限を設けるが、単に LIMIT で切ると
- * まずい。Overtureのデータは空間的にソートされているため、先頭から N 件を
- * 取ると地図の一部分にだけ固まって「帯状に消える」ように見える。
- * bboxの面積が大きい順に取ることで、間引かれても全体に散らばるようにする。
+ * 件数が多いと描画が重くなるので上限を設けるが、単に LIMIT で切るとまずい。
+ * データは空間的にソートされているため、先頭から N 件を取ると地図の一部分にだけ
+ * 固まって「帯状に消える」ように見える。
+ *
+ * **画面中心に近い順に取る。** 地図を傾けると `getBounds()` は地平線方向へ大きく
+ * 広がり (実測でpitch 50度のとき面積3.1倍、60度で7.1倍)、上限に当たりやすくなる。
+ * 中心からの距離順にしておけば、間引かれても手前から埋まり、遠景が薄くなるという
+ * 見た目として自然な劣化になる。範囲そのものを切り詰めるより調整値が要らない。
  */
 async function fetchBuildingsInView(
   conn: duckdb.AsyncDuckDBConnection,
   source: BuildingSource,
-  bounds: { west: number; south: number; east: number; north: number },
+  bounds: {
+    west: number;
+    south: number;
+    east: number;
+    north: number;
+    /** 画面中心。傾けると bounds の中心とはずれるので、地図から直接もらう。 */
+    centerLon: number;
+    centerLat: number;
+  },
   filter: BuildingFilter,
   limit: number,
 ): Promise<BuildingFeature[]> {
@@ -390,11 +403,18 @@ async function fetchBuildingsInView(
     }
   }
 
+  // 緯度方向と経度方向で1度あたりの距離が違うので、経度差を縮めてから比べる
+  // (東京付近では経度1度が緯度1度の約0.81倍)。並べ替えの順序だけの話なので、
+  // 厳密な測地線距離までは要らない。
+  const lonScale = Math.cos((bounds.centerLat * Math.PI) / 180);
+
   const result = await conn.query(`
     SELECT ST_AsGeoJSON(geometry) AS geojson, name, ${categoryColumn} AS category, height
     FROM ${source.view}
     WHERE ${conditions.join('\n      AND ')}
-    ORDER BY (bbox.xmax - bbox.xmin) * (bbox.ymax - bbox.ymin) DESC
+    ORDER BY
+      pow(((bbox.xmin + bbox.xmax) / 2 - ${bounds.centerLon}) * ${lonScale}, 2)
+      + pow((bbox.ymin + bbox.ymax) / 2 - ${bounds.centerLat}, 2)
     LIMIT ${limit};
   `);
   return result.toArray().map((row) => {
@@ -602,6 +622,11 @@ function initMap(datasets: CatalogEntry[]): Promise<MapLibreMap> {
     attributionControl: false,
   });
   map.addControl(new AttributionControl({ customAttribution: dataCredits }));
+  // 建物を立体で描くので、傾きを操作する手段を出しておく。
+  // visualizePitch を付けるとコンパスが傾きも表し、クリックで方位と傾きが
+  // 0に戻る。つまり「2Dに戻す」手段が標準で付いてくるので、自前で切り替えUIを持たない。
+  // 右下は出典表示と重なるので左上に置く。
+  map.addControl(new NavigationControl({ visualizePitch: true }), 'top-left');
 
   map.on('error', (e) => console.error('[map] error', e.error ?? e));
 
@@ -613,14 +638,17 @@ function initMap(datasets: CatalogEntry[]): Promise<MapLibreMap> {
         type: 'geojson',
         data: EMPTY_FEATURE_COLLECTION,
       });
+      // 立体 (fill-extrusion) で描く。平面用と2枚持たないのは、傾き0度なら
+      // 真上から見ることになり、平面塗りとほとんど同じに見えるため。
+      // 2Dに戻したいときは NavigationControl のコンパスで傾きを0にする。
       map.addLayer({
-        id: 'buildings-fill',
-        type: 'fill',
+        id: 'buildings-3d',
+        type: 'fill-extrusion',
         source: 'buildings',
         paint: {
-          // 高さで塗り分ける。絞り込んだ結果がどう変わったかを目で追えるようにするため。
+          // 高さで塗り分ける。傾けずに見るときも高さが分かるようにするため。
           // 高さを持たないデータ (Overtureはほぼ全件がそう) では既定色のままになる。
-          'fill-color': [
+          'fill-extrusion-color': [
             'case',
             ['==', ['get', 'height'], null],
             '#4a6785',
@@ -638,7 +666,13 @@ function initMap(datasets: CatalogEntry[]): Promise<MapLibreMap> {
               '#2d3f52',
             ],
           ],
-          'fill-opacity': 0.7,
+          // 高さが無い建物にも既定値を与える。0にすると描画されず、
+          // Overtureは高さが1.5%しか入っていないのでほぼ全部消えてしまう。
+          'fill-extrusion-height': ['coalesce', ['get', 'height'], 3],
+          'fill-extrusion-base': 0,
+          // 1未満にすると面同士が透けて見える描画崩れが出るので、下地を
+          // わずかに透かす程度に留める。
+          'fill-extrusion-opacity': 0.9,
         },
       });
 
@@ -854,6 +888,10 @@ async function main() {
   // 建物は件数が多いので、ある程度寄ったときだけ表示範囲の分を読み込む。
   const BUILDINGS_MIN_ZOOM = 15;
   const BUILDINGS_LIMIT = 3000;
+  // 高さを持つ建物を表示するときの傾き。
+  // 60度まで倒せるが、そこまでいくと表示範囲 (getBounds) が真上から見たときの
+  // 7.1倍まで広がる。50度なら3.1倍で、立体感は十分に出る。
+  const BUILDINGS_PITCH = 50;
   let buildingsToken = 0;
 
   // 選択中の出所と絞り込み条件。UIから書き換わる。
@@ -876,10 +914,18 @@ async function main() {
     const source = activeSource;
     await source.ensure();
     const b = map.getBounds();
+    const c = map.getCenter();
     const rows = await fetchBuildingsInView(
       conn,
       source,
-      { west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth() },
+      {
+        west: b.getWest(),
+        south: b.getSouth(),
+        east: b.getEast(),
+        north: b.getNorth(),
+        centerLon: c.lng,
+        centerLat: c.lat,
+      },
       filter,
       BUILDINGS_LIMIT,
     );
@@ -950,6 +996,9 @@ async function main() {
       // 出所を変えたら絞り込みは初期状態に戻す。
       // 用途の語彙が出所ごとに違うので、そのまま持ち越すと意味が変わる。
       filter.usages = null;
+      // 高さを持っている出所のときだけ傾ける。Overtureは高さが1.5%しか
+      // 入っておらず、傾けても平らな板が並ぶだけで意味がない。
+      map.easeTo({ pitch: activeSource.filterable ? BUILDINGS_PITCH : 0 });
       void showFilters(activeSource).then(requestRefresh);
     });
     void showFilters(activeSource);
@@ -978,6 +1027,7 @@ async function main() {
         map.flyTo({
           center: [(west + east) / 2, (south + north) / 2],
           zoom: BUILDINGS_MIN_ZOOM + 1,
+          pitch: activeSource?.filterable ? BUILDINGS_PITCH : 0,
           duration: 1500,
         });
       });
@@ -998,7 +1048,7 @@ async function main() {
   });
 
   if (activeSource) {
-    map.on('mousemove', 'buildings-fill', (e) => {
+    map.on('mousemove', 'buildings-3d', (e) => {
       const building = e.features?.[0];
       if (!building) return;
       map.getCanvas().style.cursor = 'pointer';
@@ -1014,7 +1064,7 @@ async function main() {
       hoverPopup.setLngLat(e.lngLat).setText(text).addTo(map);
     });
 
-    map.on('mouseleave', 'buildings-fill', () => {
+    map.on('mouseleave', 'buildings-3d', () => {
       map.getCanvas().style.cursor = '';
       hoverPopup.remove();
     });

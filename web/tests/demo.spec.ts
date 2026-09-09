@@ -271,7 +271,7 @@ test('建物はホバーで情報が出て、地図は動かない', async ({ pa
         const map = (window as unknown as TestWindow).__map!;
         const canvas = map.getCanvas();
         const center: [number, number] = [canvas.clientWidth / 2, canvas.clientHeight / 2];
-        return map.queryRenderedFeatures(center, { layers: ['buildings-fill'] }).length;
+        return map.queryRenderedFeatures(center, { layers: ['buildings-3d'] }).length;
       }),
     )
     .toBeGreaterThan(0);
@@ -305,6 +305,57 @@ test('PLATEAUを選んだときだけ絞り込みが出る', async ({ page }) =>
   await expect
     .poll(() => page.locator('#usage-options label').count())
     .toBeGreaterThan(5);
+});
+
+// 建物は fill-extrusion で描いているが、傾き0度だと真上から見るので立体に見えない。
+// 高さを持つ出所を選んだときだけ傾ける (Overtureは高さが1.5%しか無く、傾けても
+// 平らな板が並ぶだけ)。2Dに戻す手段は NavigationControl のコンパスが担う。
+test('PLATEAUを選ぶと地図が傾き、Overtureに戻すと戻る', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  const pitch = () =>
+    page.evaluate(() => (window as unknown as TestWindow).__map!.getPitch());
+  expect(await pitch()).toBe(0);
+
+  await page.locator('#building-source').selectOption({ label: 'PLATEAU' });
+  await expect.poll(pitch).toBeGreaterThan(0);
+
+  await page.locator('#building-source').selectOption({ label: 'Overture' });
+  await expect.poll(pitch).toBe(0);
+});
+
+/**
+ * 傾けると `getBounds()` は地平線方向へ広がる (実測でpitch 50度のとき面積3.1倍)。
+ * そのぶん読む量が増えないことを確かめる。
+ *
+ * 増えないのは、絞り込みが中心からの距離順で上限に当たるため。
+ * 範囲が広がっても遠景が切り捨てられるだけで、新しいrow groupを読みに行かない。
+ */
+test('傾けても読む量が跳ね上がらない', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  const dataset = await datasetUrl(page, PLATEAU_DATASET);
+  let fetchedBytes = 0;
+  page.on('response', (response) => {
+    if (response.url() !== dataset) return;
+    if (response.request().method() === 'HEAD') return;
+    fetchedBytes += Number(response.headers()['content-length'] ?? 0);
+  });
+
+  await showPlateauBuildings(page);
+  const flat = fetchedBytes;
+  expect(flat, '転送量を計測できていない').toBeGreaterThan(0);
+
+  // 同じ地点・同じズームのまま傾ける。
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7454, 35.6586], zoom: 16, pitch: 50 });
+  });
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
+
+  const measured = `真上 ${(flat / 1024).toFixed(0)} KB → 傾き50度 ${(fetchedBytes / 1024).toFixed(0)} KB`;
+  console.log(`傾けたときの転送量: ${measured}`);
+  expect(fetchedBytes, `傾けて読む量が増えすぎ: ${measured}`).toBeLessThan(flat * 1.5);
 });
 
 test('高さの下限を上げると建物が減る', async ({ page }) => {
