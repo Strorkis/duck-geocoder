@@ -1,5 +1,19 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git commit*)",
+            "command": "root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0\nout=$(\"$root/scripts/audit.sh\" 2>&1) || { printf '%s\\n' \"$out\" >&2; exit 2; }",
+            "statusMessage": "脆弱性を確認中…",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Write|Edit",

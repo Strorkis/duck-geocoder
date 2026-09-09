@@ -1,4 +1,6 @@
 [tools]
+# 依存の脆弱性を見る。ソースからのビルドなので初回だけ2分ほどかかる。
+"cargo:cargo-audit" = "latest"
 duckdb = "latest"
 jq = "latest"
 node = "lts"
