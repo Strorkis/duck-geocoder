@@ -48,7 +48,13 @@ export default defineConfig({
   // DuckDB-WASMの初期化とParquetの読み込みには時間がかかるので、既定より長く取る。
   timeout: readsRemoteData ? 180_000 : 60_000,
   expect: { timeout: readsRemoteData ? 60_000 : 15_000 },
-  fullyParallel: false,
+  // テストは1ファイルに入っているので、これを切ると1 workerで直列になる。
+  // 待ち時間の大半はテストごとのDuckDB-WASM初期化 (データがR2にあると1件15〜23秒) で、
+  // CPUではなく往復待ちなので、並べれば実測で半分になる。
+  fullyParallel: true,
+  // コア数なりに増やさない。DuckDB-WASMのインスタンスは1つで数百MB使うので、
+  // 16コアの手元だとメモリで詰まる。CIのrunnerは4コアなので3で埋まる。
+  workers: 3,
   // CIはネットワーク越しにデータを読むので、1回だけやり直す。
   // 再実行でトレースが残るため、ヘッドレスでの失敗を後から追える。
   retries: process.env.CI ? 1 : 0,
