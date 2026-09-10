@@ -143,6 +143,109 @@ COPY (
     )
 }
 
+/// Overtureの海域 (base/water の `subtype='ocean'`) を切り出すSQLを組み立てる。
+///
+/// 行政区域から海の部分を削るために使う。OSMの海岸線から作られたポリゴンなので、
+/// これで削ると陸地の形が残る。出所がdivisionsと同じOvertureなので、
+/// ODbLの扱いは変わらない。
+pub fn build_ocean_extract_sql(release: &str, bbox: BoundingBox, output: &str) -> String {
+    let BoundingBox {
+        xmin,
+        ymin,
+        xmax,
+        ymax,
+    } = bbox;
+    format!(
+        "INSTALL spatial; LOAD spatial;
+INSTALL httpfs; LOAD httpfs;
+SET s3_region='us-west-2';
+COPY (
+  SELECT
+    -- 範囲が重なるものだけを相手にするので、bbox列は落とさない。
+    bbox,
+    geometry
+  FROM read_parquet(
+    's3://overturemaps-us-west-2/release/{release}/theme=base/type=water/*',
+    hive_partitioning=1
+  )
+  -- divisionsの切り出しと同じく、covering列で先に絞ってrow groupを読み飛ばす。
+  WHERE bbox.xmin BETWEEN {xmin} AND {xmax}
+    AND bbox.ymin BETWEEN {ymin} AND {ymax}
+    AND subtype = 'ocean'
+) TO '{output}' (FORMAT PARQUET);"
+    )
+}
+
+/// 行政区域から海域を削るSQLを組み立てる。入力と同じ列を出す。
+///
+/// Overtureの `division_area` は `class='land'` で絞ってもなお湾を跨いでいて、
+/// 東京湾の真ん中を逆ジオコーディングすると江戸川区が返る。海岸線で削ると
+/// 「どの市区町村でもない」が正しく返るようになる。
+///
+/// 削ったあとの `bbox` は作り直す。`optimize_geoparquet` はこの列をそのまま読んで
+/// 空間パッキングに使うので、海まで広がったままだとrow groupの統計が効かなくなる。
+pub fn build_clip_ocean_sql(divisions: &str, ocean: &str, output: &str) -> String {
+    format!(
+        "INSTALL spatial; LOAD spatial;
+-- 空間関数の中で確保されるメモリはDuckDBの memory_limit の外側にあり、
+-- 並列度をそのまま掛けた分だけ実メモリを踏む。既定の並列度で流すと
+-- 7GBの環境ではOSごと巻き込んで落ちたので、控えめに固定する。
+SET threads=4;
+COPY (
+  -- 削るのは市区町村だけ。国 (1件) や都道府県 (47件) の区画は日本中の海域と
+  -- 範囲が重なるので、同じことをすると海を丸ごと1ポリゴンに束ねる羽目になる。
+  -- 配信しているのは市区町村なので、それ以外はそのまま通す。
+  WITH sea AS (
+    SELECT id, ST_Union_Agg(part) AS geometry
+    FROM (
+      -- 先に区画で切ってから束ねる。海域ポリゴンをそのまま束ねると、
+      -- 1つ数万頂点のタイルが積み上がって現実的なメモリに収まらない。
+      -- 交差部分は必ず区画の中に収まるので、束ねても小さいままになる。
+      SELECT d.id AS id, ST_Intersection(d.geometry, o.geometry) AS part
+      FROM read_parquet('{divisions}') d
+      JOIN read_parquet('{ocean}') o
+        ON o.bbox.xmin <= d.bbox.xmax AND o.bbox.xmax >= d.bbox.xmin
+       AND o.bbox.ymin <= d.bbox.ymax AND o.bbox.ymax >= d.bbox.ymin
+      WHERE {MUNICIPALITY_FILTER}
+    )
+    WHERE NOT ST_IsEmpty(part)
+    GROUP BY id
+  ),
+  clipped AS (
+    SELECT
+      d.id,
+      d.name,
+      d.subtype,
+      d.region,
+      d.pref_name,
+      -- 海に接していない区画は結合相手が無い。元の形をそのまま使う。
+      CASE
+        WHEN sea.geometry IS NULL THEN d.geometry
+        ELSE ST_Difference(d.geometry, sea.geometry)
+      END AS geometry
+    FROM read_parquet('{divisions}') d
+    LEFT JOIN sea ON sea.id = d.id
+  )
+  SELECT
+    id,
+    name,
+    subtype,
+    region,
+    pref_name,
+    {{
+      xmin: ST_XMin(geometry),
+      xmax: ST_XMax(geometry),
+      ymin: ST_YMin(geometry),
+      ymax: ST_YMax(geometry)
+    }} AS bbox,
+    geometry
+  FROM clipped
+  -- 海しか無かった区画は消える。
+  WHERE NOT ST_IsEmpty(geometry)
+) TO '{output}' (FORMAT PARQUET);"
+    )
+}
+
 /// 切り出したdivisionsから市区町村にあたる行を選ぶ条件。
 ///
 /// Overtureの `locality` は市区町村(1,741)に郡(370)とOSM由来の雑多な地名を
@@ -253,6 +356,64 @@ mod tests {
         let sql = build_divisions_extract_sql("2026-07-22.0", "JP", JAPAN_BBOX, "/tmp/div.parquet");
         assert_eq!(sql.matches("subtype = ").count(), 1);
         assert!(sql.contains("subtype = 'region'"));
+    }
+
+    #[test]
+    fn ocean_sql_filters_by_covering_bbox_and_subtype() {
+        let sql = build_ocean_extract_sql("2026-07-22.0", JAPAN_BBOX, "/tmp/ocean.parquet");
+
+        assert!(sql.contains("theme=base/type=water"));
+        assert!(sql.contains("subtype = 'ocean'"));
+        // divisionsと同じく、covering列で絞らないとrow groupを読み飛ばせない。
+        assert!(sql.contains("bbox.xmin BETWEEN 122 AND 154"));
+        assert!(sql.contains("bbox.ymin BETWEEN 20 AND 46"));
+        assert!(sql.contains("TO '/tmp/ocean.parquet'"));
+        // 区画との突き合わせに使うので、bbox列を落とさないこと。
+        assert!(sql.contains("    bbox,\n"));
+    }
+
+    // 範囲が重なる海域だけを相手にしていること。
+    #[test]
+    fn clip_sql_joins_ocean_by_overlapping_bbox() {
+        let sql =
+            build_clip_ocean_sql("/tmp/div.parquet", "/tmp/ocean.parquet", "/tmp/out.parquet");
+
+        assert!(sql.contains("JOIN read_parquet('/tmp/ocean.parquet')"));
+        assert!(sql.contains("o.bbox.xmin <= d.bbox.xmax"));
+        assert!(sql.contains("o.bbox.ymin <= d.bbox.ymax"));
+    }
+
+    // 削る相手を市区町村に限ること。国(1件)や都道府県(47件)の区画は日本中の海域と
+    // 範囲が重なるので、同じ処理をすると海を丸ごと1ポリゴンに束ねることになる。
+    // ここを外すと7GBの環境ではOSごと落ちる。
+    #[test]
+    fn clip_sql_only_touches_municipalities() {
+        let sql =
+            build_clip_ocean_sql("/tmp/div.parquet", "/tmp/ocean.parquet", "/tmp/out.parquet");
+        assert!(sql.contains(MUNICIPALITY_FILTER));
+    }
+
+    // 海域ポリゴンをそのまま束ねると、1つ数万頂点のタイルが積み上がる。
+    // 先に区画で切ってから束ねること。
+    #[test]
+    fn clip_sql_intersects_before_aggregating() {
+        let sql =
+            build_clip_ocean_sql("/tmp/div.parquet", "/tmp/ocean.parquet", "/tmp/out.parquet");
+        assert!(sql.contains("ST_Intersection(d.geometry, o.geometry) AS part"));
+        assert!(sql.contains("ST_Union_Agg(part)"));
+    }
+
+    // 削ったあとのbboxは、optimize_geoparquet が空間パッキングに使う。
+    // 元のまま (海まで広がったまま) 通すとrow groupの統計が効かなくなる。
+    #[test]
+    fn clip_sql_rebuilds_the_covering_bbox() {
+        let sql =
+            build_clip_ocean_sql("/tmp/div.parquet", "/tmp/ocean.parquet", "/tmp/out.parquet");
+
+        assert!(sql.contains("xmin: ST_XMin(geometry)"));
+        assert!(sql.contains("ymax: ST_YMax(geometry)"));
+        // 海しか無かった区画は落とす。
+        assert!(sql.contains("WHERE NOT ST_IsEmpty(geometry)"));
     }
 
     // S3を2回読まないよう、CTEは MATERIALIZED にしておく。

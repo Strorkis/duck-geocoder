@@ -827,13 +827,29 @@ async function main() {
     );
   };
 
+  // 逆ジオコーディングの結果を出すポップアップ。1つを使い回す。
+  //
+  // closeOnClick を切ってあるのは、建物を見るつもりのクリックで結果が消えると、
+  // 📍ボタン化して消したはずの「勝手に変わる」感覚が戻ってくるため。
+  // 消すのは×かEscだけにする。
+  const popup = new Popup({ closeButton: true, closeOnClick: false });
+
+  // ハイライトとポップアップは1つの結果なので、片方を閉じたら両方消す。
+  const clearHighlight = () => {
+    Promise.all([setSourceData('highlight', null), setSourceData('selected-point', null)]).catch(
+      (e: unknown) => console.error('[clearHighlight] failed', e),
+    );
+  };
+  popup.on('close', clearHighlight);
+
   const clearSearch = () => {
     input.value = '';
     resultsEl.innerHTML = '';
     clearButton.hidden = true;
-    Promise.all([setSourceData('highlight', null), setSourceData('selected-point', null)]).catch(
-      (e: unknown) => console.error('[clearSearch] failed', e),
-    );
+    // 開いていれば close が飛んで clearHighlight も走るが、開いていないときの
+    // ために自分でも消す (どちらも繰り返して困らない)。
+    popup.remove();
+    clearHighlight();
     input.focus();
   };
 
@@ -930,9 +946,6 @@ async function main() {
   // フォーカスを外させないと、click が発火する前に一覧が消えてしまう。
   resultsEl.addEventListener('mousedown', (e) => e.preventDefault());
 
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') clearSearch();
-  });
   clearButton.addEventListener('click', clearSearch);
 
   // 建物は件数が多いので、ある程度寄ったときだけ表示範囲の分を読み込む。
@@ -1138,9 +1151,16 @@ async function main() {
 
   pickButton.addEventListener('click', () => setPicking(!picking));
 
-  // 押したものの気が変わった、という出口。キーボードだけでも解除できる。
+  // Escの出口を1本にまとめる。押している最中なら解除が先、そうでなければ
+  // 出ている結果を消す。window で拾うのは、判定した直後はフォーカスが地図側にあり、
+  // 検索欄に付けていると効かないため。
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && picking) setPicking(false);
+    if (e.key !== 'Escape') return;
+    if (picking) {
+      setPicking(false);
+      return;
+    }
+    clearSearch();
   });
 
   // ホバー用。マウスを追うだけなので閉じるボタンは出さない。
@@ -1176,9 +1196,7 @@ async function main() {
   }
 
   // 逆ジオコーディング: クリックした地点がどの行政区域かを引き、
-  // その区域をハイライトしてポップアップで名前を出す。
-  // ポップアップは1つを使い回す (クリックのたびに増やさない)。
-  const popup = new Popup({ closeButton: false });
+  // その区域をハイライトしてポップアップで名前を出す (popup は上で用意している)。
   map.on('click', (e) => {
     if (!picking) return;
     // 1クリックで解除する。押しっぱなしのモードにすると、今どちらの状態かを

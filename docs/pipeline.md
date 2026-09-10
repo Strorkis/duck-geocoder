@@ -101,18 +101,44 @@ cargo run --release --bin extract_overture -- buildings \
 # 行政区域 (日本全体)
 cargo run --release --bin extract_overture -- divisions \
   ../data/overture/divisions_jp.parquet
+
+# 海域 (行政区域から海を削るのに使う)
+cargo run --release --bin extract_overture -- ocean \
+  ../data/overture/ocean_jp.parquet
 ```
 
 **S3へのアクセスは最小限にすること。** Overtureは `bbox` covering列を持っているので、
 そこで絞ればrow group単位で読み飛ばせる (日本全体のdivisionsで約30秒)。
 国名や属性だけで絞ると読み飛ばしが効かず、何倍も時間がかかる。
 
-行政区域は、切り出したものを手元で整形して使う。S3には触らないので、
-粒度の取り方を変えたくなったら何度でもやり直せる。
+### 海域を削る
+
+Overtureの `division_area` は `class='land'` で絞ってもなお湾を跨いでいる。
+そのまま使うと、東京湾の真ん中を逆ジオコーディングしたときに江戸川区が返る。
+`base/water` の `subtype='ocean'` (OSMの海岸線由来) で削ると、陸地の形だけが残る。
+
+```sh
+cargo run --release --bin clip_admin_ocean -- \
+  ../data/overture/divisions_jp.parquet \
+  ../data/overture/ocean_jp.parquet \
+  ../data/overture/divisions_jp_land.parquet
+```
+
+出所がdivisionsと同じOvertureなので、**ODbLの扱いは変わらない**。
+全国で約17秒、ピーク約1.5GB。1,741件の市区町村はどれも消えず、
+離島 (小笠原村・大島町など) も残る。
+
+**削るのは市区町村だけ。** 国 (1件) や都道府県 (47件) の区画は日本中の海域と範囲が
+重なるため、同じことをすると海を丸ごと1ポリゴンに束ねることになる。
+最初はそれをやって**メモリを使い切りOSごと落とした**。空間関数の中で確保される
+メモリはDuckDBの `memory_limit` の外側にあるので、並列度も控えめに固定してある。
+
+海岸線の細かさを取り込む分、**頂点は約1.5倍になる** (516万 → 797万)。
+ただし1点あたりの転送量は変わらない (下記の表を参照)。増えるのは置き場所だけ。
 
 ```sh
 cargo run --release --bin overture_divisions_to_geoparquet -- \
-  ../data/overture/divisions_jp.parquet ../data/output/overture_admin_jp.parquet
+  ../data/overture/divisions_jp_land.parquet ../data/output/overture_admin_jp.parquet
 ```
 
 Overtureの `locality` は市区町村(1,741)に郡(370)とOSM由来の雑多な地名を加えたもので、
@@ -145,8 +171,12 @@ row groupの行数は1行あたりのバイト数から自動で決める。1行
 | 行政区域データ | 転送量 |
 | --- | ---: |
 | 最適化前 (1 row group) | ファイルのほぼ全体 |
-| Overture 全国 (34 row groups / 64.1MB) | **2.2 MB** |
+| Overture 全国 (59 row groups / 97.6MB) | **1.5 MB** |
 | 国土数値情報 全国 (125 row groups / 203MB) | **7.9 MB** |
+
+海域を削る前 (34 row groups / 64.1MB) も **1.5 MB** だった。ファイルが1.5倍になっても
+1点あたりの転送量が変わらないのは、row groupの数がそれに追随して増えるため。
+**ファイルの大きさではなく、1つのrow groupの大きさが転送量を決める。**
 
 ブラウザ側でこれが成立する条件は [duckdb-wasm-range-requests.md](duckdb-wasm-range-requests.md) を参照。
 

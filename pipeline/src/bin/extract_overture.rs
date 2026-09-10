@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use duck_geocoder::overture::{
     BoundingBox, DEFAULT_RELEASE, JAPAN_BBOX, build_divisions_extract_sql, build_extract_sql,
+    build_ocean_extract_sql,
 };
 use std::path::PathBuf;
 use std::process::Command;
@@ -26,14 +27,20 @@ fn main() -> Result<()> {
             eprintln!("Overture から日本の行政区域を抽出しています...");
             build_divisions_extract_sql(&release(), "JP", JAPAN_BBOX, &prepare(output)?)
         }
+        [_, "ocean", output] => {
+            eprintln!("Overture から日本周辺の海域を抽出しています...");
+            build_ocean_extract_sql(&release(), JAPAN_BBOX, &prepare(output)?)
+        }
         _ => bail!(
             "usage:\n  \
              extract_overture buildings <output.parquet> <xmin> <ymin> <xmax> <ymax>\n  \
-             extract_overture divisions <output.parquet>\n\n\
+             extract_overture divisions <output.parquet>\n  \
+             extract_overture ocean <output.parquet>\n\n\
              例:\n  \
              extract_overture buildings ../data/output/overture_buildings_minato.parquet \\\n    \
              139.73 35.63 139.78 35.68\n  \
-             extract_overture divisions ../data/overture/divisions_jp.parquet"
+             extract_overture divisions ../data/overture/divisions_jp.parquet\n  \
+             extract_overture ocean ../data/overture/ocean_jp.parquet"
         ),
     };
 

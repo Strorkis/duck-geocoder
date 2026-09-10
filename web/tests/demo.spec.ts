@@ -83,8 +83,11 @@ function highlightFeatureCount(page: Page) {
 /**
  * 逆ジオコーディングを起こす。📍を押した直後の1クリックしか効かないので、
  * 地図を押す前に必ずツールを立ち上げる。
+ *
+ * `position` を省くと地図の中央 (= `jumpTo` で指定した座標そのもの) を押す。
+ * 狙った1点を判定させたいときはこちらを使う。
  */
-async function pickOnMap(page: Page, position: { x: number; y: number }) {
+async function pickOnMap(page: Page, position?: { x: number; y: number }) {
   await page.locator('#pick-location').click();
   await page.locator('#map canvas').click({ position });
 }
@@ -105,12 +108,14 @@ test('初期化が完了し、地図と検索欄が使える状態になる', as
 
 // 検索欄と地図しか無いと、クリックやホバーで何が起きるのか分からない。
 // 公開して最初に触る人がここで止まるので、操作は画面に書いておく。
-test('使い方に3種類の操作が書かれている', async ({ page }) => {
+test('使い方に操作が一通り書かれている', async ({ page }) => {
   const help = page.locator('#help');
   await expect(help).toBeVisible();
   await expect(help).toContainText('検索');
   await expect(help).toContainText('クリック');
   await expect(help).toContainText('カーソルを合わせる');
+  // 出した結果の消し方。ここに書いていないと×とEscに気づけない。
+  await expect(help).toContainText('Esc');
 });
 
 test('地名を入力すると候補が表示される', async ({ page }) => {
@@ -187,6 +192,73 @@ test('Escで📍を解除できる', async ({ page }) => {
 
   await page.keyboard.press('Escape');
   await expect(pick).toHaveAttribute('aria-pressed', 'false');
+});
+
+/**
+ * 出した結果を消す手段。ハイライトとポップアップは1つの結果なので、
+ * 片方を閉じたら両方消える。
+ *
+ * Escは判定した直後 (フォーカスが地図側にある状態) でも効く必要がある。
+ * 検索欄のkeydownに付けていると、この場面では効かない。
+ */
+for (const how of ['close-button', 'escape'] as const) {
+  test(`判定結果を${how === 'close-button' ? '×' : 'Esc'}で消せる`, async ({ page }) => {
+    await page.evaluate(() => {
+      const map = (window as unknown as TestWindow).__map!;
+      map.jumpTo({ center: [139.7671, 35.6812], zoom: 13 });
+    });
+    await pickOnMap(page, { x: 400, y: 300 });
+    await expect(page.locator('.maplibregl-popup-content')).toContainText('東京都', {
+      timeout: 30_000,
+    });
+    await expect.poll(() => highlightFeatureCount(page)).toBe(1);
+
+    if (how === 'close-button') {
+      await page.locator('.maplibregl-popup-close-button').click();
+    } else {
+      await page.keyboard.press('Escape');
+    }
+
+    await expect(page.locator('.maplibregl-popup-content')).toHaveCount(0);
+    await expect.poll(() => highlightFeatureCount(page)).toBe(0);
+  });
+}
+
+// 地図をクリックしただけで結果が消えると、📍ボタン化して取り除いたはずの
+// 「勝手に変わる」感覚が戻ってくる。消えるのは×とEscのときだけ。
+test('地図をクリックしても判定結果は消えない', async ({ page }) => {
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7671, 35.6812], zoom: 13 });
+  });
+  await pickOnMap(page, { x: 400, y: 300 });
+  await expect(page.locator('.maplibregl-popup-content')).toContainText('東京都', {
+    timeout: 30_000,
+  });
+  // ポップアップの文字はポリゴンの取得より先に出る。揃うまで待ってから押す。
+  await expect.poll(() => highlightFeatureCount(page)).toBe(1);
+
+  await page.locator('#map canvas').click({ position: { x: 200, y: 200 } });
+
+  await expect(page.locator('.maplibregl-popup-content')).toBeVisible();
+  expect(await highlightFeatureCount(page)).toBe(1);
+});
+
+// Overtureの行政区域は class='land' で絞ってもなお東京湾を跨いでいる。
+// パイプラインで海域を切り抜いてあることの確認 (data/output を作り直すまで落ちる)。
+test('海上を指しても自治体は返らない', async ({ page }) => {
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    // 葛西沖。もっとも近い陸地から2kmほど離れている。
+    map.jumpTo({ center: [139.85, 35.55], zoom: 13 });
+  });
+
+  // 狙った1点を判定させたいので、中央を押す。
+  await pickOnMap(page);
+
+  await expect(page.locator('.maplibregl-popup-content')).toContainText('該当する行政区域', {
+    timeout: 30_000,
+  });
 });
 
 /**

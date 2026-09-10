@@ -36,6 +36,10 @@
 申請が下りるまではOvertureを使う。変換自体は `n03_to_geoparquet` で今も行える
 (出力する列はOverture版と揃えてあるので、差し替えるだけで済む)。
 
+Overtureの区画は湾を跨いでいて、そのままでは海上の点に自治体が返る。
+同じOvertureの海域データ (`base/water` の `subtype='ocean'`) で削っている
+([docs/pipeline.md](docs/pipeline.md) の「海域を削る」を参照)。
+
 ## ライセンス・出典
 
 このリポジトリの**コード**は [MIT License](LICENSE)。**データは別のライセンスに従う。**
