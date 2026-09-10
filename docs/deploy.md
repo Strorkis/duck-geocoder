@@ -7,7 +7,7 @@
 | アプリ (約1.2MB) | GitHub Pages | — |
 | DuckDB-WASM本体 (約77MB) | GitHub Pages | アプリと同一オリジンから配る。1ファイル35〜40MBあり、1ファイル25MiB制限のあるホスティングには置けない |
 | DuckDBの拡張 (spatial/parquet、約50MB) | GitHub Pages | 本家 (extensions.duckdb.org) への実行時の依存を無くすため。詳細は下記 |
-| GeoParquet (約88MB) | Cloudflare R2 | 容量の天井が無く、egressが無料。N03やPLATEAUを足しても困らない |
+| GeoParquet (約129MB) | Cloudflare R2 | 容量の天井が無く、egressが無料。N03やPLATEAUを足しても困らない |
 
 DuckDB-WASM本体はgitに入れない。ビルド時に `node_modules` から `dist/duckdb/` へコピーされる
 ([web/vite.config.ts](../web/vite.config.ts) の `copy-duckdb-runtime`)。
@@ -64,6 +64,14 @@ VITE_BASE_PATH=/duck-geocoder/ pnpm test:dist
 `data/output/` の中身 (catalog.json と *.parquet) をバケット直下にアップロードし、
 CORSを設定する。
 
+**データを作り直したときは、pushより先にここを済ませること。** デプロイのCIは
+本番ビルドのE2EをR2の実データに対して流すゲートなので、データが古いままだと
+テストが落ちてデプロイが止まる。逆に先に上げる分には、列構成が変わっていなければ
+公開中のコードはそのまま読めるので壊れない。
+
+catalog.jsonも忘れずに上げること。件数・収録範囲・列構成はここから読まれるので、
+parquetだけ差し替えると実データとずれる。
+
 `http://localhost:4173` は `vite preview` の既定ポート。CIの `pnpm test:dist` が
 ここからR2を読むので、含めておく (含めないとブラウザがCORSで弾き、E2Eが全件落ちる)。
 
@@ -113,4 +121,4 @@ PLAYWRIGHT_BASE_URL=https://<user>.github.io/duck-geocoder/ pnpm test
 ```
 
 ローカルで通っても配信側のヘッダ設定で壊れうるので、必ず実測する。
-転送量を見張るテストが `2.2 MB / 64.1 MB` のように報告する。
+転送量を見張るテストが `1.5 MB / 97.6 MB` のように報告する。
