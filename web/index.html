@@ -8,15 +8,28 @@
   <body>
     <div id="app">
       <div id="search-panel">
-        <div id="search-box">
-          <input
-            id="search-input"
-            type="text"
-            placeholder="市区町村・地名で検索 (例: 港区)"
-            autocomplete="off"
+        <div id="search-row">
+          <div id="search-box">
+            <input
+              id="search-input"
+              type="text"
+              placeholder="市区町村・地名で検索 (例: 港区)"
+              autocomplete="off"
+              disabled
+            />
+            <button id="clear-button" type="button" title="クリア" hidden>×</button>
+          </div>
+          <!-- 逆ジオコーディングは押したときだけ効かせる。常時オンだと、建物を
+               眺めている最中のクリックで行政区域の全体まで引き戻されてしまう。 -->
+          <button
+            id="pick-location"
+            type="button"
+            aria-pressed="false"
+            title="押してから地図をクリックすると、その地点の市区町村を判定します (Escで解除)"
             disabled
-          />
-          <button id="clear-button" type="button" title="クリア" hidden>×</button>
+          >
+            📍
+          </button>
         </div>
         <ul id="results"></ul>
       </div>
@@ -26,7 +39,7 @@
         <summary>使い方</summary>
         <ul>
           <li>市区町村や地名を<b>検索</b>すると、その場所へ移動します</li>
-          <li>地図を<b>クリック</b>すると、その地点の市区町村を判定します</li>
+          <li><b>📍</b> を押してから地図を<b>クリック</b>すると、その地点の市区町村を判定します</li>
           <li>建物に<b>カーソルを合わせる</b>と、名称と用途が出ます (拡大したとき)</li>
         </ul>
         <!-- 建物は一部の範囲しか収録していない。偶然そこへ行かないと

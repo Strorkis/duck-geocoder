@@ -764,6 +764,7 @@ async function main() {
   const input = document.querySelector<HTMLInputElement>('#search-input')!;
   const resultsEl = document.querySelector<HTMLUListElement>('#results')!;
   const clearButton = document.querySelector<HTMLButtonElement>('#clear-button')!;
+  const pickButton = document.querySelector<HTMLButtonElement>('#pick-location')!;
   const loadingEl = document.querySelector<HTMLDivElement>('#loading')!;
   const loadingMessageEl = document.querySelector<HTMLParagraphElement>('#loading-message')!;
   const gotoBuildingsButton = document.querySelector<HTMLButtonElement>('#goto-buildings')!;
@@ -813,6 +814,7 @@ async function main() {
   void ensureOaza().catch((e: unknown) => console.error('[warmup] oaza', e));
   void ensureSpatial().catch((e: unknown) => console.error('[warmup] spatial', e));
   input.disabled = false;
+  pickButton.disabled = false;
   input.focus();
 
   // MapLibre v6 の setData は Promise を返す (v5までは同期)。await しないと
@@ -1114,9 +1116,32 @@ async function main() {
 
   // 操作の役割分担:
   //   ホバー = 調べる (建物の情報を見るだけ。地図は動かさない)
-  //   クリック = 選ぶ (逆ジオコーディングして行政区域をハイライトする)
-  // 建物名を見るためにクリックすると行政区域までズームしてしまう、という
-  // ちぐはぐさを避けるため分けている。
+  //   📍を押してからクリック = 選ぶ (逆ジオコーディングして行政区域をハイライトする)
+  //
+  // 逆ジオコーディングは結果の行政区域が全部入るまで地図を引く (showResult の
+  // fitBounds)。常時オンだと、建物を眺めている最中のクリックで見ていた場所も
+  // 傾きもまとめて失われるので、押したときだけ効かせる。
+
+  // 待ち受け中は十字、建物の上ではポインタ。どちらも同じ canvas の style を
+  // 触るので、条件をここに集めて一箇所から書く。
+  let picking = false;
+  let hoveringBuilding = false;
+  const updateCursor = () => {
+    map.getCanvas().style.cursor = picking ? 'crosshair' : hoveringBuilding ? 'pointer' : '';
+  };
+
+  const setPicking = (on: boolean) => {
+    picking = on;
+    pickButton.setAttribute('aria-pressed', String(on));
+    updateCursor();
+  };
+
+  pickButton.addEventListener('click', () => setPicking(!picking));
+
+  // 押したものの気が変わった、という出口。キーボードだけでも解除できる。
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && picking) setPicking(false);
+  });
 
   // ホバー用。マウスを追うだけなので閉じるボタンは出さない。
   const hoverPopup = new Popup({
@@ -1129,7 +1154,8 @@ async function main() {
     map.on('mousemove', 'buildings-3d', (e) => {
       const building = e.features?.[0];
       if (!building) return;
-      map.getCanvas().style.cursor = 'pointer';
+      hoveringBuilding = true;
+      updateCursor();
 
       const props = building.properties;
       const text = [
@@ -1143,7 +1169,8 @@ async function main() {
     });
 
     map.on('mouseleave', 'buildings-3d', () => {
-      map.getCanvas().style.cursor = '';
+      hoveringBuilding = false;
+      updateCursor();
       hoverPopup.remove();
     });
   }
@@ -1153,6 +1180,11 @@ async function main() {
   // ポップアップは1つを使い回す (クリックのたびに増やさない)。
   const popup = new Popup({ closeButton: false });
   map.on('click', (e) => {
+    if (!picking) return;
+    // 1クリックで解除する。押しっぱなしのモードにすると、今どちらの状態かを
+    // 覚えていないと次のクリックの結果が読めなくなる。
+    setPicking(false);
+
     const { lng, lat } = e.lngLat;
     popup.setLngLat(e.lngLat).setText('判定中…').addTo(map);
 

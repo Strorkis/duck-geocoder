@@ -80,6 +80,15 @@ function highlightFeatureCount(page: Page) {
   return sourceFeatureCount(page, 'highlight');
 }
 
+/**
+ * 逆ジオコーディングを起こす。📍を押した直後の1クリックしか効かないので、
+ * 地図を押す前に必ずツールを立ち上げる。
+ */
+async function pickOnMap(page: Page, position: { x: number; y: number }) {
+  await page.locator('#pick-location').click();
+  await page.locator('#map canvas').click({ position });
+}
+
 test.beforeEach(async ({ page }) => {
   // './' であって '/' ではない。baseURL は new URL(url, baseURL) で解決されるので、
   // '/' だとサブパス配信 (GitHub Pagesなど) のときにサイトのルートへ飛んでしまう。
@@ -132,15 +141,14 @@ test('行政区域を選ぶとポリゴンがハイライトされる', async ({
     .toBe(1);
 });
 
-test('地図をクリックすると逆ジオコーディングされる', async ({ page }) => {
+test('📍を押してから地図をクリックすると逆ジオコーディングされる', async ({ page }) => {
   // 東京駅付近へ移動してから中央をクリックする。
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7671, 35.6812], zoom: 13 });
   });
 
-  const canvas = page.locator('#map canvas');
-  await canvas.click({ position: { x: 400, y: 300 } });
+  await pickOnMap(page, { x: 400, y: 300 });
 
   const popup = page.locator('.maplibregl-popup-content');
   await expect(popup).toBeVisible();
@@ -149,6 +157,36 @@ test('地図をクリックすると逆ジオコーディングされる', async
 
   // 逆ジオコーディングの結果は検索欄にも反映される。
   await expect(page.locator('#search-input')).toHaveValue(/東京都/);
+
+  // 1クリックで解除される。押しっぱなしだと、次に建物を触るつもりの
+  // クリックでまた地図が引き戻されることになる。
+  await expect(page.locator('#pick-location')).toHaveAttribute('aria-pressed', 'false');
+});
+
+// 建物を眺めている最中のクリックで行政区域の全体まで引き戻される、という
+// 事故を防ぐためにツール化した。押さずにクリックしても何も起きないこと。
+test('📍を押さずに地図をクリックしても何も起きない', async ({ page }) => {
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7671, 35.6812], zoom: 13 });
+  });
+  const before = await page.evaluate(() => (window as unknown as TestWindow).__map!.getZoom());
+
+  await page.locator('#map canvas').click({ position: { x: 400, y: 300 } });
+
+  await expect(page.locator('.maplibregl-popup-content')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as unknown as TestWindow).__map!.getZoom())).toBe(before);
+  expect(await highlightFeatureCount(page)).toBe(0);
+});
+
+// 押したものの気が変わったときの出口。
+test('Escで📍を解除できる', async ({ page }) => {
+  const pick = page.locator('#pick-location');
+  await pick.click();
+  await expect(pick).toHaveAttribute('aria-pressed', 'true');
+
+  await page.keyboard.press('Escape');
+  await expect(pick).toHaveAttribute('aria-pressed', 'false');
 });
 
 /**
@@ -185,12 +223,12 @@ test('逆ジオコーディングはファイル全体のごく一部しか読�
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7671, 35.6812], zoom: 13 });
   });
-  await page.locator('#map canvas').click({ position: { x: 400, y: 300 } });
+  await pickOnMap(page, { x: 400, y: 300 });
   await expect(page.locator('.maplibregl-popup-content')).toContainText('東京都', {
     timeout: 30_000,
   });
 
-  const measured = `${(fetchedBytes / 1024 / 1024).toFixed(1)} MB / ${(totalBytes / 1024 / 1024).toFixed(1)} MB`;
+  const measured =`${(fetchedBytes / 1024 / 1024).toFixed(1)} MB / ${(totalBytes / 1024 / 1024).toFixed(1)} MB`;
   console.log(`逆ジオコーディングの転送量: ${measured}`);
 
   // 0バイトなら「絞り込めている」のではなく「計測できていない」ので、そちらも弾く。
@@ -211,7 +249,7 @@ test('extensions.duckdb.org を遮断しても逆ジオコーディングでき�
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7671, 35.6812], zoom: 13 });
   });
-  await page.locator('#map canvas').click({ position: { x: 400, y: 300 } });
+  await pickOnMap(page, { x: 400, y: 300 });
   await expect(page.locator('.maplibregl-popup-content')).toContainText('東京都', {
     timeout: 30_000,
   });

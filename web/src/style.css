@@ -21,12 +21,54 @@ body,
   top: 1rem;
   left: 1rem;
   z-index: 1;
-  width: 20rem;
+  /* 検索欄を20remのまま保ちたいので、隣に置くボタンの分だけ広げてある。 */
+  width: 23rem;
   max-width: calc(100vw - 2rem);
+}
+
+#search-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: stretch;
 }
 
 #search-box {
   position: relative;
+  /* min-width を切らないと、狭い画面でボタンに押されて検索欄がはみ出す。 */
+  flex: 1;
+  min-width: 0;
+}
+
+/* 逆ジオコーディングを起こすボタン。押した直後の1クリックだけ効く。 */
+#pick-location {
+  flex: none;
+  width: 2.8rem;
+  border: 1px solid #ccc;
+  border-radius: 0.4rem;
+  background: white;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* 待ち受け中は下の規則で塗るので、そちらに譲る。単に :hover と書くと
+   セレクタの詳細度で勝ってしまい、押しても色が変わらなくなる。 */
+#pick-location[aria-pressed='false']:hover:not(:disabled) {
+  background: #f0f4ff;
+}
+
+#pick-location:disabled {
+  background: #f5f5f5;
+  cursor: wait;
+}
+
+/* 待ち受け中。地図側のカーソルも十字になるので、状態は2箇所に出る。
+   accent色で塗り潰すと、赤い📍が同系色に埋もれて読めなくなる。枠で示す。 */
+#pick-location[aria-pressed='true'] {
+  background: #fff1e6;
+  border-color: #ff6600;
+  box-shadow: 0 0 0 2px #ff6600;
 }
 
 #search-input {
