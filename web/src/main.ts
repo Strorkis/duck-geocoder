@@ -767,6 +767,8 @@ async function main() {
   const pickButton = document.querySelector<HTMLButtonElement>('#pick-location')!;
   const loadingEl = document.querySelector<HTMLDivElement>('#loading')!;
   const loadingMessageEl = document.querySelector<HTMLParagraphElement>('#loading-message')!;
+  const busyEl = document.querySelector<HTMLDivElement>('#busy')!;
+  const busyLabelEl = document.querySelector<HTMLSpanElement>('#busy-label')!;
   const gotoBuildingsButton = document.querySelector<HTMLButtonElement>('#goto-buildings')!;
   const buildingsPanel = document.querySelector<HTMLDivElement>('#buildings-panel')!;
   const sourceSelect = document.querySelector<HTMLSelectElement>('#building-source')!;
@@ -816,6 +818,46 @@ async function main() {
   input.disabled = false;
   pickButton.disabled = false;
   input.focus();
+
+  // 初期化のオーバーレイ (#loading) は上で消えるが、その後も数秒かかる操作がある。
+  // 操作を先に触れる作りにしている以上、「触れる」と「終わっている」を
+  // 見分ける手がかりが要る。
+  //
+  // 同時に複数走っても消えないよう、真偽値ではなく件数で持つ。
+  let busyCount = 0;
+  let failureTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const busy = async <T>(label: string, run: () => Promise<T>): Promise<T> => {
+    busyCount += 1;
+    clearTimeout(failureTimer);
+    busyEl.classList.remove('failed');
+    busyLabelEl.textContent = label;
+    busyEl.hidden = false;
+    try {
+      return await run();
+    } finally {
+      busyCount -= 1;
+      if (busyCount === 0) busyEl.hidden = true;
+    }
+  };
+
+  /**
+   * 失敗を画面にも出す。コンソールに残すのとは別の役割で、
+   * console.error だけだと利用者には「何も起きない」としか見えない。
+   */
+  const showFailure = (message: string) => {
+    console.error('[failure]', message);
+    clearTimeout(failureTimer);
+    busyLabelEl.textContent = message;
+    busyEl.classList.add('failed');
+    busyEl.hidden = false;
+    // 出したままにすると次の操作の邪魔になる。他の処理が走っていなければ引っ込める。
+    failureTimer = setTimeout(() => {
+      if (busyCount > 0) return;
+      busyEl.hidden = true;
+      busyEl.classList.remove('failed');
+    }, 5000);
+  };
 
   // MapLibre v6 の setData は Promise を返す (v5までは同期)。await しないと
   // データ適用の完了を待てず、エラーも握り潰されるので必ず待つ。
@@ -870,10 +912,17 @@ async function main() {
     // 行政区域は面をハイライトして全体が入るように寄る。
     // ポリゴン取得を待たずにカメラを動かすと、後から呼ぶ fitBounds が
     // アニメーションを横取りしてしまうので、取得を終えてから1回だけ動かす。
-    await ensureSpatial();
-    const polygon = await fetchAdminPolygon(conn, result.adminId);
+    //
+    // 逆ジオコーディングでは名前が先に出るので、ここが無言だと
+    // 「地名だけ出てポリゴンが出ない」ように見える。大きい自治体ほど重い
+    // (対馬市で70,848頂点) ので、待っていることを知らせる。
+    const polygon = await busy('範囲を読み込み中…', async () => {
+      await ensureSpatial();
+      return fetchAdminPolygon(conn, result.adminId);
+    });
     if (!polygon) {
       console.warn('admin polygon not found for admin_id', result.adminId);
+      showFailure('範囲を取得できませんでした');
       return;
     }
 
@@ -928,10 +977,16 @@ async function main() {
       return;
     }
     debounceTimer = window.setTimeout(() => {
-      ensureOaza()
-        .then(() => searchAddress(conn, keyword))
+      // 初回は ensureOaza の読み込みを待つので、ここだけ数秒かかることがある。
+      busy('検索中…', async () => {
+        await ensureOaza();
+        return searchAddress(conn, keyword);
+      })
         .then(renderResults)
-        .catch((e: unknown) => console.error('[searchAddress] failed', e));
+        .catch((e: unknown) => {
+          console.error('[searchAddress] failed', e);
+          showFailure('検索に失敗しました');
+        });
     }, debounceMs);
   };
 
@@ -984,23 +1039,28 @@ async function main() {
     // 最新の要求以外は捨てる。
     const token = ++buildingsToken;
     const source = activeSource;
-    await source.ensure();
-    const b = map.getBounds();
-    const c = map.getCenter();
-    const rows = await fetchBuildingsInView(
-      conn,
-      source,
-      {
-        west: b.getWest(),
-        south: b.getSouth(),
-        east: b.getEast(),
-        north: b.getNorth(),
-        centerLon: c.lng,
-        centerLat: c.lat,
-      },
-      filter,
-      BUILDINGS_LIMIT,
-    );
+    // 取得を始める前に件数表示を空にする。引いていたときの「拡大すると建物が出ます」が
+    // 残っていると、すでに寄っている利用者に拡大しろと言い続けることになる。
+    buildingCountEl.textContent = '';
+    const rows = await busy('建物を読み込み中…', async () => {
+      await source.ensure();
+      const b = map.getBounds();
+      const c = map.getCenter();
+      return fetchBuildingsInView(
+        conn,
+        source,
+        {
+          west: b.getWest(),
+          south: b.getSouth(),
+          east: b.getEast(),
+          north: b.getNorth(),
+          centerLon: c.lng,
+          centerLat: c.lat,
+        },
+        filter,
+        BUILDINGS_LIMIT,
+      );
+    });
     if (token !== buildingsToken) return;
 
     await mapSource.setData({
@@ -1018,7 +1078,10 @@ async function main() {
   };
 
   const requestRefresh = () => {
-    refreshBuildings().catch((e: unknown) => console.error('[buildings] failed', e));
+    refreshBuildings().catch((e: unknown) => {
+      console.error('[buildings] failed', e);
+      showFailure('建物の読み込みに失敗しました');
+    });
   };
 
   if (activeSource) {
@@ -1037,6 +1100,13 @@ async function main() {
     // 用途の選択肢は出所ごとに1度だけ引く。
     const usageOptionsLoaded = new Map<string, string[]>();
 
+    // showFilters は読み込みを伴うので失敗しうる。捨てると unhandled rejection に
+    // なり、選択肢が空のまま何も起きない状態になる。
+    const filtersFailed = (e: unknown) => {
+      console.error('[showFilters] failed', e);
+      showFailure('用途の読み込みに失敗しました');
+    };
+
     /** チェック状態を条件に反映する。全部入っていれば「絞っていない」= null。 */
     const syncUsageFilter = (all: string[]) => {
       const checked = [...usageOptionsEl.querySelectorAll<HTMLInputElement>('input:checked')];
@@ -1052,8 +1122,10 @@ async function main() {
       if (source.categoryColumn === null) return;
       let usages = usageOptionsLoaded.get(source.id);
       if (!usages) {
-        await source.ensure();
-        usages = await fetchUsageOptions(conn, source);
+        usages = await busy('用途を読み込み中…', async () => {
+          await source.ensure();
+          return fetchUsageOptions(conn, source);
+        });
         usageOptionsLoaded.set(source.id, usages);
       }
 
@@ -1088,9 +1160,9 @@ async function main() {
       // 用途の語彙が出所ごとに違うので、そのまま持ち越すと意味が変わる。
       filter.usages = null;
       // どちらの出所も高さの列を持ち立体で描かれるので、傾きは出所で変えない。
-      void showFilters(activeSource).then(requestRefresh);
+      showFilters(activeSource).then(requestRefresh).catch(filtersFailed);
     });
-    void showFilters(activeSource);
+    showFilters(activeSource).catch(filtersFailed);
     // 収録範囲の枠は refreshBuildings が出すが、その呼び出しは moveend でしか
     // 起きない。起動直後にも一度呼んでおかないと、地図を動かすまで枠が出ない。
     requestRefresh();
@@ -1113,6 +1185,13 @@ async function main() {
       const [west, south, east, north] = bbox;
       gotoBuildingsButton.hidden = false;
       gotoBuildingsButton.addEventListener('click', () => {
+        // flyTo に1.5秒かかり、その後の moveend まで refreshBuildings は始まらない。
+        // 押した感触が無いと二度押しされるので、移動そのものを合図の対象にする。
+        // 続けて refreshBuildings 側の合図が立つので、表示は途切れない。
+        void busy(
+          '建物のある範囲へ移動中…',
+          () => new Promise<void>((resolve) => map.once('moveend', () => resolve())),
+        );
         // 収録範囲の全体を映すのではなく、その中心に寄る。
         // fitBounds だと範囲が広いときに BUILDINGS_MIN_ZOOM を下回り、
         // 移動した先で建物が出ないという逆の結果になる。
@@ -1206,8 +1285,10 @@ async function main() {
     const { lng, lat } = e.lngLat;
     popup.setLngLat(e.lngLat).setText('判定中…').addTo(map);
 
-    ensureSpatial()
-      .then(() => reverseGeocode(conn, lng, lat))
+    busy('地点を判定中…', async () => {
+      await ensureSpatial();
+      return reverseGeocode(conn, lng, lat);
+    })
       .then(async (hit) => {
         if (!hit) {
           popup.setText('該当する行政区域はありません (海上など)');

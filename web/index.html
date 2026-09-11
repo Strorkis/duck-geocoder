@@ -34,6 +34,12 @@
         <ul id="results"></ul>
       </div>
       <div id="map"></div>
+      <!-- 初期化が終わったあとの待ち時間を知らせる。初期化のオーバーレイ (#loading) と
+           違って操作は妨げない。四隅は埋まっているので上端中央に置く。 -->
+      <div id="busy" hidden>
+        <div class="spinner small"></div>
+        <span id="busy-label"></span>
+      </div>
       <!-- 開閉にJavaScriptが要らないので details を使う。 -->
       <details id="help" open>
         <summary>使い方</summary>
@@ -71,8 +77,10 @@
             </label>
             <div id="usage-options"></div>
           </div>
-          <p id="building-count" class="note"></p>
         </div>
+        <!-- 絞り込みの外に置く。中に入れると、絞り込める列を持たない出所を
+             選んだときに件数ごと消えてしまう。 -->
+        <p id="building-count" class="note"></p>
       </div>
       <div id="loading">
         <div class="spinner"></div>

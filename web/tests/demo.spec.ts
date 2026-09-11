@@ -345,6 +345,71 @@ test('ボタンを押すと建物のある範囲へ移動する', async ({ page 
     .toBeGreaterThan(0);
 });
 
+/**
+ * 初期化のオーバーレイが消えたあとの待ち時間には、以前は合図が何も無かった。
+ * 建物のある範囲へ移動しても、数秒のあいだ「空の地図」と見分けがつかない。
+ */
+test('建物を読み込んでいる間は合図が出る', async ({ page }) => {
+  test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
+
+  await expect(page.locator('#busy')).toBeHidden();
+
+  await page.locator('#goto-buildings').click();
+  // flyTo に1.5秒かかるので、押した直後から出ていること。
+  await expect(page.locator('#busy')).toBeVisible();
+
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
+  await expect(page.locator('#busy')).toBeHidden();
+});
+
+/**
+ * 引いているときに書いた文言が、寄ったあとも残っていた。
+ * zoom 16 にいる利用者に「拡大しろ」と言い続けることになる。
+ *
+ * 手元はデータの取得が速すぎるので、取得を止めて読み込み中のまま観察する。
+ * 単に遅らせて最後に見るだけでは、そのころには件数に変わっていて何も検出できない。
+ */
+test('建物を読み込んでいる間は「拡大すると建物が出ます」と言わない', async ({ page }) => {
+  test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
+
+  const zoomedOutMessage = '拡大すると建物が出ます';
+  await expect(page.locator('#building-count')).toHaveText(zoomedOutMessage);
+
+  // 合図を確かめるまでデータを渡さない。
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route('**/*.parquet', async (route) => {
+    await held;
+    await route.continue();
+  });
+
+  await page.locator('#goto-buildings').click();
+  // 取得に入ったことは合図の文言で見分ける (移動中とは別の文言にしてある)。
+  await expect(page.locator('#busy')).toContainText('建物を読み込み中…');
+
+  await expect(page.locator('#building-count')).not.toHaveText(zoomedOutMessage);
+
+  release();
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
+});
+
+// 逆ジオコーディングは名前が先に出て、ポリゴンはもう1往復あとに届く。
+// その間が無言だと「地名だけ出てポリゴンが表示されない」ように見える。
+test('逆ジオコーディング中は合図が出る', async ({ page }) => {
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7671, 35.6812], zoom: 13 });
+  });
+
+  await pickOnMap(page, { x: 400, y: 300 });
+  await expect(page.locator('#busy')).toBeVisible();
+
+  await expect.poll(() => highlightFeatureCount(page)).toBe(1);
+  await expect(page.locator('#busy')).toBeHidden();
+});
+
 test('十分に寄ると建物が表示され、離すと消える', async ({ page }) => {
   test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
 

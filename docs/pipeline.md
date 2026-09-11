@@ -136,6 +136,12 @@ cargo run --release --bin clip_admin_ocean -- \
 海岸線の細かさを取り込む分、**頂点は約1.5倍になる** (516万 → 797万)。
 ただし1点あたりの転送量は変わらない (下記の表を参照)。増えるのは置き場所だけ。
 
+**面積がほぼ0の破片は落とす。** `ST_Difference` は、区画の境界が海域ポリゴンの縁と
+重なるところに破片を残す。放っておくとハイライトが海の上に直線を引き、bboxも広がって
+`fitBounds` が必要以上に引く (対馬市で南西へ約20km)。実測で、残る破片は最大 3.7e-15
+平方度、本物の最小の部分は 8.1e-12 と**3桁離れている**ので、1e-12 で切っている
+(全国で254個 / 173市区町村が落ち、本物の部分74,025個はすべて残る)。
+
 ```sh
 cargo run --release --bin overture_divisions_to_geoparquet -- \
   ../data/overture/divisions_jp_land.parquet ../data/output/overture_admin_jp.parquet

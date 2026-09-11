@@ -176,6 +176,17 @@ COPY (
     )
 }
 
+/// 破片とみなす面積の上限 (平方度)。
+///
+/// `ST_Difference` は、区画の境界が海域ポリゴンの縁と重なるところに面積がほぼ0の
+/// 破片を残す。そのままにすると、ハイライトが海の上に直線を引き、bboxも広がって
+/// `fitBounds` が必要以上に引く (対馬市で南西へ約20km)。
+///
+/// 実測では、残る破片は最大 3.7e-15、本物の最小の部分は 8.1e-12 で**3桁離れている**。
+/// 1e-12 平方度は約0.01平方メートルで、この大きさの島は無い。
+/// 全国で254個の破片 (173市区町村) が落ち、本物の部分74,025個はすべて残る。
+const SLIVER_AREA: &str = "1e-12";
+
 /// 行政区域から海域を削るSQLを組み立てる。入力と同じ列を出す。
 ///
 /// Overtureの `division_area` は `class='land'` で絞ってもなお湾を跨いでいて、
@@ -219,9 +230,16 @@ COPY (
       d.region,
       d.pref_name,
       -- 海に接していない区画は結合相手が無い。元の形をそのまま使う。
+      -- 削った区画からは破片を落とす (下記 SLIVER_AREA)。
       CASE
         WHEN sea.geometry IS NULL THEN d.geometry
-        ELSE ST_Difference(d.geometry, sea.geometry)
+        ELSE ST_Collect(list_transform(
+               list_filter(
+                 ST_Dump(ST_Difference(d.geometry, sea.geometry)),
+                 lambda part: ST_Area(part.geom) > {SLIVER_AREA}
+               ),
+               lambda part: part.geom
+             ))
       END AS geometry
     FROM read_parquet('{divisions}') d
     LEFT JOIN sea ON sea.id = d.id
@@ -391,6 +409,16 @@ mod tests {
         let sql =
             build_clip_ocean_sql("/tmp/div.parquet", "/tmp/ocean.parquet", "/tmp/out.parquet");
         assert!(sql.contains(MUNICIPALITY_FILTER));
+    }
+
+    // ST_Difference は海域ポリゴンの縁に面積ほぼ0の破片を残す。落とさないと
+    // ハイライトが海の上に直線を引き、bboxも広がって fitBounds が引きすぎる。
+    #[test]
+    fn clip_sql_drops_slivers() {
+        let sql =
+            build_clip_ocean_sql("/tmp/div.parquet", "/tmp/ocean.parquet", "/tmp/out.parquet");
+        assert!(sql.contains("ST_Dump(ST_Difference(d.geometry, sea.geometry))"));
+        assert!(sql.contains(&format!("ST_Area(part.geom) > {SLIVER_AREA}")));
     }
 
     // 海域ポリゴンをそのまま束ねると、1つ数万頂点のタイルが積み上がる。
