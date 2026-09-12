@@ -11,10 +11,19 @@
 | --- | --- | --- | --- | --- |
 | [地理院ベクトルタイル提供実験](https://github.com/gsi-cyberjapan/gsimaps-vector-experiment) | [国土地理院コンテンツ利用規約](https://www.gsi.go.jp/kikakuchousei/kikakuchousei40182.html) (PDL 1.0) | **不要** | 可 | ✅ 使える |
 | [最適化ベクトルタイル](https://github.com/gsi-cyberjapan/optimal_bvmap) | 同上 | **不要** | 可 | ✅ 使える |
-| [PLATEAU](https://www.mlit.go.jp/plateau/site-policy/) | PDL 1.0 (CC BY 4.0でも可) | 対象外 | 可 | ✅ 使える |
+| [PLATEAU](https://www.mlit.go.jp/plateau/site-policy/) | PDL 1.0 (CC BY 4.0でも可) | 対象外 | 可 | ✅ 使用中 |
 | Overture Maps | ODbL 1.0 | 対象外 | 可 (share-alike) | ✅ 使用中 |
 | OpenStreetMap | ODbL 1.0 | 対象外 | 可 (share-alike) | ✅ 使える |
 | [Mapterhorn](https://mapterhorn.com/attribution) (標高タイル) | ソースごと | **Mapterhorn側が取得済み** | 実行時に読むだけ | ✅ 使用中 |
+
+### PLATEAU の配信カタログAPI
+
+[`https://api.plateauview.mlit.go.jp/datacatalog/plateau-datasets`](https://api.plateauview.mlit.go.jp/datacatalog/plateau-datasets)
+が**公式に**都市一覧とCityGML zipのURLを返す (`latest_citygml`、307都市)。
+
+**配布ページのURLを組み立てて取りに行くのではない。** 公式APIがあるのでそれを使う、
+という位置づけ (AGENTS.mdの約束を参照)。取得の詳細は
+[pipeline.md の「落とさずに読む」](pipeline.md) にある。
 
 ### Mapterhorn の標高タイル
 

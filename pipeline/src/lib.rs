@@ -11,6 +11,8 @@ pub mod isj_oaza;
 pub mod n03;
 pub mod overture;
 pub mod plateau;
+pub mod plateau_catalog;
+pub mod remote_zip;
 pub mod spatial_pack;
 
 /// 指定したEPSGコードからWGS84 (EPSG:4326) への変換器を作る。
@@ -95,12 +97,28 @@ pub fn read_zip_entry_bytes(zip_path: &Path, extension: &str) -> Result<Vec<u8>>
 pub fn for_each_zip_entry(
     zip_path: &Path,
     matches: impl Fn(&str) -> bool,
-    mut handle: impl FnMut(&str, Vec<u8>) -> Result<()>,
+    handle: impl FnMut(&str, Vec<u8>) -> Result<()>,
 ) -> Result<()> {
     let file =
         File::open(zip_path).with_context(|| format!("開けません: {}", zip_path.display()))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .with_context(|| format!("zipとして読めません: {}", zip_path.display()))?;
+    for_each_zip_entry_in(file, &zip_path.display().to_string(), matches, handle)
+}
+
+/// [`for_each_zip_entry`] の、ローカルのファイルに限らない版。
+///
+/// `zip::ZipArchive` は `Read + Seek` があれば読めるので、HTTP Range で範囲を取る
+/// ものを渡せば**zipを落とさずに**中身を取り出せる ([`remote_zip`] を参照)。
+/// PLATEAUのCityGMLは全国で1,385GBあり、落としてから読む道が無いためこの形にしてある。
+///
+/// `label` はエラーに出す名前 (パスやURL)。
+pub fn for_each_zip_entry_in(
+    source: impl std::io::Read + std::io::Seek,
+    label: &str,
+    matches: impl Fn(&str) -> bool,
+    mut handle: impl FnMut(&str, Vec<u8>) -> Result<()>,
+) -> Result<()> {
+    let mut archive =
+        zip::ZipArchive::new(source).with_context(|| format!("zipとして読めません: {label}"))?;
 
     // 名前を先に集める。読み出し中は archive を可変で借りるため、
     // 反復しながら by_name を呼べない。
@@ -113,7 +131,7 @@ pub fn for_each_zip_entry(
     names.sort();
 
     if names.is_empty() {
-        bail!("一致するエントリがありません: {}", zip_path.display());
+        bail!("一致するエントリがありません: {label}");
     }
 
     for name in &names {

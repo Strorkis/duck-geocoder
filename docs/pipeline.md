@@ -60,7 +60,14 @@ cargo run --release --bin n03_to_geoparquet -- \
 
 ### PLATEAU (3D都市モデル)
 
+**都市コードを渡せば、zipを落とさずに変換できる。**
+
 ```sh
+# 公式カタログからHTTP Rangeで読む (手元にzipが無くてよい)
+cargo run --release --bin plateau_bldg_to_geoparquet -- \
+  --city 13103 ../data/output/plateau_bldg_13103.parquet
+
+# 手元のzipから (落としてあるならこちらが速い)
 cargo run --release --bin plateau_bldg_to_geoparquet -- \
   ../data/plateau/13103_minato-ku_pref_2025_citygml_1_op.zip \
   ../data/output/plateau_bldg_minato.parquet
@@ -69,10 +76,42 @@ cargo run --release --bin plateau_bldg_to_geoparquet -- \
 **zipは展開しないこと。** 港区のCityGMLは2.0GBで、展開すると57,278ファイル・8.85GBになる。
 変換器は中央ディレクトリ経由で `udx/bldg/*.gml` (38本) とコードリストだけを取り出す。
 
+### 落とさずに読む (`--city`)
+
+[公式カタログAPI](https://api.plateauview.mlit.go.jp/datacatalog/plateau-datasets) が
+都市コードとzipのURLを持っている (307都市、うち306都市が建物を収録)。
+配信はHTTP Rangeに対応しているので、**中央ディレクトリと必要なエントリだけを取れる**。
+
+全国のzipを合計すると**1,385GB** (最大の浜松市だけで250.8GB)。
+落としてから読む道は無いので、Rangeは最適化ではなく前提。
+
+港区での実測 (`pipeline/src/remote_zip.rs`):
+
+| | 転送量 | リクエスト | 所要 |
+| --- | ---: | ---: | ---: |
+| 素朴に全エントリを列挙 (`by_index_raw`) | 1,013 MB | 3,097 | 3分58秒 |
+| **中央ディレクトリから名前だけ取る (`file_names`)** | **276 MB** | **152** | **51秒** |
+| (参考) 手元のzipから | — | — | 13秒 |
+
+**`by_index_raw` は1件ごとにローカルヘッダを読みに行く。** 5万を超えるエントリを
+舐めるとファイル全体を引きずるので、名前は `file_names()` から取ること。
+
+同じく効くのが**リダイレクトの解決**で、配信URLは302で実体へ飛ぶ。毎回辿ると
+1リクエストあたり約1.2秒を余計に払う (256KBの取得が0.15秒→1.33秒)。
+最初の1回だけ辿って以降は実体へ直接行く。
+
+手元のzipから作ったものと `--city` で作ったものが**行単位で一致する**ことを確認済み
+(51,170棟、差分0件)。
+
 CityGMLのパースは自前で書かず、PLATEAU公式コンバータの
 [nusamai-citygml / nusamai-plateau](https://github.com/MIERUNE/PLATEAU-GIS-Converter) に任せている
 (MITライセンス。crates.io未公開なのでgit依存、`rev` 固定)。
-用途コードの日本語への解決 (`401` → 業務施設) も、zip内のコードリストを引く実装が向こうにある。
+
+**用途コードの解決 (`401` → 業務施設) は自前で持っている。** nusamai付属のリゾルバは
+ローカルのzipパスを前提にしていて、Rangeで読むときは手元にパスが無いため。
+コードリスト (293ファイル・10MB) を先にメモリへ載せる形にしたので、
+手元でもリモートでも同じ経路になる。副次的に、手元のzipからの変換も
+1分45秒から13秒に縮んだ (zipを開き直さなくなったため)。
 
 使うのは `bldg:lod0RoofEdge` (屋根の外周線) だけ。全建物にある2Dのフットプリントで、
 地図表示にはこれと `measuredHeight` があれば足りる。

@@ -9,12 +9,104 @@
 //! 立体 (LOD1以上) は高さの数値で代用できるので読まない。
 
 use crate::geoparquet;
-use crate::{for_each_zip_entry, wgs84_transformer};
+use crate::wgs84_transformer;
 use anyhow::{Context, Result, bail};
 use geo_types::{LineString, MultiPolygon, Polygon};
+use nusamai_citygml::codelist::CodeResolver;
 use nusamai_citygml::{CityGmlElement, CityGmlReader, GeometryType, ParseError, SubTreeReader};
-use std::io::BufRead;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, Read, Seek};
 use std::path::Path;
+
+/// コードリストの置き場所を表すだけの、実在しないURL。
+///
+/// nusamaiはCityGMLの `codeSpace` (`../../codelists/Building_usage.xml` のような
+/// 相対パス) を、渡した基準URLからの相対で解決する。`zip/udx/bldg/x.gml` を基準に
+/// すると `zip/codelists/Building_usage.xml` になるので、ファイル名で引ける。
+const CODELIST_BASE: &str = "https://plateau.invalid/zip/";
+
+/// zipから読み込んだコードリスト。用途コード (454など) を「業務施設」に直す。
+///
+/// nusamai付属の `Resolver` はローカルのzipパスを前提にしているが、
+/// **HTTP Range で読むときは手元にパスが無い**。中身を先にメモリへ載せてしまえば
+/// ローカルもリモートも同じ経路になるので、こちらを使う。
+pub struct Codelists {
+    /// ファイル名 (`Building_usage.xml`) → 生のXML。
+    raw: HashMap<String, Vec<u8>>,
+    /// 解決済み。`resolve` が `&self` なので内側で持つ。
+    /// 293ファイル・10MBあるが、実際に引かれるのは数本なので必要になってから読む。
+    parsed: RefCell<HashMap<String, HashMap<String, String>>>,
+}
+
+impl Codelists {
+    fn file_name(path: &str) -> Option<&str> {
+        path.rsplit('/').next().filter(|name| !name.is_empty())
+    }
+
+    /// `codelists/*.xml` を集めたものから作る。
+    pub fn new(entries: impl IntoIterator<Item = (String, Vec<u8>)>) -> Self {
+        let raw = entries
+            .into_iter()
+            .filter_map(|(path, bytes)| {
+                Self::file_name(&path).map(|name| (name.to_string(), bytes))
+            })
+            .collect();
+        Self {
+            raw,
+            parsed: RefCell::new(HashMap::new()),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.raw.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.raw.is_empty()
+    }
+
+    /// パースの基準に渡すURL。`name` は `udx/bldg/x.gml` のような内部パス。
+    pub fn source_uri(name: &str) -> Result<url::Url> {
+        url::Url::parse(CODELIST_BASE)
+            .and_then(|base| base.join(name))
+            .with_context(|| format!("URLを組み立てられません: {name}"))
+    }
+}
+
+impl CodeResolver for Codelists {
+    fn resolve(
+        &self,
+        base_url: &url::Url,
+        code_space: &str,
+        code: &str,
+    ) -> Result<Option<String>, ParseError> {
+        let absolute = base_url.join(code_space).map_err(|e| {
+            ParseError::CodelistError(format!("codeSpaceを解決できません {code_space}: {e}"))
+        })?;
+        let Some(name) = Self::file_name(absolute.path()) else {
+            return Ok(None);
+        };
+        if let Some(dict) = self.parsed.borrow().get(name) {
+            return Ok(dict.get(code).cloned());
+        }
+        let Some(bytes) = self.raw.get(name) else {
+            // 参照されているコードリストがzipに無いことはある。値をそのまま通す。
+            return Ok(None);
+        };
+        let dictionary = nusamai_plateau::codelist::xml::parse_dictionary(std::io::Cursor::new(
+            bytes.as_slice(),
+        ))?;
+        let simple: HashMap<String, String> = dictionary
+            .into_iter()
+            .map(|(key, definition)| (key, definition.value().to_string()))
+            .collect();
+        let found = simple.get(code).cloned();
+        self.parsed.borrow_mut().insert(name.to_string(), simple);
+        Ok(found)
+    }
+}
 
 /// PLATEAUが「不明」を表すのに使う番兵値。
 ///
@@ -72,40 +164,83 @@ pub fn multi_polygon_bbox(mp: &MultiPolygon<f64>) -> [f64; 4] {
 /// zipは展開しない。`udx/bldg/*.gml` だけを1本ずつ取り出して読む。
 /// テクスチャ (`*_appearance/`) は読まないので、対象は展開後2.0GB程度で済む。
 pub fn parse_zip(zip_path: &Path) -> Result<Vec<Row>> {
-    let zip_path = zip_path
-        .canonicalize()
-        .with_context(|| format!("パスを解決できません: {}", zip_path.display()))?;
+    let file =
+        File::open(zip_path).with_context(|| format!("開けません: {}", zip_path.display()))?;
+    parse_archive(file, &zip_path.display().to_string())
+}
 
-    // コードリストの解決はnusamai側に任せる。`<zip>/<内部パス>` の形のURLを渡すと、
-    // `../../codelists/*.xml` をzip内から引いてくれる (展開不要)。
-    let resolver = nusamai_plateau::codelist::Resolver::new();
+/// [`parse_zip`] の、ローカルのファイルに限らない版。
+///
+/// `Read + Seek` があればよいので、HTTP Range で範囲を取るものを渡せば
+/// **zipを落とさずに**変換できる (`crate::remote_zip`)。PLATEAUのCityGMLは
+/// 全国で1,385GBあり、落としてから読む道が無い。
+///
+/// **アーカイブは一度しか開かない。** リモートでは中央ディレクトリの読み直しが
+/// そのまま往復になるため。
+pub fn parse_archive(source: impl Read + Seek, label: &str) -> Result<Vec<Row>> {
+    let mut archive =
+        zip::ZipArchive::new(source).with_context(|| format!("zipとして読めません: {label}"))?;
+
+    // 名前を先に集める。読み出し中は archive を可変で借りるため、
+    // 反復しながら by_name を呼べない。
+    //
+    // **`file_names()` を使うこと。** `by_index_raw` は1件ごとにローカルヘッダを
+    // 読みに行くので、5万を超えるエントリを舐めるとファイル全体を引きずる
+    // (港区で実測: 1,013MB / 3,097リクエスト。必要なのは建物199MBだけ)。
+    // `file_names` は読み込み済みの中央ディレクトリから返すので通信しない。
+    let mut codelist_names = Vec::new();
+    let mut building_names = Vec::new();
+    for name in archive.file_names() {
+        if name.starts_with("codelists/") && name.ends_with(".xml") {
+            codelist_names.push(name.to_string());
+        } else if name.starts_with("udx/bldg/") && name.ends_with(".gml") {
+            building_names.push(name.to_string());
+        }
+    }
+    building_names.sort();
+    if building_names.is_empty() {
+        bail!("建物のGMLが1本もありません: {label}");
+    }
+
+    let mut codelists = Vec::with_capacity(codelist_names.len());
+    for name in &codelist_names {
+        codelists.push((name.clone(), read_entry(&mut archive, name)?));
+    }
+    // 用途コードを日本語に直すのに要る。無いとコードのまま入って読めなくなる。
+    let resolver = Codelists::new(codelists);
+    if resolver.is_empty() {
+        bail!("コードリストがありません (用途が解決できない): {label}");
+    }
 
     let mut rows = Vec::new();
-    for_each_zip_entry(
-        &zip_path,
-        |name| name.starts_with("udx/bldg/") && name.ends_with(".gml"),
-        |name, bytes| {
-            let source_uri = url::Url::from_file_path(zip_path.join(name))
-                .map_err(|_| anyhow::anyhow!("URLに変換できません: {name}"))?;
-            let context = nusamai_citygml::ParseContext::new(source_uri, &resolver);
+    for name in &building_names {
+        let bytes = read_entry(&mut archive, name)?;
+        let context = nusamai_citygml::ParseContext::new(Codelists::source_uri(name)?, &resolver);
 
-            let mut xml_reader = quick_xml::NsReader::from_reader(std::io::Cursor::new(bytes));
-            let mut citygml_reader = CityGmlReader::new(context);
-            let mut st = citygml_reader
-                .start_root(&mut xml_reader)
-                .map_err(|e| anyhow::anyhow!("{e:?}"))
-                .with_context(|| format!("ルート要素を読めません: {name}"))?;
-            collect_buildings(&mut st, &mut rows)
-                .map_err(|e| anyhow::anyhow!("{e:?}"))
-                .with_context(|| format!("建物を読めません: {name}"))?;
-            Ok(())
-        },
-    )?;
+        let mut xml_reader = quick_xml::NsReader::from_reader(std::io::Cursor::new(bytes));
+        let mut citygml_reader = CityGmlReader::new(context);
+        let mut st = citygml_reader
+            .start_root(&mut xml_reader)
+            .map_err(|e| anyhow::anyhow!("{e:?}"))
+            .with_context(|| format!("ルート要素を読めません: {name}"))?;
+        collect_buildings(&mut st, &mut rows)
+            .map_err(|e| anyhow::anyhow!("{e:?}"))
+            .with_context(|| format!("建物を読めません: {name}"))?;
+    }
 
     if rows.is_empty() {
-        bail!("建物が1件も読めませんでした: {}", zip_path.display());
+        bail!("建物が1件も読めませんでした: {label}");
     }
     Ok(rows)
+}
+
+fn read_entry<R: Read + Seek>(archive: &mut zip::ZipArchive<R>, name: &str) -> Result<Vec<u8>> {
+    let mut entry = archive
+        .by_name(name)
+        .with_context(|| format!("エントリを開けません: {name}"))?;
+    let mut buf = Vec::with_capacity(entry.size() as usize);
+    std::io::copy(&mut entry, &mut buf).with_context(|| format!("エントリを読めません: {name}"))?;
+    Ok(buf)
 }
 
 /// `core:cityObjectMember` を辿って建物だけを拾う。

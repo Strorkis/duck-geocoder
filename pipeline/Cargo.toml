@@ -35,3 +35,4 @@ serde_json = "1.0.151"
 # thrift 0.17 (GHSA-2f9f-gq7v-9h6m) を連れてくるため、自前で書く方に倒した)。
 wkb = "0.9"
 zip = "8.6.0"
+ureq = { version = "3.4.1", features = ["rustls"] }
