@@ -14,6 +14,48 @@
 | [PLATEAU](https://www.mlit.go.jp/plateau/site-policy/) | PDL 1.0 (CC BY 4.0でも可) | 対象外 | 可 | ✅ 使える |
 | Overture Maps | ODbL 1.0 | 対象外 | 可 (share-alike) | ✅ 使用中 |
 | OpenStreetMap | ODbL 1.0 | 対象外 | 可 (share-alike) | ✅ 使える |
+| [Mapterhorn](https://mapterhorn.com/attribution) (標高タイル) | ソースごと | **Mapterhorn側が取得済み** | 実行時に読むだけ | ✅ 使用中 |
+
+### Mapterhorn の標高タイル
+
+地形表示に使っている。[attribution.json](https://download.mapterhorn.com/attribution.json) に
+ソース一覧があり、**日本は基盤地図情報 (数値標高モデル)** で `jpdem1a` (1m)・`jpdem5a` (5m)・
+`jpdem10a` / `jpdem10b` (10m) を持つ。**1m版にも追従している。**
+
+ライセンス欄に
+「国土地理院コンテンツ利用規約／**測量法に基づく国土地理院長承認（使用）R 7JHs 542**」とあり、
+測量成果の使用承認はMapterhorn側が取得している。こちらは配信されているタイルを
+**実行時に読むだけ**なので、地理院タイルをベースマップに使っているのと同じ立場になる。
+出典は `tilejson.json` の `attribution` をMapLibreがそのまま表示する
+(手で書き足していないので、向こうが文言を変えれば追随する)。
+
+`tilejson.json` の実測値:
+
+| 項目 | 値 |
+| --- | --- |
+| encoding | `terrarium` (**MSL基準**。楕円体高ではないのでジオイド補正は不要) |
+| tileSize | 512 |
+| maxzoom | **宣言が無い。実際は z16 まで** (z17以降は404) |
+
+maxzoom が宣言されていないので、ソース定義側で `maxzoom: 16` を明示している。
+入れないと、建物を見るズーム (15以上) で404を撃ち続ける。
+
+### PLATEAUのDEMを表示に使わない理由
+
+PLATEAUのCityGMLには地形モデル (`dem:TINRelief`) が同梱されているが、**表示には使わない。**
+
+港区の `udx/dem/533946_dem_6697_op.gml` を展開せずに測った結果:
+
+| | 実測値 |
+| --- | --- |
+| 三角形の辺の長さ | **5.00m と 7.08m のみ** (7.08 = 5×√2) |
+| 4メッシュ分の展開後サイズ | **960 MB** |
+
+**TINといっても5mグリッドを三角形に割っただけ**で、5mラスタと情報量が同じ。
+「TINだから正確」ではない。表示用にこれをラスタタイルへ焼く工程を持つ意味がない。
+
+必要になるとすれば、**表示ではなく計算に使う標高**が欲しくなったとき
+(空間IDのボクセル化など)。標高タイルは表示専用で、SQLからは引けない。
 
 ### 承認が不要なのは「タイル」であって「元データ」ではない
 

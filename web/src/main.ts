@@ -6,6 +6,7 @@ import {
   Popup,
   AttributionControl,
   NavigationControl,
+  TerrainControl,
   setWorkerUrl,
   type StyleSpecification,
 } from 'maplibre-gl';
@@ -598,6 +599,22 @@ function creditLink(url: string, label: string): string {
 
 // 国土地理院タイル (淡色地図)。利用規約により出典表示 (attribution) が必須。
 const GSI_TERMS_URL = 'https://maps.gsi.go.jp/development/ichiran.html';
+
+/**
+ * 地形の標高タイル。
+ *
+ * Mapterhornの日本のソースは基盤地図情報 (数値標高モデル) で、1m・5m・10m版を持つ。
+ * 測量法に基づく国土地理院長承認 (使用) はMapterhorn側が取得済み (R 7JHs 542) で、
+ * こちらは配信されているタイルを実行時に読むだけなので、地理院タイルを
+ * ベースマップに使っているのと同じ立場になる (出典表示のみ)。
+ *
+ * PLATEAUのCityGMLにも地形モデル (TINRelief) が同梱されているが、実測すると
+ * 三角形の辺が5.00mと7.08m (=5×√2) しか無く、**5mグリッドを三角形に割っただけ**
+ * だった。情報量は5mラスタと同じで、港区の4メッシュだけで展開後960MBある。
+ * 表示のためにこれをラスタタイルへ焼く工程を持つ意味がないので使わない。
+ */
+const TERRAIN_TILEJSON_URL = 'https://tiles.mapterhorn.com/tilejson.json';
+
 const GSI_PALE_STYLE: StyleSpecification = {
   version: 8,
   sources: {
@@ -608,6 +625,15 @@ const GSI_PALE_STYLE: StyleSpecification = {
       maxzoom: 18,
       attribution: creditLink(GSI_TERMS_URL, '国土地理院'),
     },
+    terrain: {
+      type: 'raster-dem',
+      // tiles / encoding (terrarium) / tileSize / attribution は tilejson から読ませる。
+      // 個別に書き写すと、向こうが変えたときに黙ってずれる。
+      url: TERRAIN_TILEJSON_URL,
+      // tilejson が maxzoom を宣言していないのに、実際は z16 までしか無い
+      // (z17以降は404)。明示しないと建物を見るズームで404を撃ち続ける。
+      maxzoom: 16,
+    },
   },
   layers: [
     {
@@ -616,6 +642,9 @@ const GSI_PALE_STYLE: StyleSpecification = {
       source: 'gsi',
     },
   ],
+  // ここに terrain を書かないこと。スタイルに書くと地形タイルの取得が
+  // map の 'load' の条件に入り、**Mapterhornが落ちていると起動できなくなる**
+  // (読み込み中の表示から進まない)。読み込み後に setTerrain で有効にする。
 };
 
 const EMPTY_FEATURE_COLLECTION: GeoJSON.FeatureCollection = {
@@ -652,6 +681,9 @@ function initMap(datasets: CatalogEntry[]): Promise<MapLibreMap> {
   // 0に戻る。つまり「2Dに戻す」手段が標準で付いてくるので、自前で切り替えUIを持たない。
   // 左上は検索欄、右下は出典表示があるので右上に置く。
   map.addControl(new NavigationControl({ visualizePitch: true }), 'top-right');
+  // 地形を切る手段。平野部では起伏が無く、タイルを読むだけになる場面もある。
+  // MapLibreに標準で付いてくるので、自前のトグルは作らない。
+  map.addControl(new TerrainControl({ source: 'terrain' }), 'top-right');
 
   map.on('error', (e) => console.error('[map] error', e.error ?? e));
 
@@ -694,6 +726,10 @@ function initMap(datasets: CatalogEntry[]): Promise<MapLibreMap> {
           // 高さが無い建物にも既定値を与える。0にすると描画されず、
           // Overtureは高さが1.5%しか入っていないのでほぼ全部消えてしまう。
           'fill-extrusion-height': ['coalesce', ['get', 'height'], 3],
+          // **地盤標高を入れないこと。** 地形が有効なとき、MapLibreは
+          // get_elevation(重心) を base と height の両方に加算する
+          // (fill_extrusion.vertex.glsl)。base は地形面からの相対値なので、
+          // ここに海抜を入れると二重に足して建物が空へ飛ぶ。
           'fill-extrusion-base': 0,
           // 1未満にすると面同士が透けて見える描画崩れが出るので、下地を
           // わずかに透かす程度に留める。
@@ -755,6 +791,9 @@ function initMap(datasets: CatalogEntry[]): Promise<MapLibreMap> {
           'circle-stroke-width': 2,
         },
       });
+      // 地形は最後に有効にする。ここまで来ていれば、以降タイルが取れなくても
+      // 起伏が出ないだけで地図は使える。起動を外部サービスに握らせない。
+      map.setTerrain({ source: 'terrain', exaggeration: 1 });
       resolve(map);
     });
   });

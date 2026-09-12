@@ -92,6 +92,9 @@ async function pickOnMap(page: Page, position?: { x: number; y: number }) {
   await page.locator('#map canvas').click({ position });
 }
 
+/** 地形の標高タイル (Mapterhorn)。取れないときの挙動を見るテストで遮断する。 */
+const TERRAIN_TILES = 'https://tiles.mapterhorn.com/*/*/*.webp';
+
 test.beforeEach(async ({ page }) => {
   // './' であって '/' ではない。baseURL は new URL(url, baseURL) で解決されるので、
   // '/' だとサブパス配信 (GitHub Pagesなど) のときにサイトのルートへ飛んでしまう。
@@ -408,6 +411,74 @@ test('逆ジオコーディング中は合図が出る', async ({ page }) => {
 
   await expect.poll(() => highlightFeatureCount(page)).toBe(1);
   await expect(page.locator('#busy')).toBeHidden();
+});
+
+test('地形が有効になっていて、コンパスの下のボタンで切れる', async ({ page }) => {
+  const hasTerrain = () =>
+    page.evaluate(() => (window as unknown as TestWindow).__map!.getTerrain() !== null);
+
+  expect(await hasTerrain()).toBe(true);
+
+  // 自前のトグルは作らず、MapLibre標準の TerrainControl を置いてある。
+  // 有効なときだけ class に -enabled が付くので、前方一致で拾う。
+  const terrainButton = page.locator('button[class*="maplibregl-ctrl-terrain"]');
+  await expect(terrainButton).toHaveClass(/maplibregl-ctrl-terrain-enabled/);
+
+  await terrainButton.click();
+  await expect.poll(hasTerrain).toBe(false);
+
+  await terrainButton.click();
+  await expect.poll(hasTerrain).toBe(true);
+});
+
+/**
+ * 地形は外部サービス (Mapterhorn) から読む。**起動をそこに握らせない。**
+ *
+ * スタイルに terrain を書くと地形タイルの取得が map の 'load' の条件に入り、
+ * Mapterhornが落ちていると読み込み中の表示から先へ進めなくなる (実際になった)。
+ * 読み込み後に setTerrain で有効にすることで切り離してある。
+ */
+test('地形タイルが取れなくても地図は使える', async ({ page }) => {
+  await page.route(TERRAIN_TILES, (route) => route.abort());
+  await page.reload();
+  await waitForReady(page);
+
+  await expect(page.locator('#map canvas')).toBeVisible();
+  await expect(page.locator('#search-input')).toBeEnabled();
+  // 地形そのものは有効なまま (タイルが来ないので起伏が出ないだけ)。
+  expect(await page.evaluate(() => (window as unknown as TestWindow).__map!.getTerrain())).not.toBe(
+    null,
+  );
+});
+
+// 出典表示はライセンス上の義務。tilejson 由来のものが実際に出ることを確かめる
+// (手で書き足していないので、向こうが文言を変えれば追随する)。
+test('出典にMapterhornが出る', async ({ page }) => {
+  await expect(page.locator('.maplibregl-ctrl-attrib')).toContainText('Mapterhorn');
+});
+
+/**
+ * 標高が実際に読めることを、値で確かめる。
+ *
+ * URL・エンコーディング (terrarium)・maxzoom のどれを間違えても起伏は出ないが、
+ * 画面を見ただけでは「平野だから平ら」と区別がつかない。高尾山で数値を見る。
+ */
+test('標高タイルから実際の高さが読める', async ({ page }) => {
+  // 高尾山 (標高599m)。ズームを上げないと細かいタイルが来ない。
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.2438, 35.6251], zoom: 14 });
+  });
+
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() =>
+          (window as unknown as TestWindow).__map!.queryTerrainElevation([139.2438, 35.6251]),
+        ),
+      { message: '地形タイルが届くまで待つ', timeout: 30_000 },
+    )
+    .toBeGreaterThan(300);
 });
 
 test('十分に寄ると建物が表示され、離すと消える', async ({ page }) => {
