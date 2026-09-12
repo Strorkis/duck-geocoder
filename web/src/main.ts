@@ -8,6 +8,7 @@ import {
   NavigationControl,
   TerrainControl,
   setWorkerUrl,
+  type RasterTileSource,
   type StyleSpecification,
 } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -597,8 +598,25 @@ function creditLink(url: string, label: string): string {
   return `<a href="${url}" target="_blank" rel="noreferrer">${label}</a>`;
 }
 
-// 国土地理院タイル (淡色地図)。利用規約により出典表示 (attribution) が必須。
+// 国土地理院タイル。利用規約により出典表示 (attribution) が必須。
 const GSI_TERMS_URL = 'https://maps.gsi.go.jp/development/ichiran.html';
+
+/**
+ * 選べる地図。**先頭が既定** (建物の出所と同じ流儀)。
+ *
+ * 出典はどれも「国土地理院」で同じなので、切り替えても出典表示は変えなくてよい。
+ * 3種とも z18 までタイルがあることを実測で確かめてある (港区・高尾山)。
+ * 地形を入れたときは航空写真の方が起伏が分かる。
+ */
+const BASEMAPS = [
+  { id: 'pale', label: '淡色地図', url: 'https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png' },
+  { id: 'std', label: '標準地図', url: 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png' },
+  {
+    id: 'photo',
+    label: '航空写真',
+    url: 'https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg',
+  },
+] as const;
 
 /**
  * 地形の標高タイル。
@@ -615,12 +633,14 @@ const GSI_TERMS_URL = 'https://maps.gsi.go.jp/development/ichiran.html';
  */
 const TERRAIN_TILEJSON_URL = 'https://tiles.mapterhorn.com/tilejson.json';
 
-const GSI_PALE_STYLE: StyleSpecification = {
+const GSI_STYLE: StyleSpecification = {
   version: 8,
   sources: {
     gsi: {
       type: 'raster',
-      tiles: ['https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png'],
+      // 切り替えは setTiles でURLだけ差し替える。tileSize も maxzoom も出典も
+      // 3種で共通なので、ソースを作り直す必要がない。
+      tiles: [BASEMAPS[0].url],
       tileSize: 256,
       maxzoom: 18,
       attribution: creditLink(GSI_TERMS_URL, '国土地理院'),
@@ -637,7 +657,7 @@ const GSI_PALE_STYLE: StyleSpecification = {
   },
   layers: [
     {
-      id: 'gsi-pale',
+      id: 'gsi-basemap',
       type: 'raster',
       source: 'gsi',
     },
@@ -669,7 +689,7 @@ function initMap(datasets: CatalogEntry[]): Promise<MapLibreMap> {
 
   const map = new MapLibreMap({
     container: 'map',
-    style: GSI_PALE_STYLE,
+    style: GSI_STYLE,
     center: [139.767, 35.681],
     zoom: 9,
     // 既定の出典表示を止め、カタログ由来の出典を足したものに差し替える。
@@ -809,7 +829,8 @@ async function main() {
   const busyEl = document.querySelector<HTMLDivElement>('#busy')!;
   const busyLabelEl = document.querySelector<HTMLSpanElement>('#busy-label')!;
   const gotoBuildingsButton = document.querySelector<HTMLButtonElement>('#goto-buildings')!;
-  const buildingsPanel = document.querySelector<HTMLDivElement>('#buildings-panel')!;
+  const basemapSelect = document.querySelector<HTMLSelectElement>('#basemap')!;
+  const buildingsSection = document.querySelector<HTMLDivElement>('#buildings-section')!;
   const sourceSelect = document.querySelector<HTMLSelectElement>('#building-source')!;
   const filtersEl = document.querySelector<HTMLDivElement>('#building-filters')!;
   const heightField = document.querySelector<HTMLDivElement>('#height-field')!;
@@ -857,6 +878,24 @@ async function main() {
   input.disabled = false;
   pickButton.disabled = false;
   input.focus();
+
+  // 地図の切り替え。出典も maxzoom も tileSize も3種で同じなので、
+  // ソースを作り直さずURLだけ差し替える。
+  //
+  // 地形の入切とは連動させない。自分で選んだものが別の操作で勝手に変わるのは、
+  // 逆ジオコーディングを📍ボタンにしたときに取り除いた感覚と同じになる。
+  for (const basemap of BASEMAPS) {
+    const option = document.createElement('option');
+    option.value = basemap.id;
+    option.textContent = basemap.label;
+    basemapSelect.append(option);
+  }
+  basemapSelect.value = BASEMAPS[0].id;
+  basemapSelect.addEventListener('change', () => {
+    const basemap = BASEMAPS.find((b) => b.id === basemapSelect.value);
+    if (!basemap) return;
+    (map.getSource('gsi') as RasterTileSource | undefined)?.setTiles([basemap.url]);
+  });
 
   // 初期化のオーバーレイ (#loading) は上で消えるが、その後も数秒かかる操作がある。
   // 操作を先に触れる作りにしている以上、「触れる」と「終わっている」を
@@ -1125,7 +1164,7 @@ async function main() {
 
   if (activeSource) {
     map.on('moveend', requestRefresh);
-    buildingsPanel.hidden = false;
+    buildingsSection.hidden = false;
 
     for (const source of buildingSources) {
       const option = document.createElement('option');

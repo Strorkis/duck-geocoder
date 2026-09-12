@@ -54,33 +54,40 @@
              データが無いときはJavaScript側で隠したままにする。 -->
         <button id="goto-buildings" type="button" hidden>建物のある範囲へ移動</button>
       </details>
-      <!-- 建物の出所と絞り込み。データが無ければJavaScript側で隠す。 -->
-      <div id="buildings-panel" hidden>
+      <!-- 表示の設定。四隅は他で埋まっているので、パネルは増やさずここへ集める。 -->
+      <div id="display-panel">
         <div class="field">
-          <label for="building-source">建物データ</label>
-          <select id="building-source"></select>
+          <label for="basemap">地図</label>
+          <select id="basemap"></select>
         </div>
-        <!-- 絞り込みは属性が揃っている出所 (PLATEAU) でだけ出す。 -->
-        <div id="building-filters" hidden>
-          <div class="field" id="height-field">
-            <label for="min-height">高さ <output id="min-height-value">0 m</output> 以上</label>
-            <input id="min-height" type="range" min="0" max="200" step="5" value="0" />
+        <!-- 建物まわり。データが無ければJavaScript側で隠す (地図の切り替えは残す)。 -->
+        <div id="buildings-section" hidden>
+          <div class="field">
+            <label for="building-source">建物データ</label>
+            <select id="building-source"></select>
           </div>
-          <div class="field" id="usage-field">
-            <!-- 1つだけ見たいときに全部外させないための一括操作。 -->
-            <label
-              >用途
-              <span class="bulk">
-                <button id="usage-all" type="button">すべて</button>
-                <button id="usage-none" type="button">なし</button>
-              </span>
-            </label>
-            <div id="usage-options"></div>
+          <!-- 絞り込みは属性が揃っている出所 (PLATEAU) でだけ出す。 -->
+          <div id="building-filters" hidden>
+            <div class="field" id="height-field">
+              <label for="min-height">高さ <output id="min-height-value">0 m</output> 以上</label>
+              <input id="min-height" type="range" min="0" max="200" step="5" value="0" />
+            </div>
+            <div class="field" id="usage-field">
+              <!-- 1つだけ見たいときに全部外させないための一括操作。 -->
+              <label
+                >用途
+                <span class="bulk">
+                  <button id="usage-all" type="button">すべて</button>
+                  <button id="usage-none" type="button">なし</button>
+                </span>
+              </label>
+              <div id="usage-options"></div>
+            </div>
           </div>
+          <!-- 絞り込みの外に置く。中に入れると、絞り込める列を持たない出所を
+               選んだときに件数ごと消えてしまう。 -->
+          <p id="building-count" class="note"></p>
         </div>
-        <!-- 絞り込みの外に置く。中に入れると、絞り込める列を持たない出所を
-             選んだときに件数ごと消えてしまう。 -->
-        <p id="building-count" class="note"></p>
       </div>
       <div id="loading">
         <div class="spinner"></div>

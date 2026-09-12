@@ -148,9 +148,9 @@ body,
   display: none;
 }
 
-/* 建物の出所と絞り込み。使い方パネルと逆側 (右下) に置く。
+/* 表示の設定 (地図・建物の出所・絞り込み)。使い方パネルと逆側 (右下) に置く。
    MapLibreの出典表示も右下なので、その上に重ならない高さから始める。 */
-#buildings-panel {
+#display-panel {
   position: absolute;
   right: 1rem;
   bottom: 2.5rem;
@@ -168,28 +168,29 @@ body,
   color: #333;
 }
 
-#buildings-panel[hidden],
+#display-panel[hidden],
+#buildings-section[hidden],
 #building-filters[hidden] {
   display: none;
 }
 
-#buildings-panel .field {
+#display-panel .field {
   margin-bottom: 0.7rem;
 }
 
-#buildings-panel .field > label {
+#display-panel .field > label {
   display: block;
   margin-bottom: 0.25rem;
   font-weight: 600;
 }
 
-#buildings-panel select,
-#buildings-panel input[type='range'] {
+#display-panel select,
+#display-panel input[type='range'] {
   width: 100%;
   box-sizing: border-box;
 }
 
-#buildings-panel select {
+#display-panel select {
   padding: 0.25rem;
   border: 1px solid #ccc;
   border-radius: 0.3rem;
@@ -220,12 +221,12 @@ body,
   text-overflow: ellipsis;
 }
 
-#buildings-panel .field > label .bulk {
+#display-panel .field > label .bulk {
   float: right;
   font-weight: normal;
 }
 
-#buildings-panel .bulk button {
+#display-panel .bulk button {
   margin-left: 0.2rem;
   padding: 0 0.3rem;
   font-size: 0.75rem;
@@ -235,7 +236,7 @@ body,
   cursor: pointer;
 }
 
-#buildings-panel .bulk button:hover {
+#display-panel .bulk button:hover {
   background: #f0f4ff;
 }
 
@@ -244,7 +245,7 @@ body,
   display: none;
 }
 
-#buildings-panel .note {
+#display-panel .note {
   margin: 0;
   color: #666;
   font-size: 0.8rem;

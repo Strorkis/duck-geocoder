@@ -413,6 +413,35 @@ test('逆ジオコーディング中は合図が出る', async ({ page }) => {
   await expect(page.locator('#busy')).toBeHidden();
 });
 
+/**
+ * 地図の切り替え。
+ *
+ * `<select>` の値が変わっただけで実際のタイルが切り替わっていない、を弾きたいので、
+ * 選択後のリクエストURLを見る。
+ */
+test('地図を航空写真に切り替えると写真のタイルを取りに行く', async ({ page }) => {
+  const requested: string[] = [];
+  page.on('request', (request) => {
+    if (request.url().includes('cyberjapandata.gsi.go.jp')) requested.push(request.url());
+  });
+
+  await page.locator('#basemap').selectOption({ label: '航空写真' });
+
+  await expect.poll(() => requested.some((url) => url.includes('/seamlessphoto/'))).toBe(true);
+});
+
+// 地図と地形は別々に選べる。片方の操作で、自分で選んだもう片方が勝手に変わらないこと。
+test('地形を切っても地図は変わらない', async ({ page }) => {
+  await page.locator('#basemap').selectOption({ label: '航空写真' });
+
+  await page.locator('button[class*="maplibregl-ctrl-terrain"]').click();
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as TestWindow).__map!.getTerrain()))
+    .toBe(null);
+
+  await expect(page.locator('#basemap')).toHaveValue('photo');
+});
+
 test('地形が有効になっていて、コンパスの下のボタンで切れる', async ({ page }) => {
   const hasTerrain = () =>
     page.evaluate(() => (window as unknown as TestWindow).__map!.getTerrain() !== null);
@@ -547,7 +576,7 @@ test('建物はホバーで情報が出て、地図は動かない', async ({ pa
 test('絞り込みは列の有無で決まる', async ({ page }) => {
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
 
-  await expect(page.locator('#buildings-panel')).toBeVisible();
+  await expect(page.locator('#buildings-section')).toBeVisible();
   // 属性の揃っているPLATEAUが既定。
   await expect(page.locator('#building-source')).toHaveValue(/plateau/);
   await expect(page.locator('#building-filters')).toBeVisible();
