@@ -528,6 +528,45 @@ test('十分に寄ると建物が表示され、離すと消える', async ({ pa
   await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBe(0);
 });
 
+/**
+ * カタログを空間索引として使っていることを、通信で確かめる。
+ *
+ * 建物は都市ごとに1ファイルで、PLATEAUを全国に広げると300を超える。
+ * 表示範囲と重ならないファイルまで `read_parquet` に渡すと、**中身が1件も
+ * 要らなくてもフッターだけは読みに行く** (1ファイル1往復)。
+ *
+ * このテストは「起動時に建物のparquetへ一度も触れていない」ことが前提になる。
+ * 触れていると手元にフッターが残り、範囲外へ飛んでも通信が出ないので、
+ * 絞れていなくても通ってしまう。用途の選択肢をカタログから作るように
+ * したのはそのため。
+ */
+test('表示範囲と重ならない建物データは読みに行かない', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  const plateau = await datasetUrl(page, PLATEAU_DATASET);
+  const requested: string[] = [];
+  page.on('request', (request) => {
+    if (request.url() === plateau) requested.push(request.url());
+  });
+
+  // 大阪市の中心部。港区のデータとは重ならない。
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [135.5023, 34.6937], zoom: 16 });
+  });
+  await expect(page.locator('#building-count')).toHaveText('0件');
+  expect(requested).toEqual([]);
+
+  // 重なる場所へ行けば読む。これが無いと「そもそも何も通信していない」だけでも
+  // 上の判定が通ってしまう。
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7454, 35.6586], zoom: 16 });
+  });
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
+  expect(requested.length).toBeGreaterThan(0);
+});
+
 test('建物はホバーで情報が出て、地図は動かない', async ({ page }) => {
   test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
 
@@ -582,7 +621,8 @@ test('絞り込みは列の有無で決まる', async ({ page }) => {
   await expect(page.locator('#building-filters')).toBeVisible();
   await expect(page.locator('#height-field')).toBeVisible();
 
-  // 用途の選択肢はコードに書かず、配信しているデータから引いている。
+  // 用途の選択肢はコードに書かず、カタログの語彙 (summaries) から作っている。
+  // 語彙を持つ列があるかどうかで、用途で絞れるかも決まる。
   await expect.poll(() => page.locator('#usage-options label').count()).toBeGreaterThan(5);
 
   // Overtureも高さの列を持つので、高さでは絞れる。

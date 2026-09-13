@@ -25,6 +25,9 @@ setWorkerUrl(maplibreWorkerUrl);
  * カタログ (data/output/catalog.json)。
  * Rust側の build_catalog がGeoParquetのメタデータから生成するので、
  * 変換したファイルが増えればUIは自動で追随する。
+ *
+ * 列と語彙の項目名はSTACに合わせてある (`table:columns` / `table:row_count` は
+ * STACのTable拡張、`summaries` はSTAC Collectionの同名フィールド)。
  */
 interface CatalogEntry {
   id: string;
@@ -35,8 +38,16 @@ interface CatalogEntry {
   source_url: string;
   geometry_types: string[];
   bbox: [number, number, number, number] | null;
-  row_count: number;
-  columns: { name: string; data_type: string }[];
+  'table:row_count': number;
+  'table:columns': { name: string; type: string }[];
+  /**
+   * 列がとりうる値。列名 → 値 (件数の多い順)。語彙を持たない列は入っていない。
+   *
+   * **絞り込みの選択肢はここから作る。** データを走査して作ると、
+   * 表示範囲で絞れない (範囲外にしか無い用途を落とすと、その建物が
+   * 絞り込みから消える) ため、ファイルの数だけ往復することになる。
+   */
+  summaries?: Record<string, string[]>;
 }
 
 /**
@@ -203,6 +214,8 @@ interface BuildingSource {
   hasHeight: boolean;
   /** 用途・種別を表す列。無ければ null。出所によって列名が違う。 */
   categoryColumn: string | null;
+  /** 用途の選択肢 (件数の多い順)。カタログの語彙をそのまま使う。 */
+  usages: string[];
   /** 引く前に呼ぶ (空間関数の読み込み)。 */
   ensure: () => Promise<void>;
 }
@@ -291,7 +304,7 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
   // 行政区域は全国版と都道府県版が同居しうる。範囲の広いもの (=件数が最多) を採用する。
   const adminDataset = datasets
     .filter((d) => d.kind === 'admin')
-    .sort((a, b) => b.row_count - a.row_count)[0];
+    .sort((a, b) => b['table:row_count'] - a['table:row_count'])[0];
 
   if (oazaFiles.length === 0 || !adminDataset) {
     throw new Error('カタログに必要なデータセット (oaza / admin) がありません。');
@@ -356,16 +369,31 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
   const buildingSources: BuildingSource[] = buildingKinds.flatMap(({ kind, label }) => {
     const entries = datasets.filter((d) => d.kind === kind);
     if (entries.length === 0) return [];
-    // 何で絞れるかは列の有無から決める。用途を表す列名は出所によって違う
-    // (PLATEAUは usage、Overtureは class) ので、先に見つかった方を使う。
-    const columns = new Set(entries[0].columns.map((c) => c.name));
+    // 何で絞れるかは列の有無から決める。高さは列があれば絞れる。
+    const columns = new Set(entries[0]['table:columns'].map((c) => c.name));
+    // 用途で絞れる列は**カタログが語彙を持っている列**。列名 (PLATEAUは usage、
+    // Overtureは class) をここに書かないのは、出所が増えたときに書き足す場所が
+    // 分かれてしまうため。語彙を出すかどうかはパイプライン側が一箇所で決める。
+    //
+    // 語彙はファイルごとに入っているので、都市をまたいで束ねる。
+    // 先に出た順を保つので、件数の多い用途が上に来る並びのまま残る。
+    const vocabularies = new Map<string, Set<string>>();
+    for (const entry of entries) {
+      for (const [column, values] of Object.entries(entry.summaries ?? {})) {
+        const merged = vocabularies.get(column) ?? new Set<string>();
+        for (const value of values) merged.add(value);
+        vocabularies.set(column, merged);
+      }
+    }
+    const [categoryColumn, usages] = [...vocabularies][0] ?? [null, new Set<string>()];
     return [
       {
         id: entries.map((d) => d.id).join('+'),
         label,
         files: entries.map((d) => ({ file: d.file, bbox: d.bbox })),
         hasHeight: columns.has('height'),
-        categoryColumn: ['usage', 'class'].find((c) => columns.has(c)) ?? null,
+        categoryColumn,
+        usages: [...usages],
         bbox: unionBbox(entries.map((d) => d.bbox).filter((b): b is Bbox => b !== null)),
         ensure: ensureSpatial,
       },
@@ -483,34 +511,6 @@ async function fetchBuildingsInView(
       height: r.height,
     };
   });
-}
-
-/**
- * 用途の選択肢を、実データから引く。
- *
- * 値をコードに書かず、配信しているデータに追随させるため。
- * 用途の列は小さい (row groupあたり3〜4KB) ので、走査そのものは軽い。
- *
- * **ここだけは全ファイルを読む。** 表示範囲では絞れない (範囲外にしか無い用途を
- * 落とすと、その建物が絞り込みから消えてしまう)。ファイルが増えると
- * 1ファイル1往復のフッター読みが効いてくるので、**都市数が増えたら
- * 語彙だけの小さなファイルを作る** (行政区域の名称で `overture_admin_names` を
- * 別に持っているのと同じ手)。
- */
-async function fetchUsageOptions(
-  conn: duckdb.AsyncDuckDBConnection,
-  source: BuildingSource,
-): Promise<string[]> {
-  if (!source.categoryColumn) return [];
-  const list = source.files.map(({ file }) => `'${file}'`).join(', ');
-  const result = await conn.query(`
-    SELECT ${source.categoryColumn} AS value, count(*) AS n
-    FROM read_parquet([${list}])
-    WHERE ${source.categoryColumn} IS NOT NULL
-    GROUP BY value
-    ORDER BY n DESC;
-  `);
-  return result.toArray().map((row) => (row.toJSON() as unknown as { value: string }).value);
 }
 
 /**
@@ -1208,16 +1208,6 @@ async function main() {
     // 出所が1つしか無ければ選ばせる意味がない。
     sourceSelect.disabled = buildingSources.length < 2;
 
-    // 用途の選択肢は出所ごとに1度だけ引く。
-    const usageOptionsLoaded = new Map<string, string[]>();
-
-    // showFilters は読み込みを伴うので失敗しうる。捨てると unhandled rejection に
-    // なり、選択肢が空のまま何も起きない状態になる。
-    const filtersFailed = (e: unknown) => {
-      console.error('[showFilters] failed', e);
-      showFailure('用途の読み込みに失敗しました');
-    };
-
     /** チェック状態を条件に反映する。全部入っていれば「絞っていない」= null。 */
     const syncUsageFilter = (all: string[]) => {
       const checked = [...usageOptionsEl.querySelectorAll<HTMLInputElement>('input:checked')];
@@ -1225,20 +1215,16 @@ async function main() {
       requestRefresh();
     };
 
-    const showFilters = async (source: BuildingSource) => {
+    // 選択肢はカタログに入っているので、**ここでデータを読まない**。
+    // 以前はここで全ファイルの用途の列を走査していて、起動のたびに
+    // ファイルの数だけ往復していた。
+    const showFilters = (source: BuildingSource) => {
       heightField.hidden = !source.hasHeight;
       usageField.hidden = source.categoryColumn === null;
       filtersEl.hidden = !source.hasHeight && source.categoryColumn === null;
 
       if (source.categoryColumn === null) return;
-      let usages = usageOptionsLoaded.get(source.id);
-      if (!usages) {
-        usages = await busy('用途を読み込み中…', async () => {
-          await source.ensure();
-          return fetchUsageOptions(conn, source);
-        });
-        usageOptionsLoaded.set(source.id, usages);
-      }
+      const usages = source.usages;
 
       // 出所ごとに語彙が違うので、切り替えのたびに作り直す。
       usageOptionsEl.replaceChildren();
@@ -1271,9 +1257,10 @@ async function main() {
       // 用途の語彙が出所ごとに違うので、そのまま持ち越すと意味が変わる。
       filter.usages = null;
       // どちらの出所も高さの列を持ち立体で描かれるので、傾きは出所で変えない。
-      showFilters(activeSource).then(requestRefresh).catch(filtersFailed);
+      showFilters(activeSource);
+      requestRefresh();
     });
-    showFilters(activeSource).catch(filtersFailed);
+    showFilters(activeSource);
     // 収録範囲の枠は refreshBuildings が出すが、その呼び出しは moveend でしか
     // 起きない。起動直後にも一度呼んでおかないと、地図を動かすまで枠が出ない。
     requestRefresh();

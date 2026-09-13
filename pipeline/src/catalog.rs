@@ -1,10 +1,20 @@
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::path::Path;
 
 /// データセット1件分のカタログエントリ。
 /// 件数・bbox・列構成は実際のGeoParquetのメタデータから読むので、中身とずれない。
+///
+/// 列と語彙の項目名は **STAC に合わせてある**。
+/// `table:columns` / `table:row_count` は
+/// [STACのTable拡張](https://github.com/stac-extensions/table)、
+/// `summaries` は
+/// [STAC Collectionの同名フィールド](https://github.com/radiantearth/stac-spec/blob/master/collection-spec/collection-spec.md#summaries)
+/// と同じ意味で使う。STAC文書そのものにはしていない (Catalog/Collection/Itemの
+/// 入れ子にすると1リクエストで読める形から外れるため) が、名前を合わせておけば
+/// 後からSTACへ移すときに値を作り直さずに済む。
 #[derive(Debug, Serialize)]
 pub struct DatasetEntry {
     /// ファイル名から決まる識別子。例: "n03_all"
@@ -25,8 +35,20 @@ pub struct DatasetEntry {
     pub geometry_types: Vec<String>,
     /// 収録範囲 [xmin, ymin, xmax, ymax] (WGS84)。
     pub bbox: Option<[f64; 4]>,
+    #[serde(rename = "table:row_count")]
     pub row_count: i64,
+    #[serde(rename = "table:columns")]
     pub columns: Vec<ColumnEntry>,
+    /// 列がとりうる値の一覧。列名 → 値 (件数の多い順)。
+    ///
+    /// **UIが選択肢をここから作るためにある。** 無いと起動時に全ファイルの
+    /// 該当列を走査することになり、ファイルが増えるほど1ファイル1往復の
+    /// フッター読みが積み上がる。語彙は小さく、カタログ自体は起動時に
+    /// どのみち1回読むので、ここに入れれば往復が0になる。
+    ///
+    /// 語彙を持つ列は [`Description::summary_columns`] で指定する。
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub summaries: BTreeMap<String, Vec<String>>,
 }
 
 /// データセットの種別。ジオメトリの型と用途が種別ごとに決まる。
@@ -56,6 +78,7 @@ pub enum DatasetKind {
 pub struct ColumnEntry {
     pub name: String,
     /// Parquet上の物理型。
+    #[serde(rename = "type")]
     pub data_type: String,
 }
 
@@ -109,6 +132,12 @@ struct Description {
     /// 人間向けの名称。
     title: &'static str,
     attribution: Attribution,
+    /// とりうる値をカタログに書き出す列。UIの選択肢がここから作られる。
+    ///
+    /// 名前や住所のように値が行ごとに違う列を入れてはいけない。
+    /// 取り違えても壊れないよう [`MAX_VOCABULARY`] で歯止めを掛けてあるが、
+    /// 歯止めに当たった列は選択肢が作れなくなる。
+    summary_columns: &'static [&'static str],
 }
 
 /// ファイル名の接頭辞と、そのデータセットの素性。
@@ -122,6 +151,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             kind: DatasetKind::AdminNames,
             title: "行政区域の名称",
             attribution: MLIT_KSJ,
+            summary_columns: &[],
         },
     ),
     (
@@ -130,6 +160,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             kind: DatasetKind::Admin,
             title: "行政区域",
             attribution: MLIT_KSJ,
+            summary_columns: &[],
         },
     ),
     (
@@ -138,6 +169,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             kind: DatasetKind::AdminNames,
             title: "行政区域の名称",
             attribution: OVERTURE,
+            summary_columns: &[],
         },
     ),
     (
@@ -146,6 +178,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             kind: DatasetKind::Admin,
             title: "行政区域",
             attribution: OVERTURE,
+            summary_columns: &[],
         },
     ),
     (
@@ -154,6 +187,8 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             kind: DatasetKind::Buildings,
             title: "建物",
             attribution: OVERTURE,
+            // Overtureの建物種別。"residential" "commercial" など。
+            summary_columns: &["class"],
         },
     ),
     (
@@ -162,6 +197,8 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             kind: DatasetKind::PlateauBuildings,
             title: "建物 (PLATEAU)",
             attribution: MLIT_PLATEAU,
+            // PLATEAUの用途。コードリストで解決済みの「住宅」「商業施設」など。
+            summary_columns: &["usage"],
         },
     ),
     (
@@ -170,6 +207,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             kind: DatasetKind::Oaza,
             title: "大字・町丁目",
             attribution: MLIT_ISJ,
+            summary_columns: &[],
         },
     ),
     (
@@ -178,6 +216,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             kind: DatasetKind::Block,
             title: "街区",
             attribution: MLIT_ISJ,
+            summary_columns: &[],
         },
     ),
 ];
@@ -225,6 +264,73 @@ fn read_geo_metadata(geo_json: &str) -> Result<(Vec<String>, Option<[f64; 4]>)> 
     Ok((geometry_types, bbox))
 }
 
+/// 語彙として扱う値の数の上限。
+///
+/// 選択肢に並べるためのものなので、これを超えたら列の指定を間違えている
+/// (名前や住所のような列を指したなど)。カタログを肥大させる前に打ち切る。
+const MAX_VOCABULARY: usize = 256;
+
+/// ある列がとりうる値を、**件数の多い順**に集める。
+///
+/// 並び順をそのままUIの選択肢の順にする。よく出る用途が上に来る方が選びやすく、
+/// 同数のときは値で並べて、作り直しても順序が変わらないようにする。
+///
+/// 列が無ければ `None`。値の種類が [`MAX_VOCABULARY`] を超えた場合も
+/// 語彙ではないと判断して `None` を返す。
+fn read_vocabulary(path: &Path, column: &str) -> Result<Option<Vec<String>>> {
+    use arrow::array::{Array, StringArray};
+    use arrow::datatypes::DataType;
+    use parquet::arrow::ProjectionMask;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let file = File::open(path).with_context(|| format!("開けません: {}", path.display()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .with_context(|| format!("Parquetとして読めません: {}", path.display()))?;
+
+    let schema = builder.parquet_schema();
+    let Some(index) = schema
+        .columns()
+        .iter()
+        .position(|c| c.path().string() == column)
+    else {
+        return Ok(None);
+    };
+    // 語彙を集めたい1列だけを読む。全列を読むとファイルの大きさがそのまま効く。
+    let mask = ProjectionMask::leaves(schema, [index]);
+    let reader = builder.with_projection(mask).build()?;
+
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for batch in reader {
+        let batch = batch?;
+        // 文字列の持ち方は出所によって違う (Utf8 / LargeUtf8 / 辞書エンコード)。
+        // 読み分けるより変換に任せる方が、出所が増えたときに壊れにくい。
+        let array = arrow::compute::cast(batch.column(0), &DataType::Utf8)
+            .with_context(|| format!("{column} が文字列として読めません"))?;
+        let values = array
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .context("Utf8に変換したのにStringArrayでない")?;
+        for value in values.iter().flatten() {
+            if !counts.contains_key(value) && counts.len() >= MAX_VOCABULARY {
+                eprintln!(
+                    "  {} の値が{MAX_VOCABULARY}種類を超えたので語彙にしません: {}",
+                    column,
+                    path.display(),
+                );
+                return Ok(None);
+            }
+            *counts.entry(value.to_string()).or_default() += 1;
+        }
+    }
+    if counts.is_empty() {
+        return Ok(None);
+    }
+
+    let mut values: Vec<(String, usize)> = counts.into_iter().collect();
+    values.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    Ok(Some(values.into_iter().map(|(value, _)| value).collect()))
+}
+
 /// GeoParquet 1件を読んでカタログエントリを組み立てる。
 pub fn describe_parquet(path: &Path) -> Result<DatasetEntry> {
     let file_stem = path
@@ -270,6 +376,17 @@ pub fn describe_parquet(path: &Path) -> Result<DatasetEntry> {
         })
         .collect();
 
+    let row_count = file_metadata.num_rows();
+    // メタデータだけで済む項目と違い、ここは列の中身を読む。
+    // 読むのは指定した1列だけで、しかも変換時の1回きり。
+    // 代わりにブラウザ側が起動時に全ファイルを走査せずに済む。
+    let mut summaries = BTreeMap::new();
+    for column in described.summary_columns {
+        if let Some(values) = read_vocabulary(path, column)? {
+            summaries.insert((*column).to_string(), values);
+        }
+    }
+
     Ok(DatasetEntry {
         id: file_stem.to_string(),
         file: file_name.to_string(),
@@ -279,8 +396,9 @@ pub fn describe_parquet(path: &Path) -> Result<DatasetEntry> {
         source_url: described.attribution.url.to_string(),
         geometry_types,
         bbox,
-        row_count: file_metadata.num_rows(),
+        row_count,
         columns,
+        summaries,
     })
 }
 
@@ -396,6 +514,72 @@ mod tests {
                 "当該ページのURLが国土交通省のものでない: {url}",
             );
         }
+    }
+
+    // 建物は用途で絞り込める唯一のデータセットで、その選択肢はカタログの語彙から作る。
+    // 建物の出所を足したときにここを書き忘れると、UIから用途の絞り込みが黙って消える。
+    #[test]
+    fn building_datasets_declare_a_vocabulary() {
+        for (prefix, described) in DESCRIPTIONS {
+            let is_building = matches!(
+                described.kind,
+                DatasetKind::Buildings | DatasetKind::PlateauBuildings
+            );
+            assert_eq!(
+                is_building,
+                !described.summary_columns.is_empty(),
+                "{prefix}: 建物には語彙にする列が要る / 建物以外には要らない",
+            );
+        }
+    }
+
+    // 列と語彙の項目名はSTACに合わせてある (Table拡張の table:columns /
+    // table:row_count と、Collectionの summaries)。名前を変えると、
+    // 後からSTAC文書にするときに値を作り直すことになる。
+    #[test]
+    fn serializes_with_stac_field_names() {
+        let entry = DatasetEntry {
+            id: "plateau_bldg_minato".into(),
+            file: "plateau_bldg_minato.parquet".into(),
+            kind: DatasetKind::PlateauBuildings,
+            title: "建物 (PLATEAU)".into(),
+            source: "出典".into(),
+            source_url: "https://example.invalid/".into(),
+            geometry_types: vec!["Polygon".into()],
+            bbox: None,
+            row_count: 2,
+            columns: vec![ColumnEntry {
+                name: "usage".into(),
+                data_type: "BYTE_ARRAY".into(),
+            }],
+            summaries: BTreeMap::from([("usage".to_string(), vec!["住宅".to_string()])]),
+        };
+        let json: serde_json::Value = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["table:row_count"], 2);
+        assert_eq!(json["table:columns"][0]["name"], "usage");
+        assert_eq!(json["table:columns"][0]["type"], "BYTE_ARRAY");
+        assert_eq!(json["summaries"]["usage"][0], "住宅");
+    }
+
+    // 語彙が無いデータセットまで summaries を持つと、UIは「絞れる列がある」と
+    // 誤って判断する。空なら項目ごと出さない。
+    #[test]
+    fn omits_empty_summaries() {
+        let entry = DatasetEntry {
+            id: "n03_all".into(),
+            file: "n03_all.parquet".into(),
+            kind: DatasetKind::Admin,
+            title: "行政区域".into(),
+            source: "出典".into(),
+            source_url: "https://example.invalid/".into(),
+            geometry_types: vec!["MultiPolygon".into()],
+            bbox: None,
+            row_count: 0,
+            columns: Vec::new(),
+            summaries: BTreeMap::new(),
+        };
+        let json: serde_json::Value = serde_json::to_value(&entry).unwrap();
+        assert!(json.get("summaries").is_none(), "{json}");
     }
 
     // Overtureは ODbL 1.0 で、OpenStreetMap由来を含むため両方の表示が要る。
