@@ -66,6 +66,10 @@ pub enum DatasetKind {
     Block,
     /// 建物 (面)。名称・用途・高さなどを持つ。
     Buildings,
+    /// 人口メッシュ (面)。SORAのGround Riskに使う人口密度を持つ。
+    ///
+    /// ジオメトリはメッシュコードから計算したもの (`crate::mesh`)。
+    PopulationMesh,
     /// PLATEAUの建物 (面)。高さ・用途・階数がほぼ全件に入っており、絞り込みに使える。
     ///
     /// [`DatasetKind::Buildings`] と分けているのは列構成が違うため。
@@ -124,6 +128,15 @@ const OVERTURE: Attribution = Attribution {
 const MLIT_PLATEAU: Attribution = Attribution {
     text: "「3D都市モデル（Project PLATEAU）」（国土交通省）をもとに作成",
     url: "https://www.mlit.go.jp/plateau/",
+};
+
+/// 国勢調査の地域メッシュ統計。政府標準利用規約 (第2.0版) で、出典表示のうえ
+/// 商用も含めて二次利用できる。ジオメトリはメッシュコードから計算しているので、
+/// 統計の数値だけを使っていることになる。
+/// <https://www.e-stat.go.jp/terms-of-use>
+const ESTAT_MESH: Attribution = Attribution {
+    text: "「令和2年国勢調査 地域メッシュ統計」（総務省統計局）をもとに作成",
+    url: "https://www.e-stat.go.jp/gis",
 };
 
 /// データセットの素性。ファイル名の接頭辞から引く。
@@ -199,6 +212,15 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             attribution: MLIT_PLATEAU,
             // PLATEAUの用途。コードリストで解決済みの「住宅」「商業施設」など。
             summary_columns: &["usage"],
+        },
+    ),
+    (
+        "mesh_pop",
+        Description {
+            kind: DatasetKind::PopulationMesh,
+            title: "人口メッシュ",
+            attribution: ESTAT_MESH,
+            summary_columns: &[],
         },
     ),
     (
