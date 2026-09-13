@@ -9,6 +9,31 @@
 | DuckDBの拡張 (spatial/parquet、約50MB) | GitHub Pages | 本家 (extensions.duckdb.org) への実行時の依存を無くすため。詳細は下記 |
 | GeoParquet (約129MB) | Cloudflare R2 | 容量の天井が無く、egressが無料。N03やPLATEAUを足しても困らない |
 
+## なぜR2か、超えたらどうするか
+
+**この配信はほぼ全部がegress**になる。ブラウザがRangeで引くたびに転送が出るので、
+そこが効く。
+
+| | ストレージ | egress |
+| --- | ---: | ---: |
+| **Cloudflare R2** | $0.015/GB-月 | **$0** |
+| AWS S3 | $0.023/GB-月 | $0.09/GB (最初の10TB) |
+| Google Cloud Storage | $0.020/GB-月 | 約$0.12/GB |
+
+100GB保存 + 500GB転送で **R2が約$1.50、S3が約$47.30**。
+**R2はS3互換**なので、エンドポイントを差し替えれば他へ移れる (囲い込みにはならない)。
+
+無料枠は**永続**で 10GB-月 / Class A 100万 / Class B 1000万。
+**Rangeリクエストは1回ずつClass B**に数えられるので、1クエリ数十リクエストとして
+月50万クエリ程度までは無料枠に収まる。
+
+**超えた分は払う。** 100GBでも月約¥200なので、配信先を先回りして移す価値が無い。
+PLATEAUを全国に広げると**5〜10GB** (上限15GB) の見当なので、無料枠を少し超えうるが、
+その超過は月数十円にしかならない ([pipeline.md](pipeline.md) の実測)。
+
+桁が変わるのは点群で、生のまま持つとTB級になり**どの無料枠にも入らない**。
+持つなら派生物 (間引き・障害物面・送電線の抽出など) にする。
+
 DuckDB-WASM本体はgitに入れない。ビルド時に `node_modules` から `dist/duckdb/` へコピーされる
 ([web/vite.config.ts](../web/vite.config.ts) の `copy-duckdb-runtime`)。
 アプリのバンドルと同じ `node_modules` を見るので、`pnpm update` してもバージョンがずれない。
