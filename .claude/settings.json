@@ -10,6 +10,14 @@
             "command": "cmd=$(mise exec -- jq -r '.tool_input.command // empty')\ncase \"$cmd\" in *\"git commit\"*) ;; *) exit 0 ;; esac\nroot=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0\nout=$(\"$root/scripts/audit.sh\" 2>&1) || { printf '%s\\n' \"$out\" >&2; exit 2; }",
             "statusMessage": "脆弱性を確認中…",
             "timeout": 120
+          },
+          {
+            "type": "command",
+            "// なぜ止めるか": "どちらも「使わない」と決めたもの。覚えている前提にすると実際に取りこぼす (このリポジトリでの実績: 1052回のBashのうち sed 22回、python3 21回)。ただし約束自体は固定ではないので、止めるときに変え方も出す。",
+            "// なぜヒアドキュメントを見ないか": "コミットメッセージ本文に語が出ただけで止まると使いものにならない (実際にこのhookを入れたコミットが自分のメッセージで止まった)。`<<` より前だけを見る。",
+            "command": "cmd=$(mise exec -- jq -r '.tool_input.command // empty')\nhead=${cmd%%\"<<\"*}\nword() { printf '%s' \"$head\" | grep -qE \"(^|[;|&(]|[[:space:]])$1([[:space:]]|$)\"; }\nhint='この約束が作業の邪魔なら、黙って回避せず理由を添えて相談し、合意のうえ AGENTS.md と .claude/settings.json の両方を直してください (AGENTS.md の「約束の変え方」)。'\nif word sed; then\n  echo \"sed は使わない約束です。ファイルの読み書きは Read / Edit、整形は awk を使ってください。\\n$hint\" >&2\n  exit 2\nfi\ncase \"$cmd\" in *\"mise exec -- python\"*) exit 0 ;; esac\nif word python3 || word python; then\n  echo \"python は mise 管理外なので使わない約束です。JSONは jq、テキスト処理は awk を使ってください。\\n$hint\" >&2\n  exit 2\nfi\nexit 0",
+            "statusMessage": "約束を確認中…",
+            "timeout": 30
           }
         ]
       }
