@@ -119,6 +119,17 @@ type SearchResult =
 /** 範囲 [xmin, ymin, xmax, ymax] (WGS84)。 */
 type Bbox = [number, number, number, number];
 
+/** 地図の表示範囲。 */
+interface ViewBounds {
+  west: number;
+  south: number;
+  east: number;
+  north: number;
+  /** 画面中心。傾けると bounds の中心とはずれるので、地図から直接もらう。 */
+  centerLon: number;
+  centerLat: number;
+}
+
 /**
  * 初回に一度だけ実行し、以降は同じ結果を返す。
  * 並行して呼ばれても実行は1回で、両方とも完了を待てる。
@@ -184,16 +195,36 @@ interface BuildingSource {
   id: string;
   /** UIに出す名前。 */
   label: string;
-  /** DuckDB上のビュー名。 */
-  view: string;
-  /** 収録範囲。 */
+  /** このデータセットを構成するファイルと、それぞれの収録範囲。 */
+  files: { file: string; bbox: Bbox | null }[];
+  /** 収録範囲 (ファイル全部の和)。 */
   bbox: Bbox | null;
   /** 高さの列があるか。あれば高さで絞れるし、立体の高さにも使える。 */
   hasHeight: boolean;
   /** 用途・種別を表す列。無ければ null。出所によって列名が違う。 */
   categoryColumn: string | null;
-  /** このビューを引く前に呼ぶ。 */
+  /** 引く前に呼ぶ (空間関数の読み込み)。 */
   ensure: () => Promise<void>;
+}
+
+/**
+ * 表示範囲と重なるファイルだけを選ぶ。**カタログを空間索引として使う。**
+ *
+ * 建物は都市ごとに1ファイルで、PLATEAUを全国に広げると300を超える。
+ * 全部を `read_parquet([...])` に渡すと、**ファイルの数だけフッターを読みに行く**
+ * (1ファイル1往復)。表示範囲に重なるのは普通1〜3都市なので、そこだけ渡す。
+ *
+ * 1つの大きなファイルに束ねる手もあるが、そちらは1都市の更新で全体を書き直すことになる。
+ * 都市の境界が空間的な区切りとして働くので、分かれたままでよい。
+ */
+function filesInView(source: BuildingSource, bounds: ViewBounds): string[] {
+  const overlapping = source.files.filter(({ bbox }) => {
+    // 収録範囲が分からないファイルは落とさない (判断材料が無いので読む)。
+    if (!bbox) return true;
+    const [west, south, east, north] = bbox;
+    return west <= bounds.east && east >= bounds.west && south <= bounds.north && north >= bounds.south;
+  });
+  return overlapping.map(({ file }) => file);
 }
 
 async function initDuckDb(datasets: CatalogEntry[]): Promise<{
@@ -270,8 +301,8 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
   // 並び順がそのまま選択肢の順になり、先頭が既定になる。
   // 属性が揃っているPLATEAUを先に置く。
   const buildingKinds = [
-    { kind: 'plateau_buildings' as const, label: 'PLATEAU', view: 'plateau_buildings' },
-    { kind: 'buildings' as const, label: 'Overture', view: 'buildings' },
+    { kind: 'plateau_buildings' as const, label: 'PLATEAU' },
+    { kind: 'buildings' as const, label: 'Overture' },
   ];
   const buildingFiles = datasets
     .filter((d) => d.kind === 'buildings' || d.kind === 'plateau_buildings')
@@ -318,12 +349,13 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
     `);
   });
 
-  // 出所ごとにビューを1つ作る。同じ出所のファイルが複数あれば、そこは束ねてよい
-  // (同じ変換器が書いたものなので列構成が揃っている)。
-  const buildingSources: BuildingSource[] = buildingKinds.flatMap(({ kind, label, view }) => {
+  // **ビューは作らない。** 出所ごとに1つのビューへ束ねると、その時点で
+  // ファイルの数だけフッターを読みに行くことになる (1ファイル1往復)。
+  // 建物は都市ごとに1ファイルで、PLATEAUを全国に広げると300を超えるので、
+  // 引くときに表示範囲と重なるものだけを渡す (`filesInView`)。
+  const buildingSources: BuildingSource[] = buildingKinds.flatMap(({ kind, label }) => {
     const entries = datasets.filter((d) => d.kind === kind);
     if (entries.length === 0) return [];
-    const list = entries.map((d) => `'${d.file}'`).join(', ');
     // 何で絞れるかは列の有無から決める。用途を表す列名は出所によって違う
     // (PLATEAUは usage、Overtureは class) ので、先に見つかった方を使う。
     const columns = new Set(entries[0].columns.map((c) => c.name));
@@ -331,14 +363,11 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
       {
         id: entries.map((d) => d.id).join('+'),
         label,
-        view,
+        files: entries.map((d) => ({ file: d.file, bbox: d.bbox })),
         hasHeight: columns.has('height'),
         categoryColumn: ['usage', 'class'].find((c) => columns.has(c)) ?? null,
         bbox: unionBbox(entries.map((d) => d.bbox).filter((b): b is Bbox => b !== null)),
-        ensure: once(async () => {
-          await ensureSpatial();
-          await conn.query(`CREATE VIEW ${view} AS SELECT * FROM read_parquet([${list}]);`);
-        }),
+        ensure: ensureSpatial,
       },
     ];
   });
@@ -401,18 +430,15 @@ interface BuildingFilter {
 async function fetchBuildingsInView(
   conn: duckdb.AsyncDuckDBConnection,
   source: BuildingSource,
-  bounds: {
-    west: number;
-    south: number;
-    east: number;
-    north: number;
-    /** 画面中心。傾けると bounds の中心とはずれるので、地図から直接もらう。 */
-    centerLon: number;
-    centerLat: number;
-  },
+  bounds: ViewBounds,
   filter: BuildingFilter,
   limit: number,
 ): Promise<BuildingFeature[]> {
+  // 表示範囲に重なるファイルだけを渡す。重なるものが無ければ問い合わせない。
+  const files = filesInView(source, bounds);
+  if (files.length === 0) return [];
+  const list = files.map((file) => `'${file}'`).join(', ');
+
   // 絞り込みは **SQLに渡す**。取得後にJavaScript側で捨てると、
   // 読む量も転送する量も減らないため。
   const conditions = [
@@ -436,7 +462,7 @@ async function fetchBuildingsInView(
 
   const result = await conn.query(`
     SELECT ST_AsGeoJSON(geometry) AS geojson, name, ${categorySelect} AS category, height
-    FROM ${source.view}
+    FROM read_parquet([${list}])
     WHERE ${conditions.join('\n      AND ')}
     ORDER BY
       pow(((bbox.xmin + bbox.xmax) / 2 - ${bounds.centerLon}) * ${lonScale}, 2)
@@ -463,16 +489,23 @@ async function fetchBuildingsInView(
  * 用途の選択肢を、実データから引く。
  *
  * 値をコードに書かず、配信しているデータに追随させるため。
- * 用途の列は小さい (row groupあたり3〜4KB) ので、全件走査しても軽い。
+ * 用途の列は小さい (row groupあたり3〜4KB) ので、走査そのものは軽い。
+ *
+ * **ここだけは全ファイルを読む。** 表示範囲では絞れない (範囲外にしか無い用途を
+ * 落とすと、その建物が絞り込みから消えてしまう)。ファイルが増えると
+ * 1ファイル1往復のフッター読みが効いてくるので、**都市数が増えたら
+ * 語彙だけの小さなファイルを作る** (行政区域の名称で `overture_admin_names` を
+ * 別に持っているのと同じ手)。
  */
 async function fetchUsageOptions(
   conn: duckdb.AsyncDuckDBConnection,
   source: BuildingSource,
 ): Promise<string[]> {
   if (!source.categoryColumn) return [];
+  const list = source.files.map(({ file }) => `'${file}'`).join(', ');
   const result = await conn.query(`
     SELECT ${source.categoryColumn} AS value, count(*) AS n
-    FROM ${source.view}
+    FROM read_parquet([${list}])
     WHERE ${source.categoryColumn} IS NOT NULL
     GROUP BY value
     ORDER BY n DESC;
