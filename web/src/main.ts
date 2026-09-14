@@ -712,6 +712,29 @@ const EMPTY_FEATURE_COLLECTION: GeoJSON.FeatureCollection = {
  * ここに書き並べると実際に使っているものとずれる。表示義務のある出典が抜けるのは
  * ライセンス違反になるため、データ側に追随させる。
  */
+/**
+ * 出典表示の高さを測って CSS 変数 `--attribution-height` に入れる。
+ *
+ * **出典は出所が増えるほど行が増える。** 人口メッシュ (47都道府県) を足したときに
+ * 1行から2行になり、全幅40pxに広がって左下の「建物のある範囲へ移動」を覆った
+ * (押せなくなった)。パネルの位置を固定値で避けると、出所を足すたびに破れる。
+ *
+ * 出典そのものは縮めない。表示義務があるので、避けるのはこちらの役目。
+ */
+function watchAttributionHeight(map: MapLibreMap): void {
+  const attribution = map.getContainer().querySelector<HTMLElement>('.maplibregl-ctrl-attrib');
+  if (!attribution) return;
+  const apply = () => {
+    const { height } = attribution.getBoundingClientRect();
+    document.documentElement.style.setProperty(
+      '--attribution-height',
+      `${Math.ceil(height)}px`,
+    );
+  };
+  new ResizeObserver(apply).observe(attribution);
+  apply();
+}
+
 function initMap(datasets: CatalogEntry[]): Promise<MapLibreMap> {
   // 出典が同じデータセット (位置参照情報の大字・町丁目と街区など) は1つにまとめる。
   // 並べ替えは表示する文言で行う (組み立てたHTMLで並べると、順序がタグの中身に左右される)。
@@ -729,6 +752,7 @@ function initMap(datasets: CatalogEntry[]): Promise<MapLibreMap> {
     attributionControl: false,
   });
   map.addControl(new AttributionControl({ customAttribution: dataCredits }));
+  watchAttributionHeight(map);
   // 建物を立体で描くので、傾きを操作する手段を出しておく。
   // visualizePitch を付けるとコンパスが傾きも表し、クリックで方位と傾きが
   // 0に戻る。つまり「2Dに戻す」手段が標準で付いてくるので、自前で切り替えUIを持たない。

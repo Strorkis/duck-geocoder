@@ -446,6 +446,25 @@ GeoParquetから直接引くと**HTTP越しでは極端に遅くなる**。名�
 
 ## 6. カタログを作る
 
+### 出所ごとにディレクトリを切る
+
+`data/output/` の配下は**出所ごとに分ける**。`build_catalog` は配下を再帰的に見て、
+`file` に起点からの相対パスを入れる。配信先 (R2) のキーはこれがそのまま使われる。
+
+```
+data/output/
+├── catalog.json
+├── estat/     mesh_pop_01..47.parquet
+├── isj/       isj_oaza_13.parquet, isj_block_13.parquet
+├── overture/  overture_admin_jp.parquet, overture_buildings_minato.parquet
+└── plateau/   plateau_bldg_minato.parquet
+```
+
+入力側 (`data/isj/`, `data/estat/`, `data/plateau/`) と同じ切り方にしてある。
+**1つの出所だけを上げ直せる**ようにするのが目的で、ファイルが数百に増えると効く。
+
+**変えるなら早い方がよい。** 配信先のキーが変わるので、後からだと全部を上げ直すことになる。
+
 ```sh
 cargo run --release --bin build_catalog -- ../data/output ../data/output/catalog.json
 ```

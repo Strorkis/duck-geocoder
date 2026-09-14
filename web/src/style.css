@@ -106,7 +106,10 @@ body,
 /* 出典表示 (MapLibreの既定は右下) と重ならないよう左下に置く。 */
 #help {
   position: absolute;
-  bottom: 1rem;
+  /* 出典表示は全幅に広がり、出所が増えると行が増える。高さは main.ts が測って
+     --attribution-height に入れているので、それを避ける。固定値で決めると
+     出所を足したときに覆われて押せなくなる。 */
+  bottom: calc(var(--attribution-height, 1.5rem) + 0.5rem);
   left: 1rem;
   z-index: 1;
   width: 20rem;
@@ -149,11 +152,12 @@ body,
 }
 
 /* 表示の設定 (地図・建物の出所・絞り込み)。使い方パネルと逆側 (右下) に置く。
-   MapLibreの出典表示も右下なので、その上に重ならない高さから始める。 */
+   MapLibreの出典表示も右下なので、その上に重ならない高さから始める
+   (高さは #help と同じく実測値を使う)。 */
 #display-panel {
   position: absolute;
   right: 1rem;
-  bottom: 2.5rem;
+  bottom: calc(var(--attribution-height, 1.5rem) + 0.5rem);
   z-index: 1;
   /* 用途を2列で並べるので、長い名前 (店舗等併用共同住宅など) が切れない幅を取る。 */
   width: 17.5rem;

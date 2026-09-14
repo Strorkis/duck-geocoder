@@ -353,22 +353,40 @@ fn read_vocabulary(path: &Path, column: &str) -> Result<Option<Vec<String>>> {
     Ok(Some(values.into_iter().map(|(value, _)| value).collect()))
 }
 
+/// 配信時のパスを組み立てる。`base` からの相対パスを、URLと同じ `/` 区切りにする。
+///
+/// 配信先 (R2) のキーはこの値がそのまま使われる。Windowsで生成しても
+/// `\` が混ざらないよう、区切りは明示的に置き換える。
+fn delivery_path(path: &Path, base: &Path) -> Result<String> {
+    let relative = path.strip_prefix(base).unwrap_or(path);
+    let parts: Vec<&str> = relative
+        .components()
+        .map(|c| {
+            c.as_os_str()
+                .to_str()
+                .context("パスに扱えない文字が入っている")
+        })
+        .collect::<Result<_>>()?;
+    Ok(parts.join("/"))
+}
+
 /// GeoParquet 1件を読んでカタログエントリを組み立てる。
-pub fn describe_parquet(path: &Path) -> Result<DatasetEntry> {
+///
+/// `base` は配信の起点になるディレクトリ。ここからの相対パスが `file` になるので、
+/// **出所ごとにディレクトリを切って置ける** (`estat/mesh_pop_13.parquet` など)。
+/// 配信先のキーがそのまま分かれるので、1つの出所だけを上げ直せる。
+pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
     let file_stem = path
         .file_stem()
         .and_then(|s| s.to_str())
         .context("ファイル名が取得できない")?;
-    let file_name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .context("ファイル名が取得できない")?;
+    let file = delivery_path(path, base)?;
 
     let described =
-        describe(file_stem).with_context(|| format!("未知のデータセットです: {file_name}"))?;
+        describe(file_stem).with_context(|| format!("未知のデータセットです: {file}"))?;
 
-    let file = File::open(path).with_context(|| format!("開けません: {}", path.display()))?;
-    let reader = parquet::file::reader::SerializedFileReader::new(file)
+    let handle = File::open(path).with_context(|| format!("開けません: {}", path.display()))?;
+    let reader = parquet::file::reader::SerializedFileReader::new(handle)
         .with_context(|| format!("Parquetとして読めません: {}", path.display()))?;
 
     use parquet::file::reader::FileReader;
@@ -385,7 +403,7 @@ pub fn describe_parquet(path: &Path) -> Result<DatasetEntry> {
     let (geometry_types, bbox) = match (geo_json, described.kind) {
         (Some(geo_json), _) => read_geo_metadata(geo_json)?,
         (None, DatasetKind::AdminNames) => (Vec::new(), None),
-        (None, _) => bail!("GeoParquetの `geo` メタデータがありません: {file_name}"),
+        (None, _) => bail!("GeoParquetの `geo` メタデータがありません: {file}"),
     };
 
     let columns = file_metadata
@@ -411,7 +429,7 @@ pub fn describe_parquet(path: &Path) -> Result<DatasetEntry> {
 
     Ok(DatasetEntry {
         id: file_stem.to_string(),
-        file: file_name.to_string(),
+        file,
         kind: described.kind,
         title: described.title.to_string(),
         source: described.attribution.text.to_string(),
@@ -424,14 +442,29 @@ pub fn describe_parquet(path: &Path) -> Result<DatasetEntry> {
     })
 }
 
-/// ディレクトリ内の *.parquet を走査してカタログを組み立てる。
+/// 配下の *.parquet を集める。**サブディレクトリも見る。**
+fn collect_parquet(dir: &Path, found: &mut Vec<std::path::PathBuf>) -> Result<()> {
+    let entries =
+        std::fs::read_dir(dir).with_context(|| format!("読めません: {}", dir.display()))?;
+    for entry in entries {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_parquet(&path, found)?;
+        } else if path.extension().is_some_and(|ext| ext == "parquet") {
+            found.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// ディレクトリ配下の *.parquet を走査してカタログを組み立てる。
+///
+/// **出所ごとにディレクトリを切ってよい。** `file` には `dir` からの相対パスが入り、
+/// 配信先ではそれがそのままキーになる (`estat/mesh_pop_13.parquet`)。
+/// ファイルが数百に増えたときに、1つの出所だけを上げ直せるようにするため。
 pub fn build_catalog(dir: &Path) -> Result<Catalog> {
-    let mut paths: Vec<_> = std::fs::read_dir(dir)
-        .with_context(|| format!("読めません: {}", dir.display()))?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "parquet"))
-        .collect();
+    let mut paths = Vec::new();
+    collect_parquet(dir, &mut paths)?;
     paths.sort();
 
     if paths.is_empty() {
@@ -440,7 +473,7 @@ pub fn build_catalog(dir: &Path) -> Result<Catalog> {
 
     let datasets = paths
         .iter()
-        .map(|path| describe_parquet(path))
+        .map(|path| describe_parquet(path, dir))
         .collect::<Result<Vec<_>>>()?;
     Ok(Catalog { datasets })
 }
@@ -500,6 +533,22 @@ mod tests {
                 "{prefix} が別の定義に吸われている",
             );
         }
+    }
+
+    // 配信先のキーは `file` がそのまま使われる。ディレクトリを切って置けること、
+    // そのとき区切りがURLと同じ `/` になることを見る。
+    #[test]
+    fn delivery_path_is_relative_and_slash_separated() {
+        let base = Path::new("/data/output");
+        assert_eq!(
+            delivery_path(Path::new("/data/output/estat/mesh_pop_13.parquet"), base).unwrap(),
+            "estat/mesh_pop_13.parquet",
+        );
+        // 直下に置いたものは今までどおり名前だけ。
+        assert_eq!(
+            delivery_path(Path::new("/data/output/n03_all.parquet"), base).unwrap(),
+            "n03_all.parquet",
+        );
     }
 
     // 出典表示はライセンス上の義務。データセットを増やしたときに書き忘れないよう、

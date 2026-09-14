@@ -5,21 +5,38 @@ import type { MapLibreMap, GeoJSONSource } from 'maplibre-gl';
 type TestWindow = { __map?: MapLibreMap; __dataUrl?: (file: string) => string };
 
 /** 行政区域データセット。逆ジオコーディングと転送量の計測がこれを見る。 */
-const ADMIN_DATASET = 'overture_admin_jp.parquet';
+const ADMIN_DATASET = 'overture_admin_jp';
 /** 建物データセット。無くても他の機能は動くので、無ければスキップする。 */
-const BUILDINGS_DATASET = 'overture_buildings_minato.parquet';
+const BUILDINGS_DATASET = 'overture_buildings_minato';
 /** PLATEAUの建物。高さ・用途を持つので、絞り込みはこちらでしか出ない。 */
-const PLATEAU_DATASET = 'plateau_bldg_minato.parquet';
+const PLATEAU_DATASET = 'plateau_bldg_minato';
+
+/**
+ * データセットのURLを**カタログ経由で**引く。
+ *
+ * 配信時のパスはカタログの `file` が持っている (出所ごとにディレクトリを
+ * 切っているので `overture/....parquet` のような形)。テストにパスを書くと、
+ * 置き場所を変えるたびに書き換えることになる。**IDだけを書く。**
+ *
+ * カタログに無ければ null。開発サーバーは存在しないファイルに index.html を
+ * 200で返すので、HEADの成否だけでは「配信されているか」を判定できない。
+ */
+async function datasetUrl(page: Page, id: string): Promise<string | null> {
+  const catalogUrl = await resolveDataUrl(page, 'catalog.json');
+  const response = await page.request.get(catalogUrl);
+  if (!response.ok()) return null;
+  const catalog = (await response.json()) as { datasets: { id: string; file: string }[] };
+  const entry = catalog.datasets.find((dataset) => dataset.id === id);
+  return entry ? resolveDataUrl(page, entry.file) : null;
+}
 
 /** 建物データが配信されているか。 */
 async function hasBuildings(page: Page): Promise<boolean> {
-  const url = await datasetUrl(page, BUILDINGS_DATASET);
-  return page.request.head(url).then((response) => response.ok());
+  return (await datasetUrl(page, BUILDINGS_DATASET)) !== null;
 }
 
 async function hasPlateau(page: Page): Promise<boolean> {
-  const url = await datasetUrl(page, PLATEAU_DATASET);
-  return page.request.head(url).then((response) => response.ok());
+  return (await datasetUrl(page, PLATEAU_DATASET)) !== null;
 }
 
 /** PLATEAUの建物が見える状態にする。PLATEAUは既定の出所なので選び直さない。 */
@@ -32,13 +49,13 @@ async function showPlateauBuildings(page: Page) {
 }
 
 /**
- * データセットの実際のURLをアプリに解決させる。
+ * 配信パスから実際のURLをアプリに解決させる。
  *
  * データは開発時と公開時で置き場所が変わる (同一オリジンの /data/ か、
  * オブジェクトストレージか)。テストにURLを書くと公開URLに対して流せなくなるので、
  * アプリが使っているのと同じ組み立てを借りる。
  */
-function datasetUrl(page: Page, file: string): Promise<string> {
+function resolveDataUrl(page: Page, file: string): Promise<string> {
   return page.evaluate((name) => {
     const resolve = (window as unknown as TestWindow).__dataUrl;
     if (!resolve) throw new Error('__dataUrl が公開されていない');
@@ -53,8 +70,10 @@ function datasetUrl(page: Page, file: string): Promise<string> {
  */
 async function skipIfDataMissing(page: Page) {
   const url = await datasetUrl(page, ADMIN_DATASET);
-  const response = await page.request.head(url);
-  test.skip(!response.ok(), `${url} が読めない (READMEの手順で用意してください)`);
+  test.skip(
+    url === null,
+    `${ADMIN_DATASET} がカタログに無い (READMEの手順で用意してください)`,
+  );
 }
 
 /** 初期化 (DuckDB + 地図) の完了を待つ。 */
@@ -279,7 +298,8 @@ test('海上を指しても自治体は返らない', async ({ page }) => {
  * 公開URLに対しても流せるよう、URLはアプリに解決させている。
  */
 test('逆ジオコーディングはファイル全体のごく一部しか読まない', async ({ page }) => {
-  const dataset = await datasetUrl(page, ADMIN_DATASET);
+  // beforeEach の skipIfDataMissing を通っているので、ここでは必ずある。
+  const dataset = (await datasetUrl(page, ADMIN_DATASET))!;
   const totalBytes = Number((await page.request.head(dataset)).headers()['content-length']);
   expect(totalBytes).toBeGreaterThan(0);
 
@@ -328,6 +348,38 @@ test('extensions.duckdb.org を遮断しても逆ジオコーディングでき�
   await expect(page.locator('.maplibregl-popup-content')).toContainText('東京都', {
     timeout: 30_000,
   });
+});
+
+/**
+ * 出典表示は出所が増えるほど行が増え、全幅に広がる。
+ * 人口メッシュ (47都道府県) を足したときに1行から2行になり、左下のパネルを
+ * 覆って「建物のある範囲へ移動」が押せなくなった。
+ *
+ * **出典は縮めない** (表示義務があるため)。避けるのはパネル側の役目で、
+ * 位置は実測した高さ (`--attribution-height`) から決めている。
+ * 固定値に戻すと、出所を足したときにまた覆われる。
+ */
+test('出典が何行になってもパネルは覆われない', async ({ page }) => {
+  const overlap = await page.evaluate(() => {
+    const rect = (selector: string) =>
+      document.querySelector(selector)?.getBoundingClientRect() ?? null;
+    const attribution = rect('.maplibregl-ctrl-attrib');
+    const panels = ['#help', '#display-panel']
+      .map((selector) => ({ selector, box: rect(selector) }))
+      .filter((panel) => panel.box !== null);
+    if (!attribution) throw new Error('出典表示が見つからない');
+    if (panels.length === 0) throw new Error('パネルが見つからない');
+    return panels
+      .filter(
+        ({ box }) =>
+          box!.bottom > attribution.top &&
+          box!.top < attribution.bottom &&
+          box!.right > attribution.left &&
+          box!.left < attribution.right,
+      )
+      .map(({ selector }) => selector);
+  });
+  expect(overlap).toEqual([]);
 });
 
 // 建物は一部の範囲しか収録しておらず、しかも寄らないと出てこない。
