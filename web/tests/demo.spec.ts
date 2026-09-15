@@ -11,23 +11,41 @@ const BUILDINGS_DATASET = 'overture_buildings_minato';
 /** PLATEAUの建物。高さ・用途を持つので、絞り込みはこちらでしか出ない。 */
 const PLATEAU_DATASET = 'plateau_bldg_minato';
 
+interface StacLink {
+  rel: string;
+  href: string;
+}
+
 /**
- * データセットのURLを**カタログ経由で**引く。
+ * データセットのURLを**STACを辿って**引く。
  *
- * 配信時のパスはカタログの `file` が持っている (出所ごとにディレクトリを
+ * 配信時のパスはItemのアセットが持っている (出所ごとにディレクトリを
  * 切っているので `overture/....parquet` のような形)。テストにパスを書くと、
- * 置き場所を変えるたびに書き換えることになる。**IDだけを書く。**
+ * 置き場所を変えるたびに書き換えることになる。**Item IDだけを書く。**
  *
- * カタログに無ければ null。開発サーバーは存在しないファイルに index.html を
+ * 見つからなければ null。開発サーバーは存在しないファイルに index.html を
  * 200で返すので、HEADの成否だけでは「配信されているか」を判定できない。
  */
 async function datasetUrl(page: Page, id: string): Promise<string | null> {
-  const catalogUrl = await resolveDataUrl(page, 'catalog.json');
-  const response = await page.request.get(catalogUrl);
-  if (!response.ok()) return null;
-  const catalog = (await response.json()) as { datasets: { id: string; file: string }[] };
-  const entry = catalog.datasets.find((dataset) => dataset.id === id);
-  return entry ? resolveDataUrl(page, entry.file) : null;
+  const fetchJson = async <T>(href: string): Promise<T | null> => {
+    const response = await page.request.get(await resolveDataUrl(page, href));
+    return response.ok() ? ((await response.json()) as T) : null;
+  };
+
+  const catalog = await fetchJson<{ links: StacLink[] }>('catalog.json');
+  if (!catalog) return null;
+
+  for (const child of catalog.links.filter((link) => link.rel === 'child')) {
+    const collection = await fetchJson<{ links: StacLink[] }>(child.href);
+    const itemsHref = collection?.links.find((link) => link.rel === 'items')?.href;
+    if (!itemsHref) continue;
+    const items = await fetchJson<{
+      features: { id: string; assets: { data: { href: string } } }[];
+    }>(itemsHref);
+    const item = items?.features.find((feature) => feature.id === id);
+    if (item) return resolveDataUrl(page, item.assets.data.href);
+  }
+  return null;
 }
 
 /** 建物データが配信されているか。 */
@@ -348,6 +366,41 @@ test('extensions.duckdb.org を遮断しても逆ジオコーディングでき�
   await expect(page.locator('.maplibregl-popup-content')).toContainText('東京都', {
     timeout: 30_000,
   });
+});
+
+/**
+ * カタログをSTACに分けたのは**使わないものを読まないため**。
+ *
+ * 1ファイルに全部入れていた頃は、人口メッシュ47件を足しただけで72KBになり、
+ * 起動時に毎回そこまで待つことになっていた。PLATEAUを306都市に広げれば
+ * 460KB前後に達する見込みだった。
+ *
+ * Collection (何があるか) は件数で増えないので起動時に読む。
+ * Item (ファイル1つずつの href と bbox) は使う段になって読む。
+ */
+test('使わないデータのItemは起動時に読まない', async ({ page }) => {
+  const requested: string[] = [];
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('-items.json')) requested.push(path.split('/').pop()!);
+  });
+  await page.reload();
+  await waitForReady(page);
+
+  // 行政区域だけは起動時に要る。どのファイルを読むかが決まらないため。
+  expect(requested.some((file) => file.startsWith('overture-admin'))).toBe(true);
+  // 人口メッシュ (47ファイル・80KB) は、まだ誰も要求していない。
+  expect(requested.filter((file) => file.startsWith('estat-mesh-pop'))).toEqual([]);
+  // 建物も寄るまで読まない。収録範囲の枠と絞り込みの選択肢はCollectionで足りる。
+  expect(requested.filter((file) => file.startsWith('plateau-'))).toEqual([]);
+
+  // 寄れば読みに行く。
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7454, 35.6586], zoom: 16 });
+  });
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
+  expect(requested.some((file) => file.startsWith('plateau-'))).toBe(true);
 });
 
 /**

@@ -4,50 +4,40 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::path::Path;
 
-/// データセット1件分のカタログエントリ。
-/// 件数・bbox・列構成は実際のGeoParquetのメタデータから読むので、中身とずれない。
+/// GeoParquet 1件から読み取った素性。**STACを組み立てる前の中間表現。**
 ///
-/// 列と語彙の項目名は **STAC に合わせてある**。
-/// `table:columns` / `table:row_count` は
-/// [STACのTable拡張](https://github.com/stac-extensions/table)、
-/// `summaries` は
-/// [STAC Collectionの同名フィールド](https://github.com/radiantearth/stac-spec/blob/master/collection-spec/collection-spec.md#summaries)
-/// と同じ意味で使う。STAC文書そのものにはしていない (Catalog/Collection/Itemの
-/// 入れ子にすると1リクエストで読める形から外れるため) が、名前を合わせておけば
-/// 後からSTACへ移すときに値を作り直さずに済む。
-#[derive(Debug, Serialize)]
+/// 件数・bbox・列構成は実際のGeoParquetのメタデータから読むので、中身とずれない。
+/// これを [`crate::stac`] が Collection と Item にまとめ直す。
+#[derive(Debug)]
 pub struct DatasetEntry {
-    /// ファイル名から決まる識別子。例: "n03_all"
+    /// ファイル名から決まる識別子。STACのItem IDになる。例: "n03_all"
     pub id: String,
-    /// 配信時のファイル名。UIはこれを読みに行く。
+    /// 配信時のパス。STACのアセットの `href` になる。例: "estat/mesh_pop_13.parquet"
     pub file: String,
     /// UIやツールが扱いを切り替えるための種別。
     /// 表示用の `title` と違い、こちらは機械が分岐に使う。
     pub kind: DatasetKind,
+    /// 属するCollectionのID。同じ出所・同じ種別のファイルが1つにまとまる。
+    pub collection: &'static str,
     /// 人間向けの名称。
-    pub title: String,
-    /// 出典表示。地図上にそのまま出す。
-    pub source: String,
-    /// 出典元のURL。国土交通省の記載例が出典にURLを求めているため、
-    /// `source` と対で持ち、UIはリンクとして出す。
-    pub source_url: String,
+    pub title: &'static str,
+    /// Collectionの説明。STACは必須項目にしている。
+    pub description: &'static str,
+    /// 出典・ライセンス。
+    pub attribution: Attribution,
     /// ジオメトリの種類 (Point / MultiPolygon など)。UIの表示方法がこれで決まる。
     pub geometry_types: Vec<String>,
     /// 収録範囲 [xmin, ymin, xmax, ymax] (WGS84)。
     pub bbox: Option<[f64; 4]>,
-    #[serde(rename = "table:row_count")]
     pub row_count: i64,
-    #[serde(rename = "table:columns")]
     pub columns: Vec<ColumnEntry>,
     /// 列がとりうる値の一覧。列名 → 値 (件数の多い順)。
     ///
     /// **UIが選択肢をここから作るためにある。** 無いと起動時に全ファイルの
     /// 該当列を走査することになり、ファイルが増えるほど1ファイル1往復の
-    /// フッター読みが積み上がる。語彙は小さく、カタログ自体は起動時に
-    /// どのみち1回読むので、ここに入れれば往復が0になる。
+    /// フッター読みが積み上がる。
     ///
     /// 語彙を持つ列は [`Description::summary_columns`] で指定する。
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub summaries: BTreeMap<String, Vec<String>>,
 }
 
@@ -78,7 +68,8 @@ pub enum DatasetKind {
     PlateauBuildings,
 }
 
-#[derive(Debug, Serialize)]
+/// 列1つ。項目名はSTACのTable拡張に合わせてある。
+#[derive(Debug, Serialize, Clone)]
 pub struct ColumnEntry {
     pub name: String,
     /// Parquet上の物理型。
@@ -86,17 +77,20 @@ pub struct ColumnEntry {
     pub data_type: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct Catalog {
-    pub datasets: Vec<DatasetEntry>,
-}
-
 /// 出典表示。表示する文言と、その出典元のURL。
 ///
-/// 2つを別々の定数で持つと組み合わせを間違えても気付けないので、対にして扱う。
-struct Attribution {
-    text: &'static str,
-    url: &'static str,
+/// 別々の定数で持つと組み合わせを間違えても気付けないので、まとめて扱う。
+#[derive(Debug, Clone, Copy)]
+pub struct Attribution {
+    /// 地図上にそのまま出す文言。**表示義務があるので縮めない。**
+    pub text: &'static str,
+    /// 出典元のURL。国土交通省の記載例が出典にURLを求めている。
+    pub url: &'static str,
+    /// STACの `license`。[SPDX識別子](https://spdx.org/licenses/)か、
+    /// 当てはまるものが無ければ `"other"`。
+    pub license: &'static str,
+    /// STACの `providers[].name`。組織名。
+    pub provider: &'static str,
 }
 
 /// 国土交通省のコンテンツ。
@@ -108,10 +102,14 @@ struct Attribution {
 const MLIT_ISJ: Attribution = Attribution {
     text: "「位置参照情報ダウンロードサービス」（国土交通省）をもとに作成",
     url: "https://nlftp.mlit.go.jp/isj/",
+    license: "other",
+    provider: "国土交通省",
 };
 const MLIT_KSJ: Attribution = Attribution {
     text: "「国土数値情報（行政区域データ）」（国土交通省）をもとに作成",
     url: "https://nlftp.mlit.go.jp/ksj/",
+    license: "other",
+    provider: "国土交通省",
 };
 
 /// Overture Maps は ODbL 1.0。OpenStreetMap由来を含むため両方を示す。
@@ -119,6 +117,8 @@ const MLIT_KSJ: Attribution = Attribution {
 const OVERTURE: Attribution = Attribution {
     text: "Overture Maps / © OpenStreetMap contributors (ODbL 1.0)",
     url: "https://docs.overturemaps.org/attribution/",
+    license: "ODbL-1.0",
+    provider: "Overture Maps Foundation",
 };
 
 /// PLATEAU (3D都市モデル) は政府標準利用規約に準じたPDL1.0。
@@ -128,6 +128,9 @@ const OVERTURE: Attribution = Attribution {
 const MLIT_PLATEAU: Attribution = Attribution {
     text: "「3D都市モデル（Project PLATEAU）」（国土交通省）をもとに作成",
     url: "https://www.mlit.go.jp/plateau/",
+    // PDL1.0だが CC BY 4.0 での利用も認められている。SPDXに当てはまる方を出す。
+    license: "CC-BY-4.0",
+    provider: "国土交通省",
 };
 
 /// 国勢調査の地域メッシュ統計。政府標準利用規約 (第2.0版) で、出典表示のうえ
@@ -137,13 +140,22 @@ const MLIT_PLATEAU: Attribution = Attribution {
 const ESTAT_MESH: Attribution = Attribution {
     text: "「令和2年国勢調査 地域メッシュ統計」（総務省統計局）をもとに作成",
     url: "https://www.e-stat.go.jp/gis",
+    license: "other",
+    provider: "総務省統計局",
 };
 
 /// データセットの素性。ファイル名の接頭辞から引く。
 struct Description {
     kind: DatasetKind,
+    /// 属するSTAC CollectionのID。**出所と種別が同じものが1つにまとまる。**
+    ///
+    /// 行政区域のように出所が2つありうるもの (N03とOverture) は別のCollectionにする。
+    /// 列構成もライセンスも違うため。
+    collection: &'static str,
     /// 人間向けの名称。
     title: &'static str,
+    /// Collectionの説明。STACが必須にしている項目。
+    description: &'static str,
     attribution: Attribution,
     /// とりうる値をカタログに書き出す列。UIの選択肢がここから作られる。
     ///
@@ -162,7 +174,9 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
         "n03_names",
         Description {
             kind: DatasetKind::AdminNames,
+            collection: "ksj-admin-names",
             title: "行政区域の名称",
+            description: "国土数値情報の行政区域から名称だけを抜き出したもの。地名検索の候補に使う。",
             attribution: MLIT_KSJ,
             summary_columns: &[],
         },
@@ -171,7 +185,9 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
         "n03",
         Description {
             kind: DatasetKind::Admin,
+            collection: "ksj-admin",
             title: "行政区域",
+            description: "国土数値情報の行政区域 (面)。逆ジオコーディングとハイライトに使う。",
             attribution: MLIT_KSJ,
             summary_columns: &[],
         },
@@ -180,7 +196,9 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
         "overture_admin_names",
         Description {
             kind: DatasetKind::AdminNames,
+            collection: "overture-admin-names",
             title: "行政区域の名称",
+            description: "Overtureの行政区域から名称だけを抜き出したもの。地名検索の候補に使う。",
             attribution: OVERTURE,
             summary_columns: &[],
         },
@@ -189,7 +207,9 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
         "overture_admin",
         Description {
             kind: DatasetKind::Admin,
+            collection: "overture-admin",
             title: "行政区域",
+            description: "Overtureの行政区域 (面)。逆ジオコーディングとハイライトに使う。",
             attribution: OVERTURE,
             summary_columns: &[],
         },
@@ -198,7 +218,9 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
         "overture_buildings",
         Description {
             kind: DatasetKind::Buildings,
+            collection: "overture-buildings",
             title: "建物",
+            description: "Overtureの建物 (面)。高さと種別は入っている割合が低い。",
             attribution: OVERTURE,
             // Overtureの建物種別。"residential" "commercial" など。
             summary_columns: &["class"],
@@ -208,7 +230,9 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
         "plateau_bldg",
         Description {
             kind: DatasetKind::PlateauBuildings,
+            collection: "plateau-buildings",
             title: "建物 (PLATEAU)",
+            description: "PLATEAUの建物 (面)。高さ・用途・階数がほぼ全件に入っている。都市ごとに1ファイル。",
             attribution: MLIT_PLATEAU,
             // PLATEAUの用途。コードリストで解決済みの「住宅」「商業施設」など。
             summary_columns: &["usage"],
@@ -218,7 +242,9 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
         "mesh_pop",
         Description {
             kind: DatasetKind::PopulationMesh,
+            collection: "estat-mesh-pop",
             title: "人口メッシュ",
+            description: "令和2年国勢調査の地域メッシュ統計 (125m)。人口・世帯数・人口密度を持つ。ジオメトリはメッシュコードから計算したもの。都道府県ごとに1ファイル。",
             attribution: ESTAT_MESH,
             summary_columns: &[],
         },
@@ -227,7 +253,9 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
         "isj_oaza",
         Description {
             kind: DatasetKind::Oaza,
+            collection: "isj-oaza",
             title: "大字・町丁目",
+            description: "位置参照情報の大字・町丁目 (点)。住所検索に使う。",
             attribution: MLIT_ISJ,
             summary_columns: &[],
         },
@@ -236,7 +264,9 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
         "isj_block",
         Description {
             kind: DatasetKind::Block,
+            collection: "isj-block",
             title: "街区",
+            description: "位置参照情報の街区 (点)。より細かい住所検索に使う。",
             attribution: MLIT_ISJ,
             summary_columns: &[],
         },
@@ -431,9 +461,10 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         id: file_stem.to_string(),
         file,
         kind: described.kind,
-        title: described.title.to_string(),
-        source: described.attribution.text.to_string(),
-        source_url: described.attribution.url.to_string(),
+        collection: described.collection,
+        title: described.title,
+        description: described.description,
+        attribution: described.attribution,
         geometry_types,
         bbox,
         row_count,
@@ -462,7 +493,7 @@ fn collect_parquet(dir: &Path, found: &mut Vec<std::path::PathBuf>) -> Result<()
 /// **出所ごとにディレクトリを切ってよい。** `file` には `dir` からの相対パスが入り、
 /// 配信先ではそれがそのままキーになる (`estat/mesh_pop_13.parquet`)。
 /// ファイルが数百に増えたときに、1つの出所だけを上げ直せるようにするため。
-pub fn build_catalog(dir: &Path) -> Result<Catalog> {
+pub fn build_catalog(dir: &Path) -> Result<Vec<DatasetEntry>> {
     let mut paths = Vec::new();
     collect_parquet(dir, &mut paths)?;
     paths.sort();
@@ -471,11 +502,10 @@ pub fn build_catalog(dir: &Path) -> Result<Catalog> {
         bail!("{} にGeoParquetがありません", dir.display());
     }
 
-    let datasets = paths
+    paths
         .iter()
         .map(|path| describe_parquet(path, dir))
-        .collect::<Result<Vec<_>>>()?;
-    Ok(Catalog { datasets })
+        .collect::<Result<Vec<_>>>()
 }
 
 #[cfg(test)]
@@ -557,7 +587,7 @@ mod tests {
     #[test]
     fn every_dataset_carries_an_attribution() {
         for (prefix, described) in DESCRIPTIONS {
-            let Attribution { text, url } = described.attribution;
+            let Attribution { text, url, .. } = described.attribution;
             assert!(!text.is_empty(), "{prefix} に出典が無い");
             assert!(
                 url.starts_with("https://"),
@@ -571,7 +601,7 @@ mod tests {
     // どれも加工にあたる。
     #[test]
     fn mlit_attributions_follow_the_required_form() {
-        for Attribution { text, url } in [MLIT_ISJ, MLIT_KSJ] {
+        for Attribution { text, url, .. } in [MLIT_ISJ, MLIT_KSJ] {
             assert!(
                 text.contains("（国土交通省）"),
                 "作成者の表示が無い: {text}"
@@ -604,53 +634,29 @@ mod tests {
         }
     }
 
-    // 列と語彙の項目名はSTACに合わせてある (Table拡張の table:columns /
-    // table:row_count と、Collectionの summaries)。名前を変えると、
-    // 後からSTAC文書にするときに値を作り直すことになる。
+    // Collectionは出所と種別の組で分かれる。同じIDに違う種別が入ると
+    // `stac::build` が落ちるので、表の側で取り違えていないことを見ておく。
     #[test]
-    fn serializes_with_stac_field_names() {
-        let entry = DatasetEntry {
-            id: "plateau_bldg_minato".into(),
-            file: "plateau_bldg_minato.parquet".into(),
-            kind: DatasetKind::PlateauBuildings,
-            title: "建物 (PLATEAU)".into(),
-            source: "出典".into(),
-            source_url: "https://example.invalid/".into(),
-            geometry_types: vec!["Polygon".into()],
-            bbox: None,
-            row_count: 2,
-            columns: vec![ColumnEntry {
-                name: "usage".into(),
-                data_type: "BYTE_ARRAY".into(),
-            }],
-            summaries: BTreeMap::from([("usage".to_string(), vec!["住宅".to_string()])]),
-        };
-        let json: serde_json::Value = serde_json::to_value(&entry).unwrap();
-        assert_eq!(json["table:row_count"], 2);
-        assert_eq!(json["table:columns"][0]["name"], "usage");
-        assert_eq!(json["table:columns"][0]["type"], "BYTE_ARRAY");
-        assert_eq!(json["summaries"]["usage"][0], "住宅");
-    }
-
-    // 語彙が無いデータセットまで summaries を持つと、UIは「絞れる列がある」と
-    // 誤って判断する。空なら項目ごと出さない。
-    #[test]
-    fn omits_empty_summaries() {
-        let entry = DatasetEntry {
-            id: "n03_all".into(),
-            file: "n03_all.parquet".into(),
-            kind: DatasetKind::Admin,
-            title: "行政区域".into(),
-            source: "出典".into(),
-            source_url: "https://example.invalid/".into(),
-            geometry_types: vec!["MultiPolygon".into()],
-            bbox: None,
-            row_count: 0,
-            columns: Vec::new(),
-            summaries: BTreeMap::new(),
-        };
-        let json: serde_json::Value = serde_json::to_value(&entry).unwrap();
-        assert!(json.get("summaries").is_none(), "{json}");
+    fn each_collection_holds_one_kind() {
+        let mut kinds: std::collections::HashMap<&str, DatasetKind> =
+            std::collections::HashMap::new();
+        for (prefix, described) in DESCRIPTIONS {
+            assert!(
+                !described.collection.is_empty(),
+                "{prefix} にCollectionが無い"
+            );
+            assert!(
+                !described.description.is_empty(),
+                "{prefix} に説明が無い (STACの必須項目)"
+            );
+            if let Some(existing) = kinds.insert(described.collection, described.kind) {
+                assert_eq!(
+                    existing, described.kind,
+                    "{} に種別が2つある",
+                    described.collection
+                );
+            }
+        }
     }
 
     // Overtureは ODbL 1.0 で、OpenStreetMap由来を含むため両方の表示が要る。

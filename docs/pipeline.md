@@ -466,23 +466,69 @@ data/output/
 **変えるなら早い方がよい。** 配信先のキーが変わるので、後からだと全部を上げ直すことになる。
 
 ```sh
-cargo run --release --bin build_catalog -- ../data/output ../data/output/catalog.json
+cargo run --release --bin build_catalog -- ../data/output
 ```
 
 件数・収録範囲 (bbox)・列構成は実際のParquetメタデータから読むので、中身とずれない。
 Webアプリはこれを読んでどのデータセットを使うかを決めるので、UI側にファイル名は書かれていない。
 地図に出る出典表示もカタログから組み立てるため、配信するデータと必ず一致する。
 
-ファイル名の接頭辞で種別が決まる。
+ファイル名の接頭辞で種別とCollectionが決まる。
 
-| 接頭辞 | 種別 |
+| 接頭辞 | 種別 | Collection |
+| --- | --- | --- |
+| `overture_admin` / `n03` | 行政区域 | `overture-admin` / `ksj-admin` |
+| `overture_admin_names` / `n03_names` | 行政区域の名称 (検索用) | `overture-admin-names` / `ksj-admin-names` |
+| `overture_buildings` | 建物 | `overture-buildings` |
+| `plateau_bldg` | 建物 (PLATEAU)。高さ・用途で絞り込める | `plateau-buildings` |
+| `mesh_pop` | 人口メッシュ | `estat-mesh-pop` |
+| `isj_oaza` | 大字・町丁目 | `isj-oaza` |
+| `isj_block` | 街区 | `isj-block` |
+
+### カタログは STAC 1.1.0
+
+独自形式をやめて [STAC](https://github.com/radiantearth/stac-spec) に寄せた。
+
+```text
+catalog.json                ← Catalog。各Collectionへの child リンク
+estat-mesh-pop.json         ← Collection。何があるか。ファイル数で増えない
+estat-mesh-pop-items.json   ← ItemCollection。ファイル1つずつの href と bbox
+estat/mesh_pop_13.parquet   ← 実データ
+```
+
+**起動時に読むのは Catalog と Collection だけ。** Item は使う段になって読む。
+
+| | 起動時に読む量 |
+| --- | ---: |
+| 独自形式 (1ファイル) | 72 KB |
+| **STAC** | **9.2 KB** (5ファイル) |
+
+Collectionが件数で増えないようにしてある。**空間範囲は全体の1件だけ**で、
+ファイルごとの範囲はItemに置く。両方に書くとCollectionがファイル数に比例して
+膨らみ (人口メッシュ47件で2.3KB→8.3KB)、起動時に読むものが増えてしまう。
+
+**Itemは1件1ファイルにしない。** 静的STACの標準的な置き方だが、人口メッシュ47件 +
+PLATEAU306都市で350ファイルを超え、1つ読むたびに1往復することになる。
+代わりにCollectionごとにItemCollection (STAC APIの `/items` が返すのと同じ形) を1つ置く。
+
+**リンクはすべて配信の起点からの相対**にするため、JSONは実データと同じ起点に平置きする。
+
+独自項目には接頭辞を付ける (STACの作法)。
+
+| 項目 | 中身 |
 | --- | --- |
-| `overture_admin` / `n03` | 行政区域 |
-| `overture_admin_names` / `n03_names` | 行政区域の名称 (検索用) |
-| `overture_buildings` | 建物 |
-| `plateau_bldg` | 建物 (PLATEAU)。高さ・用途で絞り込める |
-| `isj_oaza` | 大字・町丁目 |
-| `isj_block` | 街区 |
+| `duck:kind` | 種別。STACにこの概念が無いので独自に持つ |
+| `duck:attribution` | 地図に出す出典の文言。**表示義務があるので縮めない** |
+| `duck:attribution_url` | 出典元のURL |
+| `duck:geometry_types` | ジオメトリの種類 |
+
+**既知の穴:** STACはItemの `datetime` を必須にしているが、元データの時点を読んでいないので
+`null` を入れている。`null` は本来 `start_datetime` / `end_datetime` とセットで使うものなので、
+検証にかけると警告になる。時点を読めるようにするのが宿題。
+
+[Portolan](https://www.portolan-sdi.org/) は `README.md` と `AGENTS.md` を必須にしていて、
+どちらも揃っている。**ただし準拠を名乗るのはv1.0が見えてから。** v0.2.0で破壊的変更が
+予告されており、追従コストが読めない。
 
 ## テスト
 

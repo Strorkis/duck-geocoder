@@ -22,24 +22,45 @@ import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&ur
 setWorkerUrl(maplibreWorkerUrl);
 
 /**
- * カタログ (data/output/catalog.json)。
+ * カタログは [STAC 1.1.0](https://github.com/radiantearth/stac-spec)。
  * Rust側の build_catalog がGeoParquetのメタデータから生成するので、
  * 変換したファイルが増えればUIは自動で追随する。
  *
- * 列と語彙の項目名はSTACに合わせてある (`table:columns` / `table:row_count` は
- * STACのTable拡張、`summaries` はSTAC Collectionの同名フィールド)。
+ * ```text
+ * catalog.json                ← Catalog。各Collectionへの child リンク
+ * estat-mesh-pop.json         ← Collection。何があるか。件数で増えない
+ * estat-mesh-pop-items.json   ← ItemCollection。ファイル1つずつの href と bbox
+ * ```
+ *
+ * **起動時に読むのは Catalog と Collection だけ。** Item は使う段になって読む。
+ * 1ファイルに全部入れていた頃は、人口メッシュ47件で72KBまで膨らんでいた。
  */
-interface CatalogEntry {
+interface StacLink {
+  rel: string;
+  href: string;
+  type?: string;
+  title?: string;
+}
+
+type DatasetKind =
+  | 'admin'
+  | 'admin_names'
+  | 'oaza'
+  | 'block'
+  | 'buildings'
+  | 'plateau_buildings'
+  | 'population_mesh';
+
+/** STAC Collection。`duck:` の付いたものはSTACに無い独自項目。 */
+interface StacCollection {
   id: string;
-  file: string;
-  kind: 'admin' | 'admin_names' | 'oaza' | 'block' | 'buildings' | 'plateau_buildings';
-  title: string;
-  source: string;
-  source_url: string;
-  geometry_types: string[];
-  bbox: [number, number, number, number] | null;
-  'table:row_count': number;
-  'table:columns': { name: string; type: string }[];
+  title?: string;
+  /** 種別。UIが扱いを切り替えるのに使う。STACにこの概念は無い。 */
+  'duck:kind': DatasetKind;
+  /** 地図に出す出典の文言。**表示義務があるので縮めない。** */
+  'duck:attribution': string;
+  'duck:attribution_url': string;
+  extent: { spatial: { bbox: (number | null)[][] } };
   /**
    * 列がとりうる値。列名 → 値 (件数の多い順)。語彙を持たない列は入っていない。
    *
@@ -48,6 +69,32 @@ interface CatalogEntry {
    * 絞り込みから消える) ため、ファイルの数だけ往復することになる。
    */
   summaries?: Record<string, string[]>;
+  item_assets?: { data?: { 'table:columns'?: { name: string; type: string }[] } };
+  links: StacLink[];
+}
+
+/** STAC Item。1つのGeoParquetに対応する。 */
+interface StacItem {
+  id: string;
+  bbox?: number[];
+  properties: { 'table:row_count'?: number };
+  assets: { data: { href: string } };
+}
+
+/** Collectionを扱いやすい形にしたもの。Itemは呼ばれるまで読まない。 */
+interface Collection {
+  id: string;
+  kind: DatasetKind;
+  title: string;
+  attribution: string;
+  attributionUrl: string;
+  /** 収録範囲 (Item全部の和)。Itemを読まずに分かる。 */
+  bbox: Bbox | null;
+  summaries: Record<string, string[]>;
+  /** 列名。何で絞れるかをこれで決める。 */
+  columns: Set<string>;
+  /** Itemを読む。**Collectionごとに1回だけ**通信する。 */
+  items: () => Promise<StacItem[]>;
 }
 
 /**
@@ -107,15 +154,68 @@ function duckdbUrl(file: string): string {
  */
 const DUCKDB_EXTENSIONS_URL = duckdbUrl('extensions');
 
-async function fetchCatalog(): Promise<CatalogEntry[]> {
-  const response = await fetch(dataUrl('catalog.json'));
+async function fetchStac<T>(href: string): Promise<T> {
+  const response = await fetch(dataUrl(href));
   if (!response.ok) {
     throw new Error(
-      'catalog.json が読めません。`cargo run --bin build_catalog -- data/output data/output/catalog.json` を実行してください。',
+      `${href} が読めません (${response.status})。` +
+        '`cargo run --bin build_catalog -- ../data/output` を実行してください。',
     );
   }
-  const catalog = (await response.json()) as { datasets: CatalogEntry[] };
-  return catalog.datasets;
+  return (await response.json()) as T;
+}
+
+/**
+ * Catalogから全Collectionを読む。
+ *
+ * Collectionは**ファイルが増えても大きくならない** (収録範囲は全体の1件だけ、
+ * 列構成と語彙は出所ごとに1つ) ので、起動時に全部読んでよい。
+ * ファイル1つずつの情報を持つItemは、使う段になってから読む。
+ */
+async function fetchCollections(): Promise<Collection[]> {
+  const catalog = await fetchStac<{ links: StacLink[] }>('catalog.json');
+  const children = catalog.links.filter((link) => link.rel === 'child');
+  const documents = await Promise.all(
+    children.map((link) => fetchStac<StacCollection>(link.href)),
+  );
+  return documents.map(toCollection);
+}
+
+function toCollection(document: StacCollection): Collection {
+  // 空間範囲は「先頭が全体」。ジオメトリを持たないデータセットは null が並ぶ。
+  const [extent] = document.extent.spatial.bbox;
+  const bbox =
+    extent?.length === 4 && extent.every((value) => typeof value === 'number')
+      ? (extent as Bbox)
+      : null;
+
+  const itemsHref = document.links.find((link) => link.rel === 'items')?.href;
+  let items: Promise<StacItem[]> | undefined;
+
+  return {
+    id: document.id,
+    kind: document['duck:kind'],
+    title: document.title ?? document.id,
+    attribution: document['duck:attribution'],
+    attributionUrl: document['duck:attribution_url'],
+    bbox,
+    summaries: document.summaries ?? {},
+    columns: new Set(
+      (document.item_assets?.data?.['table:columns'] ?? []).map((column) => column.name),
+    ),
+    items: () =>
+      (items ??= itemsHref
+        ? fetchStac<{ features: StacItem[] }>(itemsHref).then((collection) => collection.features)
+        : Promise.resolve([])),
+  };
+}
+
+/** Itemを配信パスと収録範囲の組にする。 */
+function itemFiles(items: StacItem[]): { file: string; bbox: Bbox | null }[] {
+  return items.map((item) => ({
+    file: item.assets.data.href,
+    bbox: item.bbox?.length === 4 ? (item.bbox as Bbox) : null,
+  }));
 }
 
 /**
@@ -202,13 +302,19 @@ function unionBbox(boxes: Bbox[]): Bbox | null {
  * カタログはGeoParquetの実際のメタデータから作られているので、そちらに従う。
  */
 interface BuildingSource {
-  /** カタログ上の識別子。 */
+  /** Collectionの識別子。 */
   id: string;
   /** UIに出す名前。 */
   label: string;
-  /** このデータセットを構成するファイルと、それぞれの収録範囲。 */
+  /**
+   * このデータセットを構成するファイルと、それぞれの収録範囲。
+   *
+   * **`ensure()` を呼ぶまで空。** Itemを読まないと分からないため。
+   * 収録範囲の枠 (`bbox`) と絞り込みの選択肢はCollectionだけで作れるので、
+   * 寄って実際に引くまでItemを取りに行かずに済む。
+   */
   files: { file: string; bbox: Bbox | null }[];
-  /** 収録範囲 (ファイル全部の和)。 */
+  /** 収録範囲 (ファイル全部の和)。Collectionが持っているので最初から分かる。 */
   bbox: Bbox | null;
   /** 高さの列があるか。あれば高さで絞れるし、立体の高さにも使える。 */
   hasHeight: boolean;
@@ -216,7 +322,7 @@ interface BuildingSource {
   categoryColumn: string | null;
   /** 用途の選択肢 (件数の多い順)。カタログの語彙をそのまま使う。 */
   usages: string[];
-  /** 引く前に呼ぶ (空間関数の読み込み)。 */
+  /** 引く前に呼ぶ (Itemの読み込み・ファイル登録・空間関数の読み込み)。 */
   ensure: () => Promise<void>;
 }
 
@@ -240,7 +346,7 @@ function filesInView(source: BuildingSource, bounds: ViewBounds): string[] {
   return overlapping.map(({ file }) => file);
 }
 
-async function initDuckDb(datasets: CatalogEntry[]): Promise<{
+async function initDuckDb(collections: Collection[]): Promise<{
   conn: duckdb.AsyncDuckDBConnection;
   /** 建物データの出所。カタログにあるものだけが並ぶ。 */
   buildingSources: BuildingSource[];
@@ -300,60 +406,64 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
     await conn.query(`INSTALL spatial; LOAD spatial;`);
   });
 
-  const oazaFiles = datasets.filter((d) => d.kind === 'oaza').map((d) => d.file);
-  // 行政区域は全国版と都道府県版が同居しうる。範囲の広いもの (=件数が最多) を採用する。
-  const adminDataset = datasets
-    .filter((d) => d.kind === 'admin')
-    .sort((a, b) => b['table:row_count'] - a['table:row_count'])[0];
+  // DuckDBにファイルを教える。通信はしないので、何度呼んでも安い。
+  const registered = new Set<string>();
+  const register = async (files: string[]) => {
+    for (const file of files) {
+      if (registered.has(file)) continue;
+      registered.add(file);
+      await db.registerFileURL(file, dataUrl(file), duckdb.DuckDBDataProtocol.HTTP, false);
+    }
+  };
 
-  if (oazaFiles.length === 0 || !adminDataset) {
-    throw new Error('カタログに必要なデータセット (oaza / admin) がありません。');
+  const byKind = (kind: DatasetKind) => collections.filter((c) => c.kind === kind);
+  const oazaCollections = byKind('oaza');
+  const adminCollections = byKind('admin');
+  if (oazaCollections.length === 0 || adminCollections.length === 0) {
+    throw new Error('カタログに必要なCollection (oaza / admin) がありません。');
   }
-  // 建物は任意。無ければ建物レイヤーを出さないだけで、他の機能は動く。
-  // 出所ごとに列構成が違うので、束ねずに別々のビューにする。
-  // 並び順がそのまま選択肢の順になり、先頭が既定になる。
-  // 属性が揃っているPLATEAUを先に置く。
-  const buildingKinds = [
-    { kind: 'plateau_buildings' as const, label: 'PLATEAU' },
-    { kind: 'buildings' as const, label: 'Overture' },
-  ];
-  const buildingFiles = datasets
-    .filter((d) => d.kind === 'buildings' || d.kind === 'plateau_buildings')
-    .map((d) => d.file);
-  // 検索用の名称を抜き出したものがあれば使う。無ければ行政区域から作るが、
+
+  // 行政区域は全国版と都道府県版が同居しうる。範囲の広いもの (=件数が最多) を採用する。
+  // ここだけは起動時にItemが要る (どのファイルを読むか決まらないため)。
+  const adminItems = (await Promise.all(adminCollections.map((c) => c.items()))).flat();
+  const adminItem = adminItems.sort(
+    (a, b) => (b.properties['table:row_count'] ?? 0) - (a.properties['table:row_count'] ?? 0),
+  )[0];
+  if (!adminItem) throw new Error('行政区域のItemがありません。');
+  const adminFile = adminItem.assets.data.href;
+
+  // 検索用の名称を抜き出したものがあれば使う。無い場合は行政区域から作るが、
   // そちらは名称の列がファイル全体に散らばっているため、HTTP越しだと
   // 往復が積み上がって初期化が数十秒かかる。
-  const adminNamesDataset = datasets.find((d) => d.kind === 'admin_names');
+  const adminNamesCollection = byKind('admin_names')[0];
+  const adminNamesFile = adminNamesCollection
+    ? (await adminNamesCollection.items())[0]?.assets.data.href
+    : undefined;
+
+  await register(adminNamesFile ? [adminFile, adminNamesFile] : [adminFile]);
+
   console.info(
     '[catalog] 行政区域:',
-    adminDataset.id,
+    adminItem.id,
     '/ 名称:',
-    adminNamesDataset?.id ?? '(行政区域から都度作成)',
+    adminNamesFile ?? '(行政区域から都度作成)',
     '/ 地名:',
-    oazaFiles.join(', '),
-    '/ 建物:',
-    buildingFiles.join(', ') || 'なし',
+    oazaCollections.map((c) => c.id).join(', '),
   );
-
-  const registered = [...oazaFiles, ...buildingFiles, adminDataset.file];
-  if (adminNamesDataset) registered.push(adminNamesDataset.file);
-  for (const file of registered) {
-    await db.registerFileURL(
-      file,
-      dataUrl(file),
-      duckdb.DuckDBDataProtocol.HTTP,
-      false,
-    );
-  }
 
   // ビューを作るだけでもDuckDBはスキーマ検証のためにフッターを読むので、
   // 1ファイルあたり数回の往復が発生する。起動時に要るのは行政区域と名称だけで、
   // 地名は検索時、建物はズームしたときにしか使わないので、そのときまで作らない。
-  await conn.query(`CREATE VIEW admin AS SELECT * FROM read_parquet('${adminDataset.file}');`);
+  await conn.query(`CREATE VIEW admin AS SELECT * FROM read_parquet('${adminFile}');`);
 
-  const oazaList = oazaFiles.map((f) => `'${f}'`).join(', ');
   const ensureOaza = once(async () => {
-    await conn.query(`CREATE VIEW isj_oaza AS SELECT * FROM read_parquet([${oazaList}]);`);
+    // 地名のItemもここで初めて読む。検索するまで要らない。
+    const files = (await Promise.all(oazaCollections.map((c) => c.items())))
+      .flat()
+      .map((item) => item.assets.data.href);
+    await register(files);
+    const list = files.map((file) => `'${file}'`).join(', ');
+    await conn.query(`CREATE VIEW isj_oaza AS SELECT * FROM read_parquet([${list}]);`);
     // ビューを作るだけではデータを読まないので、検索に使う列に一度触れておく。
     // ここを省くと、読み込みの待ち時間が最初の検索にそのまま乗る。
     await conn.query(`
@@ -362,42 +472,43 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
     `);
   });
 
+  // 建物は任意。無ければ建物レイヤーを出さないだけで、他の機能は動く。
+  // 並び順がそのまま選択肢の順になり、先頭が既定になる。
+  // 属性が揃っているPLATEAUを先に置く。
+  //
   // **ビューは作らない。** 出所ごとに1つのビューへ束ねると、その時点で
   // ファイルの数だけフッターを読みに行くことになる (1ファイル1往復)。
   // 建物は都市ごとに1ファイルで、PLATEAUを全国に広げると300を超えるので、
   // 引くときに表示範囲と重なるものだけを渡す (`filesInView`)。
+  const buildingKinds: { kind: DatasetKind; label: string }[] = [
+    { kind: 'plateau_buildings', label: 'PLATEAU' },
+    { kind: 'buildings', label: 'Overture' },
+  ];
   const buildingSources: BuildingSource[] = buildingKinds.flatMap(({ kind, label }) => {
-    const entries = datasets.filter((d) => d.kind === kind);
-    if (entries.length === 0) return [];
+    const collection = byKind(kind)[0];
+    if (!collection) return [];
     // 何で絞れるかは列の有無から決める。高さは列があれば絞れる。
-    const columns = new Set(entries[0]['table:columns'].map((c) => c.name));
     // 用途で絞れる列は**カタログが語彙を持っている列**。列名 (PLATEAUは usage、
     // Overtureは class) をここに書かないのは、出所が増えたときに書き足す場所が
     // 分かれてしまうため。語彙を出すかどうかはパイプライン側が一箇所で決める。
-    //
-    // 語彙はファイルごとに入っているので、都市をまたいで束ねる。
-    // 先に出た順を保つので、件数の多い用途が上に来る並びのまま残る。
-    const vocabularies = new Map<string, Set<string>>();
-    for (const entry of entries) {
-      for (const [column, values] of Object.entries(entry.summaries ?? {})) {
-        const merged = vocabularies.get(column) ?? new Set<string>();
-        for (const value of values) merged.add(value);
-        vocabularies.set(column, merged);
-      }
-    }
-    const [categoryColumn, usages] = [...vocabularies][0] ?? [null, new Set<string>()];
-    return [
-      {
-        id: entries.map((d) => d.id).join('+'),
-        label,
-        files: entries.map((d) => ({ file: d.file, bbox: d.bbox })),
-        hasHeight: columns.has('height'),
-        categoryColumn,
-        usages: [...usages],
-        bbox: unionBbox(entries.map((d) => d.bbox).filter((b): b is Bbox => b !== null)),
-        ensure: ensureSpatial,
-      },
-    ];
+    const [categoryColumn, usages] = Object.entries(collection.summaries)[0] ?? [null, []];
+    const source: BuildingSource = {
+      id: collection.id,
+      label,
+      // Itemを読むまで空。寄って実際に引くまで通信しない。
+      files: [],
+      hasHeight: collection.columns.has('height'),
+      categoryColumn,
+      usages,
+      bbox: collection.bbox,
+      ensure: once(async () => {
+        const items = await collection.items();
+        source.files = itemFiles(items);
+        await register(source.files.map(({ file }) => file));
+        await ensureSpatial();
+      }),
+    };
+    return [source];
   });
 
   // 行政区域は1つの自治体が複数のポリゴン行に分かれることがある (飛び地や島など) ので、
@@ -409,8 +520,8 @@ async function initDuckDb(datasets: CatalogEntry[]): Promise<{
   // 転送量ではなく往復の問題なので、pipeline の build_admin_names で
   // まとまった小さなファイルを作っておくこと。
   await conn.query(
-    adminNamesDataset
-      ? `CREATE VIEW admin_names AS SELECT * FROM read_parquet('${adminNamesDataset.file}');`
+    adminNamesFile
+      ? `CREATE VIEW admin_names AS SELECT * FROM read_parquet('${adminNamesFile}');`
       : `CREATE TABLE admin_names AS
            SELECT DISTINCT
              admin_id,
@@ -735,10 +846,12 @@ function watchAttributionHeight(map: MapLibreMap): void {
   apply();
 }
 
-function initMap(datasets: CatalogEntry[]): Promise<MapLibreMap> {
-  // 出典が同じデータセット (位置参照情報の大字・町丁目と街区など) は1つにまとめる。
+function initMap(collections: Collection[]): Promise<MapLibreMap> {
+  // 出典が同じCollection (位置参照情報の大字・町丁目と街区など) は1つにまとめる。
   // 並べ替えは表示する文言で行う (組み立てたHTMLで並べると、順序がタグの中身に左右される)。
-  const credits = new Map(datasets.map((dataset) => [dataset.source, dataset.source_url]));
+  const credits = new Map(
+    collections.map((collection) => [collection.attribution, collection.attributionUrl]),
+  );
   const dataCredits = [...credits]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([source, url]) => creditLink(url, source));
@@ -908,8 +1021,11 @@ async function main() {
   let ensureSpatial: () => Promise<void>;
   let ensureOaza: () => Promise<void>;
   try {
-    const datasets = await fetchCatalog();
-    const [db, createdMap] = await Promise.all([initDuckDb(datasets), initMap(datasets)]);
+    const collections = await fetchCollections();
+    const [db, createdMap] = await Promise.all([
+      initDuckDb(collections),
+      initMap(collections),
+    ]);
     conn = db.conn;
     buildingSources = db.buildingSources;
     ({ ensureSpatial, ensureOaza } = db);

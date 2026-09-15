@@ -16,6 +16,7 @@ pub mod plateau;
 pub mod plateau_catalog;
 pub mod remote_zip;
 pub mod spatial_pack;
+pub mod stac;
 
 /// 指定したEPSGコードからWGS84 (EPSG:4326) への変換器を作る。
 /// `bbox` (west, south, east, north) は変換対象データの範囲で、

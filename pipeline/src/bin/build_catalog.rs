@@ -1,27 +1,50 @@
-use anyhow::{Result, bail};
-use duck_geocoder::catalog::build_catalog;
+use anyhow::{Context, Result, bail};
+use duck_geocoder::{catalog, stac};
 use std::path::PathBuf;
 
-/// data/output/ 配下のGeoParquetを走査し、カタログJSONを書き出す。
-/// UIはこのJSONを読んで、どのデータセットが利用可能かを知る。
+/// 配信ディレクトリ配下のGeoParquetを走査し、STACの文書一式を書き出す。
+///
+/// 出力は入力と同じディレクトリに置く。**STACの相対リンクはその文書からの相対**
+/// として解決されるので、実データと同じ起点に置く必要がある。
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let (input_dir, output) = match args.as_slice() {
-        [_, input_dir, output] => (PathBuf::from(input_dir), PathBuf::from(output)),
-        _ => bail!("usage: build_catalog <parquet-dir> <catalog.json>"),
+    let dir = match args.as_slice() {
+        [_, dir] => PathBuf::from(dir),
+        _ => bail!(
+            "usage: build_catalog <配信ディレクトリ>\n\n\
+             例:\n  build_catalog ../data/output"
+        ),
     };
 
-    let catalog = build_catalog(&input_dir)?;
+    let datasets = catalog::build_catalog(&dir)?;
+    let documents = stac::build(&datasets)?;
 
-    if let Some(parent) = output.parent() {
-        std::fs::create_dir_all(parent)?;
+    // 作り直すたびに古いCollectionが残らないよう、一度消してから書く。
+    // データセットを減らしたときに、消えたはずのCollectionが配信され続けるのを防ぐ。
+    for stale in std::fs::read_dir(&dir)?.filter_map(|entry| entry.ok()) {
+        let path = stale.path();
+        if path.extension().is_some_and(|ext| ext == "json") {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("消せません: {}", path.display()))?;
+        }
     }
-    std::fs::write(&output, serde_json::to_string_pretty(&catalog)?)?;
 
+    for document in &documents {
+        let path = dir.join(&document.path);
+        std::fs::write(&path, serde_json::to_string_pretty(&document.body)?)
+            .with_context(|| format!("書けません: {}", path.display()))?;
+    }
+
+    let collections = documents
+        .iter()
+        .filter(|document| document.body["type"] == "Collection")
+        .count();
     println!(
-        "{} 件のデータセットを {} に書き出しました",
-        catalog.datasets.len(),
-        output.display()
+        "{} データセット / {} コレクション / {} ファイルを {} に書き出しました",
+        datasets.len(),
+        collections,
+        documents.len(),
+        dir.display(),
     );
     Ok(())
 }

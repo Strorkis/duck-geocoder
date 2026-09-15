@@ -57,9 +57,28 @@
   読み飛ばせる (日本全体のdivisionsで約30秒)。国名や属性だけで絞ると効かない。
   取得は1回で済ませ、粒度の変更などは落としたファイルに対して手元でやり直す
 - **出典表示はライセンス上の義務。** 地図の表示はカタログから組み立てているので、
-  データセットを増やすときは `pipeline/src/catalog.rs` の `describe()` に必ず出典を書く。
+  データセットを増やすときは `pipeline/src/catalog.rs` の `DESCRIPTIONS` に必ず出典を書く。
   国土交通省のコンテンツは「コンテンツ名」「（国土交通省）」「当該ページのURL」と、
   加工した旨の記載が要る
+
+### カタログは STAC 1.1.0
+
+配信するデータの目録は [STAC](https://github.com/radiantearth/stac-spec) で書いている。
+`catalog.json` (Catalog) → `<collection>.json` (Collection) →
+`<collection>-items.json` (ItemCollection) の3階層で、**すべて配信の起点に平置き**。
+リンクはその文書からの相対として解決されるため。
+
+- **Collectionはファイル数で増やさない。** 空間範囲は全体の1件だけにして、
+  ファイルごとの範囲はItemに置く。Collectionは起動時に読むので小さく保つ
+- **Itemは1件1ファイルにしない。** 350ファイルを超えるので、
+  Collectionごとに1つのItemCollectionにまとめる
+- **独自項目には `duck:` を付ける** (`duck:kind` / `duck:attribution`)。
+  種別も出典の文言もSTACに専用の場所が無い
+- 詳細と既知の穴 (`datetime` を埋めていない) は [docs/pipeline.md](docs/pipeline.md)
+
+[Portolan](https://www.portolan-sdi.org/) は同じ構成 (オブジェクトストレージに
+静的ファイル + STAC + GeoParquet + `README.md` と `AGENTS.md`) を仕様にしたもの。
+**準拠を名乗るのはv1.0が見えてから。** v0.2.0で破壊的変更が予告されている。
 
 ## 実装の方針
 
