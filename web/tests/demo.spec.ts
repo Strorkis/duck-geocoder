@@ -919,6 +919,48 @@ test('メッシュを粗くしても最大密度は下がらない', async ({ pa
 });
 
 /**
+ * 束ねたセルは**親メッシュの矩形**で描く。
+ *
+ * 当初は中に入っている子メッシュのbboxの和で描いていた。人のいる子だけを
+ * 囲った形になるので、左端の列にしか人がいない1kmセルが細い縦帯になり、
+ * 地図がメッシュに見えなくなっていた (実際に見て分かった)。
+ *
+ * **同じ階層のメッシュは全部同じ大きさ**なので、幅と高さが揃っていれば
+ * メッシュの形で描けている。
+ */
+test('メッシュのセルはすべて同じ大きさ', async ({ page }) => {
+  test.skip(!(await hasMesh(page)), '人口メッシュのデータが無い');
+
+  for (const zoom of [15, 13, 11, 8]) {
+    await page.evaluate((z) => {
+      const map = (window as unknown as TestWindow).__map!;
+      map.jumpTo({ center: [139.7454, 35.6586], zoom: z });
+    }, zoom);
+    if (zoom === 15) await page.locator('#mesh-toggle').check();
+    await expect.poll(() => sourceFeatureCount(page, 'population-mesh')).toBeGreaterThan(1);
+
+    const sizes = await page.evaluate(async () => {
+      const source = (window as unknown as TestWindow).__map!.getSource('population-mesh');
+      const data = await (
+        source as unknown as { getData: () => Promise<GeoJSON.FeatureCollection> }
+      ).getData();
+      const round = (value: number) => Math.round(value * 1e6) / 1e6;
+      const unique = new Set<string>();
+      for (const feature of data.features) {
+        const ring = (feature.geometry as GeoJSON.Polygon).coordinates[0];
+        const lons = ring.map((position) => position[0]);
+        const lats = ring.map((position) => position[1]);
+        unique.add(
+          `${round(Math.max(...lons) - Math.min(...lons))}x${round(Math.max(...lats) - Math.min(...lats))}`,
+        );
+      }
+      return [...unique];
+    });
+    expect(sizes, `ズーム${zoom}でセルの大きさが揃っていない`).toHaveLength(1);
+  }
+});
+
+/**
  * 引いた表示では、**全国を1kmに束ねたファイル**を読む。
  *
  * 125mから束ねることもできるが、引くほど元の行を多く読むことになる

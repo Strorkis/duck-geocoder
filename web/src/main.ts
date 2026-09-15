@@ -677,10 +677,52 @@ async function initDuckDb(collections: Collection[]): Promise<{
   return { conn, buildingSources, meshSources, ensureSpatial, ensureOaza };
 }
 
+/**
+ * 地域メッシュ (JIS X 0410) のコードから範囲を求める。
+ *
+ * **束ねたセルは、この矩形で描く。** 中に入っている子メッシュのbboxの和で描くと、
+ * 人のいる子だけを囲った形になり、細い縦帯のような「メッシュではない形」が出る。
+ * 実際に地図で見て分かった。
+ *
+ * パイプライン側の `pipeline/src/mesh.rs` と同じ計算。JIS X 0410 は変わらないので、
+ * 二重に持つことを受け入れている (SQLで書くよりこちらの方が読める)。
+ */
+function meshBounds(code: string): Bbox {
+  const digits = [...code].map(Number);
+  // 1次メッシュ。緯度は1.5倍した整数部、経度は100を引いた整数部。
+  let latSize = 2 / 3;
+  let lonSize = 1;
+  let south = (digits[0] * 10 + digits[1]) / 1.5;
+  let west = digits[2] * 10 + digits[3] + 100;
+
+  // 2次メッシュ。1次を縦横8分割し、南西を0として行・列で指す。
+  if (digits.length >= 6) {
+    latSize /= 8;
+    lonSize /= 8;
+    south += digits[4] * latSize;
+    west += digits[5] * lonSize;
+  }
+  // 3次メッシュ。2次を縦横10分割する。
+  if (digits.length >= 8) {
+    latSize /= 10;
+    lonSize /= 10;
+    south += digits[6] * latSize;
+    west += digits[7] * lonSize;
+  }
+  // 分割メッシュ。1桁ごとに4分割で、1=南西 2=南東 3=北西 4=北東。
+  for (const quadrant of digits.slice(8)) {
+    latSize /= 2;
+    lonSize /= 2;
+    south += Math.floor((quadrant - 1) / 2) * latSize;
+    west += ((quadrant - 1) % 2) * lonSize;
+  }
+  return [west, south, west + lonSize, south + latSize];
+}
+
 /** 集約したメッシュ1つ分。 */
 interface MeshCell {
-  /** 束ねた範囲 [xmin, ymin, xmax, ymax]。 */
-  bbox: Bbox;
+  /** メッシュコード。矩形はここから計算する。 */
+  code: string;
   population: number;
   /** 人口密度 (人/km²)。**中の最大値**。 */
   density: number;
@@ -692,9 +734,8 @@ interface MeshCell {
  * **密度は平均ではなく最大を取る。** SORAは運航範囲の中で最も密度の高いところを
  * 採るので、平均にすると危ないセルが薄まって消える。人口は合計。
  *
- * 範囲は束ねた子の bbox の和にする。125mの1つだけに人がいる1kmセルは、
- * その125m分だけが描かれる。**人がいる所だけが塗られる**方が、
- * 地上リスクを見るうえで実態に近い。
+ * 矩形は返さない。**メッシュコードから計算する** ([`meshBounds`])。
+ * 子のbboxの和で描くと、メッシュではない形になってしまう。
  */
 async function fetchMeshInView(
   conn: duckdb.AsyncDuckDBConnection,
@@ -708,27 +749,23 @@ async function fetchMeshInView(
 
   const result = await conn.query(`
     SELECT
-      min(bbox.xmin) AS xmin, min(bbox.ymin) AS ymin,
-      max(bbox.xmax) AS xmax, max(bbox.ymax) AS ymax,
+      substr(mesh_code, 1, ${digits}) AS code,
       sum(population) AS population,
       max(density) AS density
     FROM read_parquet([${list}])
     WHERE bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}
       AND bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}
       AND density IS NOT NULL
-    GROUP BY substr(mesh_code, 1, ${digits});
+    GROUP BY code;
   `);
   return result.toArray().map((row) => {
     const r = row.toJSON() as unknown as {
-      xmin: number;
-      ymin: number;
-      xmax: number;
-      ymax: number;
+      code: string;
       population: number | bigint | null;
       density: number;
     };
     return {
-      bbox: [r.xmin, r.ymin, r.xmax, r.ymax] as Bbox,
+      code: r.code,
       population: Number(r.population ?? 0),
       density: r.density,
     };
@@ -1655,24 +1692,29 @@ async function main() {
     meshShown = true;
     await mapSource.setData({
       type: 'FeatureCollection',
-      features: cells.map(({ bbox, population, density }) => ({
-        type: 'Feature',
-        // 色は引くときに決めてしまう。スタイル式で段を組むより、
-        // 凡例と同じ一つの表 (`IGRC_BANDS`) から作る方がずれない。
-        properties: { population, density, color: igrcBand(density).color },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [
-            [
-              [bbox[0], bbox[1]],
-              [bbox[2], bbox[1]],
-              [bbox[2], bbox[3]],
-              [bbox[0], bbox[3]],
-              [bbox[0], bbox[1]],
+      features: cells.map(({ code, population, density }) => {
+        // 矩形はメッシュコードから計算する。中に入っている子のbboxの和で描くと、
+        // 人のいる子だけを囲った細長い形になり、メッシュに見えなくなる。
+        const [west, south, east, north] = meshBounds(code);
+        return {
+          type: 'Feature',
+          // 色は引くときに決めてしまう。スタイル式で段を組むより、
+          // 凡例と同じ一つの表 (`IGRC_BANDS`) から作る方がずれない。
+          properties: { population, density, color: igrcBand(density).color },
+          geometry: {
+            type: 'Polygon',
+            coordinates: [
+              [
+                [west, south],
+                [east, south],
+                [east, north],
+                [west, north],
+                [west, south],
+              ],
             ],
-          ],
-        },
-      })),
+          },
+        };
+      }),
     });
 
     // **表示範囲の最大値を出す。** SORAは運航範囲の中で最も密度の高いところを採るので、
