@@ -833,6 +833,106 @@ test('用途を外すと建物が減る', async ({ page }) => {
   await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeLessThan(before);
 });
 
+/** 人口メッシュ (東京都)。無ければ地上リスクの表示は出ない。 */
+const MESH_DATASET = 'mesh_pop_13';
+
+async function hasMesh(page: Page): Promise<boolean> {
+  return (await datasetUrl(page, MESH_DATASET)) !== null;
+}
+
+/** 人口密度を表示し、描かれるまで待つ。 */
+async function showPopulationMesh(page: Page, zoom = 13) {
+  await page.evaluate((z) => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7454, 35.6586], zoom: z });
+  }, zoom);
+  await page.locator('#mesh-toggle').check();
+  await expect.poll(() => sourceFeatureCount(page, 'population-mesh')).toBeGreaterThan(0);
+}
+
+// 地上リスクの中心はSORAのiGRCで、その入力は人口密度。
+// 既定では出さない (建物を見に来た人の邪魔になる) が、出せることが分かる形にする。
+test('人口密度は切り替えで出せる', async ({ page }) => {
+  test.skip(!(await hasMesh(page)), '人口メッシュのデータが無い');
+
+  await expect(page.locator('#mesh-section')).toBeVisible();
+  // 既定は消えている。チェックするまで読みにも行かない。
+  expect(await sourceFeatureCount(page, 'population-mesh')).toBe(0);
+
+  await showPopulationMesh(page);
+  await expect(page.locator('#mesh-summary')).toContainText('人/km²');
+
+  // 外せば消える。
+  await page.locator('#mesh-toggle').uncheck();
+  await expect.poll(() => sourceFeatureCount(page, 'population-mesh')).toBe(0);
+});
+
+/**
+ * 色の区切りをSORAの iGRC の区切り (5 / 50 / 500 / 5,000 / 50,000 人/km²) に
+ * 合わせてある。連続的なグラデーションだと「濃い/薄い」しか読めないが、
+ * 判断の区切りで段を切れば、地図がそのまま iGRC を答える。
+ *
+ * 機体の寸法で iGRC は変わる。同じ密度でも1mと40mでは4段違う。
+ */
+test('凡例のiGRCは機体で変わる', async ({ page }) => {
+  test.skip(!(await hasMesh(page)), '人口メッシュのデータが無い');
+
+  await showPopulationMesh(page);
+  const values = () =>
+    page.locator('#mesh-legend tbody tr td:last-child').allTextContents();
+
+  // 既定は最小の機体 (1m / 25m/s)。密度の高い側から並んでいる。
+  expect(await values()).toEqual(['7', '6', '5', '4', '3', '2']);
+
+  // 40m機は同じ密度でも4段重い。50,000超はSORAの適用範囲外になる。
+  await page.locator('#aircraft-class').selectOption({ label: '40m / 200m/s' });
+  expect(await values()).toEqual(['範囲外', '10', '9', '8', '7', '6']);
+});
+
+/**
+ * **密度は平均ではなく最大を取る。** SORAは運航範囲の中で最も密度の高いところを
+ * 採るので、束ねるときに平均にすると危ないセルが薄まって消える。
+ *
+ * 125m (11桁) から1km (8桁) まで束ねても、最大値は変わらないはず。
+ */
+test('メッシュを粗くしても最大密度は下がらない', async ({ page }) => {
+  test.skip(!(await hasMesh(page)), '人口メッシュのデータが無い');
+
+  const peak = async () => {
+    const text = (await page.locator('#mesh-summary').textContent()) ?? '';
+    const match = /最大 ([\d,]+) 人/.exec(text);
+    if (!match) throw new Error(`最大密度が読めない: ${text}`);
+    return Number(match[1].replace(/,/g, ''));
+  };
+
+  await showPopulationMesh(page, 15);
+  await expect(page.locator('#mesh-summary')).toContainText('125mメッシュ');
+  const fine = await peak();
+
+  // 同じ場所を1kmで見る。表示範囲は広がるので、最大は下がらない。
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7454, 35.6586], zoom: 11 });
+  });
+  await expect(page.locator('#mesh-summary')).toContainText('1kmメッシュ');
+  expect(await peak()).toBeGreaterThanOrEqual(fine);
+});
+
+// 配信しているのは125mメッシュだけで、粗いメッシュはその場で束ねている。
+// 引くほど元の行を多く読むので (実測でz7は21MB)、下限で止める。
+// 黙って消すと壊れて見えるため、理由を出す。
+test('引きすぎると人口密度は出ず、理由が出る', async ({ page }) => {
+  test.skip(!(await hasMesh(page)), '人口メッシュのデータが無い');
+
+  await showPopulationMesh(page);
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7454, 35.6586], zoom: 8 });
+  });
+  await expect(page.locator('#mesh-summary')).toHaveText('拡大すると人口密度が出ます');
+  await expect.poll(() => sourceFeatureCount(page, 'population-mesh')).toBe(0);
+});
+
 test('クリアするとハイライトが消える', async ({ page }) => {
   await page.locator('#search-input').fill('港区');
   await page.locator('#results li', { hasText: '行政区域' }).first().click();

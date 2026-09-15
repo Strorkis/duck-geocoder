@@ -255,6 +255,72 @@ body,
   font-size: 0.8rem;
 }
 
+/* 出所の切り替えと地上リスクは別の話なので、境界を引いて分ける。 */
+#mesh-section {
+  margin-top: 0.7rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid #eee;
+}
+
+#mesh-section[hidden] {
+  display: none;
+}
+
+/* チェックボックスは見出しではないので、ラベルをブロックにしない。 */
+#display-panel .field > label.toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0;
+  cursor: pointer;
+}
+
+#display-panel .field > label.toggle input {
+  width: auto;
+}
+
+/* 凡例。色の段と iGRC の対応を示す。 */
+#mesh-legend {
+  width: 100%;
+  margin-bottom: 0.5rem;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+}
+
+#mesh-legend th {
+  padding: 0.15rem 0.3rem;
+  border-bottom: 1px solid #ddd;
+  color: #666;
+  font-weight: 600;
+  text-align: left;
+}
+
+#mesh-legend td {
+  padding: 0.15rem 0.3rem;
+}
+
+#mesh-legend td:last-child {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 色見本。地図の塗りと同じ色を出すので、ここだけJavaScriptが色を入れる。 */
+#mesh-legend .swatch {
+  display: inline-block;
+  width: 0.8rem;
+  height: 0.8rem;
+  margin-right: 0.3rem;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  border-radius: 0.15rem;
+  vertical-align: -0.1rem;
+}
+
+/* SORAの適用範囲外。数値が入らないことを色でも示す。 */
+#mesh-legend .out-of-scope {
+  color: #b00;
+  font-size: 0.7rem;
+}
+
 #loading {
   position: absolute;
   inset: 0;

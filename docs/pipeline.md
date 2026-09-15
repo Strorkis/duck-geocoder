@@ -522,13 +522,28 @@ PLATEAU306都市で350ファイルを超え、1つ読むたびに1往復する�
 | `duck:attribution_url` | 出典元のURL |
 | `duck:geometry_types` | ジオメトリの種類 |
 
-**既知の穴:** STACはItemの `datetime` を必須にしているが、元データの時点を読んでいないので
-`null` を入れている。`null` は本来 `start_datetime` / `end_datetime` とセットで使うものなので、
-検証にかけると警告になる。時点を読めるようにするのが宿題。
+**既知の穴1: `datetime` を埋めていない。**
 
-[Portolan](https://www.portolan-sdi.org/) は `README.md` と `AGENTS.md` を必須にしていて、
-どちらも揃っている。**ただし準拠を名乗るのはv1.0が見えてから。** v0.2.0で破壊的変更が
-予告されており、追従コストが読めない。
+STACの `datetime` は**元データの時点** (取得・観測・調査の時点) を入れる項目で、
+加工した日時ではない。加工日時は `created` / `updated` の方
+([STAC Common Metadata](https://github.com/radiantearth/stac-spec/blob/master/commons/common-metadata.md))。
+
+このパイプラインは元データの時点を読んでいないので `null` を入れている。
+`null` は本来 `start_datetime` / `end_datetime` とセットで使うものなので、
+検証にかけると警告になる。分かっているものはあるので (国勢調査なら令和2年の調査期日、
+PLATEAUなら整備年度)、`Description` に持たせるのが宿題。
+
+**既知の穴2: Portolanが求めるデータ側の `README.md` / `AGENTS.md` が無い。**
+
+> Every catalog and collection carries `catalog.json` or `collection.json` for machines,
+> plus `README.md` and `AGENTS.md` for people and agents.
+
+[Portolan](https://www.portolan-sdi.org/) が言っているのは**配信するデータの側**に置く
+ファイルで、**このリポジトリのAGENTS.mdとは別物**。こちらはコードを書くエージェント向け、
+あちらはデータを読むエージェント向け。`build_catalog` が `data/output/` に生成する形が素直。
+
+**準拠を名乗るのはv1.0が見えてから。** v0.2.0で破壊的変更が予告されており、
+追従コストが読めない。
 
 ## テスト
 

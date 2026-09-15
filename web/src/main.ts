@@ -327,6 +327,101 @@ interface BuildingSource {
 }
 
 /**
+ * 人口メッシュの出所。**SORAの地上リスクを見るためのもの。**
+ *
+ * 建物と違って「引いた状態で見たい」データなので、ズームに応じて
+ * メッシュを粗くして出す ([`meshDigits`])。
+ */
+interface MeshSource {
+  id: string;
+  /** 収録範囲。 */
+  bbox: Bbox | null;
+  /** このデータセットを構成するファイル。`ensure()` を呼ぶまで空。 */
+  files: { file: string; bbox: Bbox | null }[];
+  ensure: () => Promise<void>;
+}
+
+/**
+ * 人口メッシュを出す最小ズーム。
+ *
+ * **これより引くと読む量が跳ね上がる。** 配信しているのは125mメッシュだけで、
+ * 粗いメッシュはその場で束ねて作っているため、引くほど元の行を多く読むことになる。
+ * 実測 (東京中心):
+ *
+ * | ズーム | セル | 転送量 |
+ * | ---: | ---: | ---: |
+ * | 12 | 744 | 1.7 MB |
+ * | 10 | 2,884 | 10.0 MB |
+ * | 8 | 22,959 | 10.2 MB |
+ * | 7 | 52,699 | 21.1 MB |
+ *
+ * **全国を俯瞰するには、集約済みのファイルを別に配る必要がある**
+ * (1kmメッシュなら全国176,964件・約5MB)。それまではここで止める。
+ */
+const MESH_MIN_ZOOM = 11;
+
+/**
+ * ズームに対して、メッシュコードを何桁で束ねるか。
+ *
+ * **メッシュコードは階層になっている**ので、前から切るだけで粗くできる
+ * (11桁=125m、10桁=250m、9桁=500m、8桁=1km)。集約用のファイルを別に作らずに済む。
+ *
+ * 引くほど粗くするのは描画のためだけでなく、描く数を抑えるため。
+ * 125mメッシュは全国で282万件ある。
+ */
+function meshDigits(zoom: number): number {
+  if (zoom >= 15) return 11;
+  if (zoom >= 14) return 10;
+  if (zoom >= 12) return 9;
+  return 8;
+}
+
+/** 機体の区分。SORA 2.5 の iGRC 表の列。 */
+const AIRCRAFT_CLASSES = [
+  { label: '1m / 25m/s', dimension: '1m' },
+  { label: '3m / 35m/s', dimension: '3m' },
+  { label: '8m / 75m/s', dimension: '8m' },
+  { label: '20m / 120m/s', dimension: '20m' },
+  { label: '40m / 200m/s', dimension: '40m' },
+];
+
+/**
+ * SORA 2.5 の iGRC 表 (JARUS JAR_doc_25 Table 2) の、人口密度の行。
+ *
+ * **色の区切りをこの表に合わせる。** 連続的なグラデーションだと「濃い/薄い」しか
+ * 読めないが、判断の区切りで段を切れば、地図がそのまま iGRC を答える。
+ *
+ * `igrc` は [`AIRCRAFT_CLASSES`] と同じ並び。`null` は**SORAの適用範囲外**。
+ *
+ * 表の写しなので、**運用に使う前に原文を確認すること。**
+ * <http://jarus-rpas.org/wp-content/uploads/2024/06/SORA-v2.5-Main-Body-Release-JAR_doc_25.pdf>
+ */
+const IGRC_BANDS: {
+  /** この帯の上限 (人/km²)。未満ならこの帯。 */
+  limit: number;
+  label: string;
+  color: string;
+  igrc: (number | null)[];
+}[] = [
+  { limit: 5, label: '5 未満', color: '#ffffb2', igrc: [2, 3, 4, 5, 6] },
+  { limit: 50, label: '5 〜 50', color: '#fed976', igrc: [3, 4, 5, 6, 7] },
+  { limit: 500, label: '50 〜 500', color: '#feb24c', igrc: [4, 5, 6, 7, 8] },
+  { limit: 5000, label: '500 〜 5,000', color: '#fd8d3c', igrc: [5, 6, 7, 8, 9] },
+  { limit: 50000, label: '5,000 〜 50,000', color: '#f03b20', igrc: [6, 7, 8, 9, 10] },
+  {
+    limit: Number.POSITIVE_INFINITY,
+    label: '50,000 超',
+    color: '#bd0026',
+    igrc: [7, 8, null, null, null],
+  },
+];
+
+/** 人口密度 (人/km²) から iGRC の帯を引く。 */
+function igrcBand(density: number) {
+  return IGRC_BANDS.find((band) => density < band.limit) ?? IGRC_BANDS[IGRC_BANDS.length - 1];
+}
+
+/**
  * 表示範囲と重なるファイルだけを選ぶ。**カタログを空間索引として使う。**
  *
  * 建物は都市ごとに1ファイルで、PLATEAUを全国に広げると300を超える。
@@ -335,8 +430,13 @@ interface BuildingSource {
  *
  * 1つの大きなファイルに束ねる手もあるが、そちらは1都市の更新で全体を書き直すことになる。
  * 都市の境界が空間的な区切りとして働くので、分かれたままでよい。
+ *
+ * 人口メッシュ (都道府県ごとに1ファイル) も同じ仕組みで絞る。
  */
-function filesInView(source: BuildingSource, bounds: ViewBounds): string[] {
+function filesInView(
+  source: { files: { file: string; bbox: Bbox | null }[] },
+  bounds: ViewBounds,
+): string[] {
   const overlapping = source.files.filter(({ bbox }) => {
     // 収録範囲が分からないファイルは落とさない (判断材料が無いので読む)。
     if (!bbox) return true;
@@ -350,6 +450,8 @@ async function initDuckDb(collections: Collection[]): Promise<{
   conn: duckdb.AsyncDuckDBConnection;
   /** 建物データの出所。カタログにあるものだけが並ぶ。 */
   buildingSources: BuildingSource[];
+  /** 人口メッシュ。無ければ undefined (地上リスクの表示を出さないだけ)。 */
+  meshSource: MeshSource | undefined;
   /** 空間関数を使う前に呼ぶ。 */
   ensureSpatial: () => Promise<void>;
   /** 地名 (isj_oaza) を引く前に呼ぶ。 */
@@ -511,6 +613,24 @@ async function initDuckDb(collections: Collection[]): Promise<{
     return [source];
   });
 
+  // 人口メッシュ。建物と同じく、寄るまでItemを読まない。
+  const meshCollection = byKind('population_mesh')[0];
+  let meshSource: MeshSource | undefined;
+  if (meshCollection) {
+    const source: MeshSource = {
+      id: meshCollection.id,
+      bbox: meshCollection.bbox,
+      files: [],
+      ensure: once(async () => {
+        const items = await meshCollection.items();
+        source.files = itemFiles(items);
+        await register(source.files.map(({ file }) => file));
+        await ensureSpatial();
+      }),
+    };
+    meshSource = source;
+  }
+
   // 行政区域は1つの自治体が複数のポリゴン行に分かれることがある (飛び地や島など) ので、
   // 検索には名称を重複排除したものを使う。
   //
@@ -532,7 +652,65 @@ async function initDuckDb(collections: Collection[]): Promise<{
            FROM admin;`,
   );
 
-  return { conn, buildingSources, ensureSpatial, ensureOaza };
+  return { conn, buildingSources, meshSource, ensureSpatial, ensureOaza };
+}
+
+/** 集約したメッシュ1つ分。 */
+interface MeshCell {
+  /** 束ねた範囲 [xmin, ymin, xmax, ymax]。 */
+  bbox: Bbox;
+  population: number;
+  /** 人口密度 (人/km²)。**中の最大値**。 */
+  density: number;
+}
+
+/**
+ * 表示範囲の人口メッシュを、指定の桁で束ねて取り出す。
+ *
+ * **密度は平均ではなく最大を取る。** SORAは運航範囲の中で最も密度の高いところを
+ * 採るので、平均にすると危ないセルが薄まって消える。人口は合計。
+ *
+ * 範囲は束ねた子の bbox の和にする。125mの1つだけに人がいる1kmセルは、
+ * その125m分だけが描かれる。**人がいる所だけが塗られる**方が、
+ * 地上リスクを見るうえで実態に近い。
+ */
+async function fetchMeshInView(
+  conn: duckdb.AsyncDuckDBConnection,
+  source: MeshSource,
+  bounds: ViewBounds,
+  digits: number,
+): Promise<MeshCell[]> {
+  const files = filesInView(source, bounds);
+  if (files.length === 0) return [];
+  const list = files.map((file) => `'${file}'`).join(', ');
+
+  const result = await conn.query(`
+    SELECT
+      min(bbox.xmin) AS xmin, min(bbox.ymin) AS ymin,
+      max(bbox.xmax) AS xmax, max(bbox.ymax) AS ymax,
+      sum(population) AS population,
+      max(density) AS density
+    FROM read_parquet([${list}])
+    WHERE bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}
+      AND bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}
+      AND density IS NOT NULL
+    GROUP BY substr(mesh_code, 1, ${digits});
+  `);
+  return result.toArray().map((row) => {
+    const r = row.toJSON() as unknown as {
+      xmin: number;
+      ymin: number;
+      xmax: number;
+      ymax: number;
+      population: number | bigint | null;
+      density: number;
+    };
+    return {
+      bbox: [r.xmin, r.ymin, r.xmax, r.ymax] as Bbox,
+      population: Number(r.population ?? 0),
+      density: r.density,
+    };
+  });
 }
 
 /** 建物1件分の表示用データ。 */
@@ -879,6 +1057,25 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
 
   return new Promise((resolve) => {
     map.on('load', () => {
+      // 人口メッシュは一番下に敷く。判断の背景であって、主役ではない。
+      map.addSource('population-mesh', {
+        type: 'geojson',
+        data: EMPTY_FEATURE_COLLECTION,
+      });
+      map.addLayer({
+        id: 'population-mesh-fill',
+        type: 'fill',
+        source: 'population-mesh',
+        paint: {
+          // 色はSORAの iGRC の区切りで段を切る (`IGRC_BANDS`)。
+          // 連続的なグラデーションにすると「濃い/薄い」しか読めない。
+          'fill-color': ['get', 'color'],
+          // 下の地図 (地名や道路) が透けて見える濃さにする。
+          // 判断に使うのは色の段であって、塗りつぶしそのものではない。
+          'fill-opacity': 0.55,
+        },
+      });
+
       // 建物はハイライトより先に追加して、下に敷く。
       // 出典表示はカタログ由来のものが上の AttributionControl に入っている。
       map.addSource('buildings', {
@@ -1011,6 +1208,12 @@ async function main() {
   const usageAllButton = document.querySelector<HTMLButtonElement>('#usage-all')!;
   const usageNoneButton = document.querySelector<HTMLButtonElement>('#usage-none')!;
   const buildingCountEl = document.querySelector<HTMLParagraphElement>('#building-count')!;
+  const meshSectionEl = document.querySelector<HTMLDivElement>('#mesh-section')!;
+  const meshToggle = document.querySelector<HTMLInputElement>('#mesh-toggle')!;
+  const meshControlsEl = document.querySelector<HTMLDivElement>('#mesh-controls')!;
+  const aircraftSelect = document.querySelector<HTMLSelectElement>('#aircraft-class')!;
+  const meshLegendBody = document.querySelector<HTMLTableSectionElement>('#mesh-legend tbody')!;
+  const meshSummaryEl = document.querySelector<HTMLParagraphElement>('#mesh-summary')!;
 
   // DuckDB-WASMの初期化とParquetの読み込みには数秒かかるので、
   // 準備が終わるまでは操作できないことが分かるようにしておく。
@@ -1018,6 +1221,7 @@ async function main() {
   let conn: duckdb.AsyncDuckDBConnection;
   let map: MapLibreMap;
   let buildingSources: BuildingSource[] = [];
+  let meshSource: MeshSource | undefined;
   let ensureSpatial: () => Promise<void>;
   let ensureOaza: () => Promise<void>;
   try {
@@ -1028,6 +1232,7 @@ async function main() {
     ]);
     conn = db.conn;
     buildingSources = db.buildingSources;
+    meshSource = db.meshSource;
     ({ ensureSpatial, ensureOaza } = db);
     map = createdMap;
   } catch (e) {
@@ -1334,6 +1539,165 @@ async function main() {
       showFailure('建物の読み込みに失敗しました');
     });
   };
+
+  // ---- 人口密度 (SORAの地上リスク) ----
+
+  /** 選んでいる機体の区分。iGRC表の列にあたる。 */
+  let aircraftIndex = 0;
+  let meshToken = 0;
+
+  /** 凡例を作り直す。機体を変えると iGRC の値が変わる。 */
+  const renderLegend = () => {
+    meshLegendBody.replaceChildren();
+    // 密度が高い側を上に出す。危ない方から目に入る並びにする。
+    for (const band of [...IGRC_BANDS].reverse()) {
+      const row = document.createElement('tr');
+      const range = document.createElement('td');
+      const swatch = document.createElement('span');
+      swatch.className = 'swatch';
+      swatch.style.background = band.color;
+      range.append(swatch, document.createTextNode(band.label));
+
+      const igrc = document.createElement('td');
+      const value = band.igrc[aircraftIndex];
+      if (value === null) {
+        igrc.className = 'out-of-scope';
+        igrc.textContent = '範囲外';
+        igrc.title = 'SORAの適用範囲外';
+      } else {
+        igrc.textContent = String(value);
+      }
+      row.append(range, igrc);
+      meshLegendBody.append(row);
+    }
+  };
+
+  /** いま地図にメッシュを載せているか。空を載せ直す無駄を避けるために持つ。 */
+  let meshShown = false;
+
+  const refreshMesh = async () => {
+    const mapSource = map.getSource('population-mesh') as GeoJSONSource | undefined;
+    if (!mapSource) return;
+
+    /**
+     * メッシュを消す。**既に空なら何もしない。**
+     *
+     * `moveend` は地図を動かすたびに飛ぶので、消えている状態で毎回 `setData` を
+     * 呼ぶと、空のデータをワーカーへ往復させ続けることになる。建物の描画と
+     * 同じワーカーを使うため、そこの取り合いになる。
+     */
+    const clear = async (message: string) => {
+      if (meshShown) {
+        await mapSource.setData(EMPTY_FEATURE_COLLECTION);
+        meshShown = false;
+      }
+      meshSummaryEl.textContent = message;
+    };
+
+    if (!meshSource || !meshToggle.checked) {
+      await clear('');
+      return;
+    }
+
+    const zoom = map.getZoom();
+    // 引きすぎると読む量が跳ね上がる (`MESH_MIN_ZOOM` を参照)。
+    // 建物と違って何も言わずに消すと壊れて見えるので、理由を出す。
+    if (zoom < MESH_MIN_ZOOM) {
+      await clear('拡大すると人口密度が出ます');
+      return;
+    }
+
+    const token = ++meshToken;
+    const source = meshSource;
+    const digits = meshDigits(zoom);
+    const cells = await busy('人口密度を読み込み中…', async () => {
+      await source.ensure();
+      const b = map.getBounds();
+      const c = map.getCenter();
+      return fetchMeshInView(
+        conn,
+        source,
+        {
+          west: b.getWest(),
+          south: b.getSouth(),
+          east: b.getEast(),
+          north: b.getNorth(),
+          centerLon: c.lng,
+          centerLat: c.lat,
+        },
+        digits,
+      );
+    });
+    if (token !== meshToken) return;
+
+    meshShown = true;
+    await mapSource.setData({
+      type: 'FeatureCollection',
+      features: cells.map(({ bbox, population, density }) => ({
+        type: 'Feature',
+        // 色は引くときに決めてしまう。スタイル式で段を組むより、
+        // 凡例と同じ一つの表 (`IGRC_BANDS`) から作る方がずれない。
+        properties: { population, density, color: igrcBand(density).color },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [
+            [
+              [bbox[0], bbox[1]],
+              [bbox[2], bbox[1]],
+              [bbox[2], bbox[3]],
+              [bbox[0], bbox[3]],
+              [bbox[0], bbox[1]],
+            ],
+          ],
+        },
+      })),
+    });
+
+    // **表示範囲の最大値を出す。** SORAは運航範囲の中で最も密度の高いところを採るので、
+    // 地図から目で探させるより数字で出す方が確実。
+    if (cells.length === 0) {
+      meshSummaryEl.textContent = 'この範囲に人口メッシュがありません';
+      return;
+    }
+    const peak = cells.reduce((max, cell) => Math.max(max, cell.density), 0);
+    const band = igrcBand(peak);
+    const igrc = band.igrc[aircraftIndex];
+    const size = ['125m', '250m', '500m', '1km'][11 - digits] ?? `${digits}桁`;
+    meshSummaryEl.textContent =
+      `${size}メッシュ / 表示範囲の最大 ${Math.round(peak).toLocaleString()} 人/km² ` +
+      `(iGRC ${igrc === null ? '範囲外' : igrc})`;
+  };
+
+  const requestMeshRefresh = () => {
+    refreshMesh().catch((e: unknown) => {
+      console.error('[mesh] failed', e);
+      showFailure('人口密度の読み込みに失敗しました');
+    });
+  };
+
+  if (meshSource) {
+    meshSectionEl.hidden = false;
+    for (const [index, { label }] of AIRCRAFT_CLASSES.entries()) {
+      const option = document.createElement('option');
+      option.value = String(index);
+      option.textContent = label;
+      aircraftSelect.append(option);
+    }
+    renderLegend();
+
+    meshToggle.addEventListener('change', () => {
+      meshControlsEl.hidden = !meshToggle.checked;
+      requestMeshRefresh();
+    });
+    // 機体を変えても地図の色は変わらない (色は密度の帯で決まる)。
+    // 変わるのは凡例と要約に出る iGRC の値だけなので、引き直さない。
+    aircraftSelect.addEventListener('change', () => {
+      aircraftIndex = Number(aircraftSelect.value);
+      renderLegend();
+      requestMeshRefresh();
+    });
+    map.on('moveend', requestMeshRefresh);
+  }
 
   if (activeSource) {
     map.on('moveend', requestRefresh);

@@ -88,6 +88,30 @@
                選んだときに件数ごと消えてしまう。 -->
           <p id="building-count" class="note"></p>
         </div>
+        <!-- 地上リスク (SORAのiGRC)。データが無ければJavaScript側で隠す。 -->
+        <div id="mesh-section" hidden>
+          <div class="field">
+            <label class="toggle">
+              <input id="mesh-toggle" type="checkbox" />
+              人口密度 (地上リスク)
+            </label>
+          </div>
+          <div id="mesh-controls" hidden>
+            <div class="field">
+              <label for="aircraft-class">機体 (最大寸法 / 最大速度)</label>
+              <select id="aircraft-class"></select>
+            </div>
+            <!-- 凡例は色の段と iGRC の対応を示す。色だけでは「濃い/薄い」しか
+                 読めないので、判断に使う数値を併記する。 -->
+            <table id="mesh-legend">
+              <thead>
+                <tr><th>人口密度 (人/km²)</th><th>iGRC</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <p id="mesh-summary" class="note"></p>
+          </div>
+        </div>
       </div>
       <div id="loading">
         <div class="spinner"></div>

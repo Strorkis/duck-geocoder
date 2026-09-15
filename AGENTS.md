@@ -77,8 +77,17 @@
 - 詳細と既知の穴 (`datetime` を埋めていない) は [docs/pipeline.md](docs/pipeline.md)
 
 [Portolan](https://www.portolan-sdi.org/) は同じ構成 (オブジェクトストレージに
-静的ファイル + STAC + GeoParquet + `README.md` と `AGENTS.md`) を仕様にしたもの。
-**準拠を名乗るのはv1.0が見えてから。** v0.2.0で破壊的変更が予告されている。
+静的ファイル + STAC + GeoParquet) を仕様にしたもの。**まだ準拠していない。**
+
+> Every catalog and collection carries `catalog.json` or `collection.json` for machines,
+> plus `README.md` and `AGENTS.md` for people and agents.
+
+Portolanが求める `README.md` / `AGENTS.md` は**配信するデータの側** (カタログと
+各コレクションの隣) に置くもので、**このリポジトリのAGENTS.mdとは別物**。
+こちらはコードを書くエージェント向けで、あちらはデータを読むエージェント向け。
+`data/output/` 側にはまだ無い。
+
+準拠を名乗るのはv1.0が見えてから。v0.2.0で破壊的変更が予告されている。
 
 ## 実装の方針
 
