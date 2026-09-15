@@ -40,28 +40,27 @@
         <div class="spinner small"></div>
         <span id="busy-label"></span>
       </div>
-      <!-- 開閉にJavaScriptが要らないので details を使う。 -->
-      <details id="help" open>
-        <summary>使い方</summary>
-        <ul>
-          <li>市区町村や地名を<b>検索</b>すると、その場所へ移動します</li>
-          <li><b>📍</b> を押してから地図を<b>クリック</b>すると、その地点の市区町村を判定します</li>
-          <li>建物に<b>カーソルを合わせる</b>と、名称と用途が出ます (拡大したとき)</li>
-          <li>判定した結果は、<b>×</b> か <b>Esc</b> で消せます</li>
-        </ul>
-        <!-- 建物は一部の範囲しか収録していない。偶然そこへ行かないと
-             機能があること自体に気づけないので、移動する手段を置く。
-             データが無いときはJavaScript側で隠したままにする。 -->
-        <button id="goto-buildings" type="button" hidden>建物のある範囲へ移動</button>
-      </details>
-      <!-- 表示の設定。四隅は他で埋まっているので、パネルは増やさずここへ集める。 -->
+      <!--
+        できることは1枚にまとめ、中身はたたんでおく。四隅に散らしていたときは
+        初見で何から触ればいいか分からなかった。**見出しは畳まない**ので、
+        「何ができるか」は開かなくても読める。
+        開閉にJavaScriptが要らないので details を使う。
+      -->
       <div id="display-panel">
-        <div class="field">
-          <label for="basemap">地図</label>
-          <select id="basemap"></select>
-        </div>
+        <details id="map-section">
+          <summary>地図</summary>
+          <div class="field">
+            <label for="basemap">種類</label>
+            <select id="basemap"></select>
+          </div>
+        </details>
         <!-- 建物まわり。データが無ければJavaScript側で隠す (地図の切り替えは残す)。 -->
-        <div id="buildings-section" hidden>
+        <details id="buildings-section" hidden>
+          <summary>建物</summary>
+          <!-- 建物は一部の範囲しか収録していない。偶然そこへ行かないと
+               機能があること自体に気づけないので、移動する手段を置く。
+               データが無いときはJavaScript側で隠したままにする。 -->
+          <button id="goto-buildings" type="button" hidden>建物のある範囲へ移動</button>
           <div class="field">
             <label for="building-source">建物データ</label>
             <select id="building-source"></select>
@@ -87,13 +86,14 @@
           <!-- 絞り込みの外に置く。中に入れると、絞り込める列を持たない出所を
                選んだときに件数ごと消えてしまう。 -->
           <p id="building-count" class="note"></p>
-        </div>
+        </details>
         <!-- 地上リスク (SORAのiGRC)。データが無ければJavaScript側で隠す。 -->
-        <div id="mesh-section" hidden>
+        <details id="mesh-section" hidden>
+          <summary>人口密度 (地上リスク)</summary>
           <div class="field">
             <label class="toggle">
               <input id="mesh-toggle" type="checkbox" />
-              人口密度 (地上リスク)
+              地図に重ねる
             </label>
           </div>
           <div id="mesh-controls" hidden>
@@ -111,7 +111,23 @@
             </table>
             <p id="mesh-summary" class="note"></p>
           </div>
-        </div>
+        </details>
+        <details id="help">
+          <summary>使い方</summary>
+          <ul>
+            <li>市区町村や地名を<b>検索</b>すると、その場所へ移動します</li>
+            <li><b>📍</b> を押してから地図を<b>クリック</b>すると、その地点の市区町村を判定します</li>
+            <li>建物に<b>カーソルを合わせる</b>と、名称と用途が出ます (拡大したとき)</li>
+            <li>判定した結果は、<b>×</b> か <b>Esc</b> で消せます</li>
+          </ul>
+        </details>
+        <!-- 出典は地図右下の ⓘ にも出るが、そちらは1行に詰まって読みにくい
+             (MapLibreが出典の間を " | " のテキストで繋ぐため)。
+             何のデータの出典かを読めるようにここにも出す。 -->
+        <details id="credits-section">
+          <summary>出典</summary>
+          <dl id="credits"></dl>
+        </details>
       </div>
       <div id="loading">
         <div class="spinner"></div>

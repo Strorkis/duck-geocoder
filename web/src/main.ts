@@ -1113,7 +1113,9 @@ function collapseAttribution(map: MapLibreMap): void {
  *
  * 同じ出典を使うCollectionはまとめる (大字・町丁目と街区は同じ位置参照情報)。
  */
-function buildDataCredits(collections: Collection[]): string[] {
+function groupCredits(
+  collections: Collection[],
+): { titles: string[]; attribution: string; url: string }[] {
   const byAttribution = new Map<string, { url: string; titles: string[] }>();
   for (const collection of collections) {
     const entry = byAttribution.get(collection.attribution) ?? {
@@ -1127,10 +1129,41 @@ function buildDataCredits(collections: Collection[]): string[] {
   // 並べ替えは表示する文言で行う (組み立てたHTMLで並べると、順序がタグの中身に左右される)。
   return [...byAttribution]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(
-      ([attribution, { url, titles }]) =>
-        `<span class="credit"><b>${titles.join('・')}</b> ${creditLink(url, attribution)}</span>`,
-    );
+    .map(([attribution, { url, titles }]) => ({ titles, attribution, url }));
+}
+
+function buildDataCredits(collections: Collection[]): string[] {
+  return groupCredits(collections).map(
+    ({ titles, attribution, url }) =>
+      `<span class="credit"><b>${titles.join('・')}</b> ${creditLink(url, attribution)}</span>`,
+  );
+}
+
+/**
+ * 出典をパネルにも出す。**地図右下の ⓘ とは別に持つ。**
+ *
+ * MapLibreは出典の間を `" | "` のテキストで繋ぐので、1件ずつ改行させられない
+ * (ブロックにすると区切りだけの行ができる)。結果として ⓘ の中身は1行に詰まり、
+ * どれが何の出典なのか目で追いにくい。
+ *
+ * ⓘ は表示義務を果たす標準の置き場所として残し、**読ませるのはこちら**。
+ * 地形 (Mapterhorn) のようにTileJSONから来る出典はカタログに無いので、
+ * ⓘ の側が引き続き唯一の出どころになる。
+ */
+function renderCredits(container: HTMLElement, collections: Collection[]): void {
+  container.replaceChildren();
+  for (const { titles, attribution, url } of groupCredits(collections)) {
+    const term = document.createElement('dt');
+    term.textContent = titles.join('・');
+    const detail = document.createElement('dd');
+    const link = document.createElement('a');
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+    link.textContent = attribution;
+    detail.append(link);
+    container.append(term, detail);
+  }
 }
 
 function initMap(collections: Collection[]): Promise<MapLibreMap> {
@@ -1320,6 +1353,7 @@ async function main() {
   const aircraftSelect = document.querySelector<HTMLSelectElement>('#aircraft-class')!;
   const meshLegendBody = document.querySelector<HTMLTableSectionElement>('#mesh-legend tbody')!;
   const meshSummaryEl = document.querySelector<HTMLParagraphElement>('#mesh-summary')!;
+  const creditsEl = document.querySelector<HTMLDListElement>('#credits')!;
 
   // DuckDB-WASMの初期化とParquetの読み込みには数秒かかるので、
   // 準備が終わるまでは操作できないことが分かるようにしておく。
@@ -1341,6 +1375,7 @@ async function main() {
     meshSources = db.meshSources;
     ({ ensureSpatial, ensureOaza } = db);
     map = createdMap;
+    renderCredits(creditsEl, collections);
   } catch (e) {
     console.error('[init] failed', e);
     loadingEl.innerHTML = '<p>初期化に失敗しました。コンソールを確認してください。</p>';

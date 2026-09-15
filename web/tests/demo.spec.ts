@@ -59,6 +59,7 @@ async function hasPlateau(page: Page): Promise<boolean> {
 
 /** PLATEAUの建物が見える状態にする。PLATEAUは既定の出所なので選び直さない。 */
 async function showPlateauBuildings(page: Page) {
+  await openSection(page, 'buildings-section');
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 16 });
@@ -92,6 +93,17 @@ async function skipIfDataMissing(page: Page) {
     url === null,
     `${ADMIN_DATASET} がカタログに無い (READMEの手順で用意してください)`,
   );
+}
+
+/**
+ * 表示パネルの節を開く。
+ *
+ * できることは1枚のパネルにまとめてあり、**中身は既定でたたんである**。
+ * 見出しだけが並ぶので「何ができるか」は読めるが、操作するには開く必要がある。
+ */
+async function openSection(page: Page, id: string) {
+  await page.locator(`#${id} > summary`).click();
+  await expect(page.locator(`#${id}`)).toHaveAttribute('open', '');
 }
 
 /** 初期化 (DuckDB + 地図) の完了を待つ。 */
@@ -420,6 +432,36 @@ test('出典は既定でたたまれていて、押すと全文が出る', async
 });
 
 /**
+ * ⓘ の中身はMapLibreが `" | "` のテキストで繋ぐので、1行に詰まって読みにくい。
+ * ⓘ は表示義務を果たす標準の置き場所として残し、**読ませるのはパネルの側**。
+ */
+test('出典はパネルにデータごとの一覧として出る', async ({ page }) => {
+  await openSection(page, 'credits-section');
+
+  const terms = page.locator('#credits dt');
+  // 出所は4件 (位置参照情報 / 国勢調査 / PLATEAU / Overture)。
+  await expect.poll(() => terms.count()).toBeGreaterThan(2);
+
+  // 見出しがデータ名、中身が出典の文言。1行に混ざっていない。
+  const mesh = page.locator('#credits dt', { hasText: '人口メッシュ' }).first();
+  await expect(mesh).toBeVisible();
+  await expect(mesh.locator('xpath=following-sibling::dd[1]')).toContainText('総務省統計局');
+});
+
+// 初見で何から触ればいいか分かるよう、**見出しは畳まない**。
+// 中身をたたむのは画面を静かにするためで、できること自体は隠さない。
+test('できることは開かなくても見出しで分かる', async ({ page }) => {
+  const panel = page.locator('#display-panel');
+  for (const heading of ['地図', '建物', '人口密度', '使い方', '出典']) {
+    await expect(panel.locator('summary', { hasText: heading }).first()).toBeVisible();
+  }
+  // 中身は既定でたたんである。
+  for (const id of ['map-section', 'buildings-section', 'mesh-section', 'help']) {
+    await expect(page.locator(`#${id}`)).not.toHaveAttribute('open', '');
+  }
+});
+
+/**
  * 出典表示は出所が増えるほど行が増える。
  * 人口メッシュ (47都道府県) を足したときに1行から2行になり、全幅40pxに広がって
  * 左下のパネルを覆い、「建物のある範囲へ移動」が押せなくなった。
@@ -444,7 +486,7 @@ test('出典が何行になってもパネルは覆われない', async ({ page 
     const rect = (selector: string) =>
       document.querySelector(selector)?.getBoundingClientRect() ?? null;
     const attribution = rect('.maplibregl-ctrl-attrib');
-    const panels = ['#help', '#display-panel']
+    const panels = ['#display-panel']
       .map((selector) => ({ selector, box: rect(selector) }))
       .filter((panel) => panel.box !== null);
     if (!attribution) throw new Error('出典表示が見つからない');
@@ -470,6 +512,7 @@ test('ボタンを押すと建物のある範囲へ移動する', async ({ page 
 
   expect(await sourceFeatureCount(page, 'buildings')).toBe(0);
 
+  await openSection(page, 'buildings-section');
   await page.locator('#goto-buildings').click();
 
   await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
@@ -489,6 +532,7 @@ test('建物を読み込んでいる間は合図が出る', async ({ page }) => 
 
   await expect(page.locator('#busy')).toBeHidden();
 
+  await openSection(page, 'buildings-section');
   await page.locator('#goto-buildings').click();
   // flyTo に1.5秒かかるので、押した直後から出ていること。
   await expect(page.locator('#busy')).toBeVisible();
@@ -520,6 +564,7 @@ test('建物を読み込んでいる間は「拡大すると建物が出ます�
     await route.continue();
   });
 
+  await openSection(page, 'buildings-section');
   await page.locator('#goto-buildings').click();
   // 取得に入ったことは合図の文言で見分ける (移動中とは別の文言にしてある)。
   await expect(page.locator('#busy')).toContainText('建物を読み込み中…');
@@ -557,6 +602,7 @@ test('地図を航空写真に切り替えると写真のタイルを取りに�
     if (request.url().includes('cyberjapandata.gsi.go.jp')) requested.push(request.url());
   });
 
+  await openSection(page, 'map-section');
   await page.locator('#basemap').selectOption({ label: '航空写真' });
 
   await expect.poll(() => requested.some((url) => url.includes('/seamlessphoto/'))).toBe(true);
@@ -564,6 +610,7 @@ test('地図を航空写真に切り替えると写真のタイルを取りに�
 
 // 地図と地形は別々に選べる。片方の操作で、自分で選んだもう片方が勝手に変わらないこと。
 test('地形を切っても地図は変わらない', async ({ page }) => {
+  await openSection(page, 'map-section');
   await page.locator('#basemap').selectOption({ label: '航空写真' });
 
   await page.locator('button[class*="maplibregl-ctrl-terrain"]').click();
@@ -748,6 +795,7 @@ test('絞り込みは列の有無で決まる', async ({ page }) => {
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
 
   await expect(page.locator('#buildings-section')).toBeVisible();
+  await openSection(page, 'buildings-section');
   // 属性の揃っているPLATEAUが既定。
   await expect(page.locator('#building-source')).toHaveValue(/plateau/);
   await expect(page.locator('#building-filters')).toBeVisible();
@@ -869,6 +917,7 @@ async function hasMesh(page: Page): Promise<boolean> {
 
 /** 人口密度を表示し、描かれるまで待つ。 */
 async function showPopulationMesh(page: Page, zoom = 13) {
+  await openSection(page, 'mesh-section');
   await page.evaluate((z) => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: z });
@@ -958,6 +1007,7 @@ test('メッシュを粗くしても最大密度は下がらない', async ({ pa
 test('メッシュのセルはすべて同じ大きさ', async ({ page }) => {
   test.skip(!(await hasMesh(page)), '人口メッシュのデータが無い');
 
+  await openSection(page, 'mesh-section');
   for (const zoom of [15, 13, 11, 8]) {
     await page.evaluate((z) => {
       const map = (window as unknown as TestWindow).__map!;
@@ -1011,6 +1061,7 @@ test('引いた表示では1kmの集約ファイルだけを読む', async ({ pa
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 8 });
   });
+  await openSection(page, 'mesh-section');
   await page.locator('#mesh-toggle').check();
   await expect.poll(() => sourceFeatureCount(page, 'population-mesh')).toBeGreaterThan(0);
 
@@ -1030,6 +1081,7 @@ test('全国を俯瞰しても最大密度は残る', async ({ page }) => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [138.0, 37.0], zoom: 5 });
   });
+  await openSection(page, 'mesh-section');
   await page.locator('#mesh-toggle').check();
   await expect(page.locator('#mesh-summary')).toContainText('80kmメッシュ');
 

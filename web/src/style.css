@@ -103,38 +103,45 @@ body,
   color: #333;
 }
 
-/* 出典表示 (MapLibreの既定は右下) と重ならないよう左下に置く。 */
-#help {
-  position: absolute;
-  /* 出典表示は出所が増えると行が増える。下端からどこまで占めているかは
-     main.ts が測って --attribution-space に入れているので、それを避ける。
-     固定値で決めると、出所を足したときに覆われて押せなくなる。 */
-  bottom: calc(var(--attribution-space, 2rem) + 0.5rem);
-  left: 1rem;
-  z-index: 1;
-  width: 20rem;
-  max-width: calc(100vw - 2rem);
-  padding: 0.5rem 0.8rem;
-  background: rgba(255, 255, 255, 0.95);
-  border-radius: 0.4rem;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
-  font-size: 0.85rem;
-  color: #333;
+/* できることは1枚のパネルにまとめ、節ごとにたたむ。
+   四隅に散らしていたときは、初見で何から触ればいいか分からなかった。 */
+#display-panel > details {
+  border-top: 1px solid #eee;
 }
 
-#help summary {
-  cursor: pointer;
+#display-panel > details:first-child {
+  border-top: none;
+}
+
+/* 見出しはたたまない。開かなくても「何ができるか」が読める状態を保つ。 */
+#display-panel > details > summary {
+  padding: 0.4rem 0;
   font-weight: 600;
+  cursor: pointer;
+}
+
+#display-panel > details > summary:hover {
+  color: #14508c;
+}
+
+#display-panel > details[hidden] {
+  display: none;
+}
+
+/* 節を開いたときの中身。見出しとの間を空ける。 */
+#display-panel > details > *:not(summary):first-of-type {
+  margin-top: 0.2rem;
 }
 
 #help ul {
-  margin: 0.5rem 0 0;
+  margin: 0.2rem 0 0.6rem;
   padding-left: 1.2rem;
   line-height: 1.6;
 }
 
-#help button {
-  margin-top: 0.6rem;
+#goto-buildings {
+  width: 100%;
+  margin-bottom: 0.6rem;
   padding: 0.35rem 0.7rem;
   font-size: 0.85rem;
   border: 1px solid #ccc;
@@ -143,17 +150,33 @@ body,
   cursor: pointer;
 }
 
-#help button:hover {
+#goto-buildings:hover {
   background: #f0f4ff;
 }
 
-#help button[hidden] {
+#goto-buildings[hidden] {
   display: none;
 }
 
-/* 表示の設定 (地図・建物の出所・絞り込み)。使い方パネルと逆側 (右下) に置く。
-   MapLibreの出典表示も右下なので、その上に重ならない高さから始める
-   (#help と同じく実測値を使う)。 */
+/* 出典。地図右下の ⓘ は1行に詰まって読みにくいので、こちらで読ませる。 */
+#credits {
+  margin: 0.2rem 0 0.4rem;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+#credits dt {
+  font-weight: 600;
+  color: #333;
+}
+
+#credits dd {
+  margin: 0 0 0.4rem;
+  color: #555;
+}
+
+/* 表示の設定 (地図・建物・人口密度・使い方・出典) をまとめたパネル。
+   MapLibreの出典表示も右下なので、その上に重ならない高さから始める。 */
 #display-panel {
   position: absolute;
   right: 1rem;
@@ -182,10 +205,11 @@ body,
   margin-bottom: 0.7rem;
 }
 
+/* 節の見出しが太字なので、中のラベルは太字にしない (見出しと同じ重みだと階層が潰れる)。 */
 #display-panel .field > label {
   display: block;
   margin-bottom: 0.25rem;
-  font-weight: 600;
+  color: #555;
 }
 
 #display-panel select,
@@ -272,17 +296,6 @@ body,
 .maplibregl-ctrl-attrib-inner .credit b {
   color: #333;
   font-weight: 600;
-}
-
-/* 出所の切り替えと地上リスクは別の話なので、境界を引いて分ける。 */
-#mesh-section {
-  margin-top: 0.7rem;
-  padding-top: 0.7rem;
-  border-top: 1px solid #eee;
-}
-
-#mesh-section[hidden] {
-  display: none;
 }
 
 /* チェックボックスは見出しではないので、ラベルをブロックにしない。 */
