@@ -1,3 +1,4 @@
+import { totalmem } from 'node:os';
 import { defineConfig } from '@playwright/test';
 import { BASE_PATH } from './base-path';
 
@@ -52,9 +53,13 @@ export default defineConfig({
   // 待ち時間の大半はテストごとのDuckDB-WASM初期化 (データがR2にあると1件15〜23秒) で、
   // CPUではなく往復待ちなので、並べれば実測で半分になる。
   fullyParallel: true,
-  // コア数なりに増やさない。DuckDB-WASMのインスタンスは1つで数百MB使うので、
-  // 16コアの手元だとメモリで詰まる。CIのrunnerは4コアなので3で埋まる。
-  workers: 3,
+  // **コア数ではなくメモリで決める。** DuckDB-WASMのインスタンスは1つで数百MB使い、
+  // Chromiumと合わせて1 workerあたり3GB程度まで伸びる。足りないとスワップに落ちて、
+  // テストがタイムアウトするまで止まる (実測: 7.7GBのWSLで3 worker → スワップ2GBを
+  // 使い切り、メモリ待ちのPSIが full avg60=15%、60秒のタイムアウトに達した)。
+  //
+  // CIのrunnerは16GBあるので3つ並ぶ。手元の環境で足りなければ勝手に減る。
+  workers: Math.max(1, Math.min(3, Math.floor(totalmem() / (3 * 1024 ** 3)))),
   // CIはネットワーク越しにデータを読むので、1回だけやり直す。
   // 再実行でトレースが残るため、ヘッドレスでの失敗を後から追える。
   retries: process.env.CI ? 1 : 0,
