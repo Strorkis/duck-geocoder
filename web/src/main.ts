@@ -60,6 +60,8 @@ interface StacCollection {
   /** 地図に出す出典の文言。**表示義務があるので縮めない。** */
   'duck:attribution': string;
   'duck:attribution_url': string;
+  /** 地域メッシュの細かさ (メッシュコードの桁数)。メッシュ以外には無い。 */
+  'duck:mesh_digits'?: number;
   extent: { spatial: { bbox: (number | null)[][] } };
   /**
    * 列がとりうる値。列名 → 値 (件数の多い順)。語彙を持たない列は入っていない。
@@ -93,6 +95,8 @@ interface Collection {
   summaries: Record<string, string[]>;
   /** 列名。何で絞れるかをこれで決める。 */
   columns: Set<string>;
+  /** 地域メッシュの細かさ (メッシュコードの桁数)。メッシュ以外は undefined。 */
+  meshDigits: number | undefined;
   /** Itemを読む。**Collectionごとに1回だけ**通信する。 */
   items: () => Promise<StacItem[]>;
 }
@@ -198,6 +202,7 @@ function toCollection(document: StacCollection): Collection {
     title: document.title ?? document.id,
     attribution: document['duck:attribution'],
     attributionUrl: document['duck:attribution_url'],
+    meshDigits: document['duck:mesh_digits'],
     bbox,
     summaries: document.summaries ?? {},
     columns: new Set(
@@ -334,6 +339,8 @@ interface BuildingSource {
  */
 interface MeshSource {
   id: string;
+  /** このデータの細かさ (メッシュコードの桁数)。11桁=125m、8桁=1km。 */
+  digits: number;
   /** 収録範囲。 */
   bbox: Bbox | null;
   /** このデータセットを構成するファイル。`ensure()` を呼ぶまで空。 */
@@ -342,38 +349,46 @@ interface MeshSource {
 }
 
 /**
- * 人口メッシュを出す最小ズーム。
+ * 要求する細かさに対して、どの出所を引くか。
  *
- * **これより引くと読む量が跳ね上がる。** 配信しているのは125mメッシュだけで、
- * 粗いメッシュはその場で束ねて作っているため、引くほど元の行を多く読むことになる。
- * 実測 (東京中心):
+ * **要求より細かいものの中で、いちばん粗いものを選ぶ。** 125mのファイルからでも
+ * 1kmは作れるが、そのぶん元の行を多く読む (実測でズーム7のとき21.1MB)。
+ * 全国を1kmで束ねたファイル (5.5MB) があれば、そちらを読む方がずっと軽い。
  *
- * | ズーム | セル | 転送量 |
- * | ---: | ---: | ---: |
- * | 12 | 744 | 1.7 MB |
- * | 10 | 2,884 | 10.0 MB |
- * | 8 | 22,959 | 10.2 MB |
- * | 7 | 52,699 | 21.1 MB |
- *
- * **全国を俯瞰するには、集約済みのファイルを別に配る必要がある**
- * (1kmメッシュなら全国176,964件・約5MB)。それまではここで止める。
+ * 逆に、要求より粗いものからは作れない (1kmのファイルで500mは描けない)。
  */
-const MESH_MIN_ZOOM = 11;
+function meshSourceFor(sources: MeshSource[], digits: number): MeshSource | undefined {
+  return sources
+    .filter((source) => source.digits >= digits)
+    .sort((a, b) => a.digits - b.digits)[0];
+}
 
 /**
  * ズームに対して、メッシュコードを何桁で束ねるか。
  *
  * **メッシュコードは階層になっている**ので、前から切るだけで粗くできる
- * (11桁=125m、10桁=250m、9桁=500m、8桁=1km)。集約用のファイルを別に作らずに済む。
+ * (11桁=125m、10桁=250m、9桁=500m、8桁=1km、6桁=10km、4桁=80km)。
  *
- * 引くほど粗くするのは描画のためだけでなく、描く数を抑えるため。
- * 125mメッシュは全国で282万件ある。
+ * 引くほど粗くするのは、描く数を抑えるため。125mメッシュは全国で282万件ある。
+ * どのファイルから作るかは [`meshSourceFor`] が別に決める。
  */
+/** メッシュコードの桁数から、人間に見せる大きさの呼び名。 */
+const MESH_SIZE_LABELS: Record<number, string> = {
+  4: '80km',
+  6: '10km',
+  8: '1km',
+  9: '500m',
+  10: '250m',
+  11: '125m',
+};
+
 function meshDigits(zoom: number): number {
   if (zoom >= 15) return 11;
   if (zoom >= 14) return 10;
   if (zoom >= 12) return 9;
-  return 8;
+  if (zoom >= 9) return 8;
+  if (zoom >= 6) return 6;
+  return 4;
 }
 
 /** 機体の区分。SORA 2.5 の iGRC 表の列。 */
@@ -450,8 +465,8 @@ async function initDuckDb(collections: Collection[]): Promise<{
   conn: duckdb.AsyncDuckDBConnection;
   /** 建物データの出所。カタログにあるものだけが並ぶ。 */
   buildingSources: BuildingSource[];
-  /** 人口メッシュ。無ければ undefined (地上リスクの表示を出さないだけ)。 */
-  meshSource: MeshSource | undefined;
+  /** 人口メッシュ。細かさの違うものが並ぶ。空なら地上リスクの表示を出さない。 */
+  meshSources: MeshSource[];
   /** 空間関数を使う前に呼ぶ。 */
   ensureSpatial: () => Promise<void>;
   /** 地名 (isj_oaza) を引く前に呼ぶ。 */
@@ -614,22 +629,29 @@ async function initDuckDb(collections: Collection[]): Promise<{
   });
 
   // 人口メッシュ。建物と同じく、寄るまでItemを読まない。
-  const meshCollection = byKind('population_mesh')[0];
-  let meshSource: MeshSource | undefined;
-  if (meshCollection) {
+  // **細かさの違うCollectionが並ぶ** (125mは都道府県ごと、1kmは全国で1つ) ので、
+  // どれを引くかはズームに応じて `meshSourceFor` が決める。
+  const meshSources: MeshSource[] = byKind('population_mesh').flatMap((collection) => {
+    const digits = collection.meshDigits;
+    if (digits === undefined) {
+      // 細かさが分からないメッシュは使いようがない (どのズームで引くか決まらない)。
+      console.warn('[catalog] duck:mesh_digits がありません:', collection.id);
+      return [];
+    }
     const source: MeshSource = {
-      id: meshCollection.id,
-      bbox: meshCollection.bbox,
+      id: collection.id,
+      digits,
+      bbox: collection.bbox,
       files: [],
       ensure: once(async () => {
-        const items = await meshCollection.items();
+        const items = await collection.items();
         source.files = itemFiles(items);
         await register(source.files.map(({ file }) => file));
         await ensureSpatial();
       }),
     };
-    meshSource = source;
-  }
+    return [source];
+  });
 
   // 行政区域は1つの自治体が複数のポリゴン行に分かれることがある (飛び地や島など) ので、
   // 検索には名称を重複排除したものを使う。
@@ -652,7 +674,7 @@ async function initDuckDb(collections: Collection[]): Promise<{
            FROM admin;`,
   );
 
-  return { conn, buildingSources, meshSource, ensureSpatial, ensureOaza };
+  return { conn, buildingSources, meshSources, ensureSpatial, ensureOaza };
 }
 
 /** 集約したメッシュ1つ分。 */
@@ -1221,7 +1243,7 @@ async function main() {
   let conn: duckdb.AsyncDuckDBConnection;
   let map: MapLibreMap;
   let buildingSources: BuildingSource[] = [];
-  let meshSource: MeshSource | undefined;
+  let meshSources: MeshSource[] = [];
   let ensureSpatial: () => Promise<void>;
   let ensureOaza: () => Promise<void>;
   try {
@@ -1232,7 +1254,7 @@ async function main() {
     ]);
     conn = db.conn;
     buildingSources = db.buildingSources;
-    meshSource = db.meshSource;
+    meshSources = db.meshSources;
     ({ ensureSpatial, ensureOaza } = db);
     map = createdMap;
   } catch (e) {
@@ -1594,22 +1616,22 @@ async function main() {
       meshSummaryEl.textContent = message;
     };
 
-    if (!meshSource || !meshToggle.checked) {
+    if (!meshToggle.checked) {
       await clear('');
       return;
     }
 
     const zoom = map.getZoom();
-    // 引きすぎると読む量が跳ね上がる (`MESH_MIN_ZOOM` を参照)。
-    // 建物と違って何も言わずに消すと壊れて見えるので、理由を出す。
-    if (zoom < MESH_MIN_ZOOM) {
-      await clear('拡大すると人口密度が出ます');
+    const digits = meshDigits(zoom);
+    // 要求する細かさを出せる出所が無ければ出せない。125mしか配っていない状態で
+    // 引くと、これに当たる代わりに125mから束ねることになっていた。
+    const source = meshSourceFor(meshSources, digits);
+    if (!source) {
+      await clear('この縮尺の人口密度は配信されていません');
       return;
     }
 
     const token = ++meshToken;
-    const source = meshSource;
-    const digits = meshDigits(zoom);
     const cells = await busy('人口密度を読み込み中…', async () => {
       await source.ensure();
       const b = map.getBounds();
@@ -1662,7 +1684,7 @@ async function main() {
     const peak = cells.reduce((max, cell) => Math.max(max, cell.density), 0);
     const band = igrcBand(peak);
     const igrc = band.igrc[aircraftIndex];
-    const size = ['125m', '250m', '500m', '1km'][11 - digits] ?? `${digits}桁`;
+    const size = MESH_SIZE_LABELS[digits] ?? `${digits}桁`;
     meshSummaryEl.textContent =
       `${size}メッシュ / 表示範囲の最大 ${Math.round(peak).toLocaleString()} 人/km² ` +
       `(iGRC ${igrc === null ? '範囲外' : igrc})`;
@@ -1675,7 +1697,7 @@ async function main() {
     });
   };
 
-  if (meshSource) {
+  if (meshSources.length > 0) {
     meshSectionEl.hidden = false;
     for (const [index, { label }] of AIRCRAFT_CLASSES.entries()) {
       const option = document.createElement('option');

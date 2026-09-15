@@ -224,6 +224,11 @@ fn collection(id: &str, entries: &[&DatasetEntry]) -> Result<Value> {
     if !summaries.is_empty() {
         body["summaries"] = json!(summaries);
     }
+    // 同じ人口メッシュでも細かさの違うCollectionが並ぶので、UIがどれを引くかを
+    // これで決める。メッシュ以外には出さない。
+    if let Some(digits) = first.mesh_digits {
+        body["duck:mesh_digits"] = json!(digits);
+    }
     Ok(body)
 }
 
@@ -321,6 +326,7 @@ mod tests {
                 data_type: "INT32".to_string(),
             }],
             summaries: BTreeMap::new(),
+            mesh_digits: Some(11),
         }
     }
 

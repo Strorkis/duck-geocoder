@@ -1,6 +1,14 @@
 use anyhow::{Context, Result, bail};
 use duck_geocoder::{decode_sjis, mesh_pop, read_zip_entry_bytes};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+/// 全国を俯瞰するために別に作る、粗いメッシュの桁数。8桁 = 1km。
+///
+/// **配信しているのが125mだけだと、引くほど読む量が増える。** 全国を1kmで
+/// 持てば1ファイル約5MBで済み、そこからさらに束ねて10km・80kmも作れる。
+const COARSE_DIGITS: usize = 8;
+const COARSE_LABEL: &str = "1km";
 
 /// 国勢調査の地域メッシュ統計 (e-Stat 統計GIS) のzipを読み、GeoParquetに変換する。
 ///
@@ -18,7 +26,10 @@ fn main() -> Result<()> {
     {
         [_, "--all", input_dir, out_dir] => convert_all(Path::new(input_dir), Path::new(out_dir)),
         [_, input, output] => {
-            let (meshes, population) = convert(Path::new(input), Path::new(output))?;
+            // 1県だけの変換では粗いメッシュを作らない。**全国で1つ**に意味があるので、
+            // 県ごとに作ると県境をまたぐメッシュが分かれてしまう。
+            let mut ignored = BTreeMap::new();
+            let (meshes, population) = convert(Path::new(input), Path::new(output), &mut ignored)?;
             println!("{meshes} メッシュ / 人口 {population} 人");
             Ok(())
         }
@@ -53,10 +64,13 @@ fn convert_all(input_dir: &Path, out_dir: &Path) -> Result<()> {
 
     let mut total_meshes = 0usize;
     let mut total_population = 0i64;
+    // 全国を1kmで束ねたものを作る。**県境をまたぐメッシュがある**ので、
+    // 県ごとに書き出さず、全県を積んでから確定する。
+    let mut coarse = BTreeMap::new();
     for input in &inputs {
         let code = prefecture_code(input)?;
         let output = out_dir.join(format!("mesh_pop_{code}.parquet"));
-        let (meshes, population) = convert(input, &output)?;
+        let (meshes, population) = convert(input, &output, &mut coarse)?;
         println!("{code}: {meshes} メッシュ / 人口 {population} 人");
         total_meshes += meshes;
         total_population += population;
@@ -66,7 +80,24 @@ fn convert_all(input_dir: &Path, out_dir: &Path) -> Result<()> {
         "\n{} 都道府県 / 合計 {total_meshes} メッシュ / 人口 {total_population} 人",
         inputs.len()
     );
-    Ok(())
+
+    let rows = mesh_pop::aggregate(coarse)?;
+    let coarse_population: i64 = rows
+        .iter()
+        .filter_map(|r| r.population)
+        .map(i64::from)
+        .sum();
+    // **束ねた合計が元と一致すること。** ずれていたら束ね方を間違えている。
+    if coarse_population != total_population {
+        bail!("1kmに束ねたら人口が変わりました: {total_population} → {coarse_population}");
+    }
+    let output = out_dir.join(format!("mesh_pop_{COARSE_LABEL}.parquet"));
+    println!(
+        "{} メッシュ ({COARSE_LABEL}) を {} に書き出しました",
+        rows.len(),
+        output.display(),
+    );
+    mesh_pop::write_geoparquet(rows, &output)
 }
 
 /// 配布ファイル名から都道府県コードを取り出す。
@@ -89,7 +120,12 @@ fn prefecture_code(path: &Path) -> Result<String> {
 }
 
 /// zip 1つを変換し、(メッシュ数, 人口) を返す。
-fn convert(input: &Path, output: &Path) -> Result<(usize, i64)> {
+/// `coarse` には粗いメッシュの集計を積む (`None` なら積まない)。
+fn convert(
+    input: &Path,
+    output: &Path,
+    coarse: &mut BTreeMap<String, mesh_pop::Cell>,
+) -> Result<(usize, i64)> {
     // 配布物はzipの中にテキストが1つ入っているだけ。拡張子は .txt だが中身はCSV。
     let bytes = read_zip_entry_bytes(input, ".txt")?;
     let rows = mesh_pop::parse_csv(&decode_sjis(&bytes))
@@ -102,6 +138,7 @@ fn convert(input: &Path, output: &Path) -> Result<(usize, i64)> {
         .map(i64::from)
         .sum();
 
+    mesh_pop::accumulate(coarse, &rows, COARSE_DIGITS);
     mesh_pop::write_geoparquet(rows, output)?;
     Ok((meshes, population))
 }

@@ -19,6 +19,7 @@ use crate::mesh;
 use anyhow::{Context, Result, bail};
 use geo_traits::CoordTrait;
 use geo_types::Polygon;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// 人口の列を指す項目名。先頭に全角空白が付くので `trim` して比べる。
@@ -31,11 +32,18 @@ const HOUSEHOLDS: &str = "世帯総数";
 pub struct Row {
     /// メッシュコード。桁数がそのまま細かさを表す (11桁なら125m)。
     pub mesh_code: String,
-    /// 人口 (総数)。秘匿されていれば None。
+    /// 人口 (総数)。
     pub population: Option<i32>,
-    /// 世帯数 (総数)。秘匿されていれば None。
+    /// 世帯数 (総数)。
     pub households: Option<i32>,
-    /// 人口密度 (人/km²)。**SORAのGround Riskが見るのはこれ。**
+    /// **このメッシュが代表する最大の人口密度 (人/km²)。**
+    /// SORAのGround Riskが見るのはこれ。
+    ///
+    /// 125mメッシュでは、そのメッシュ自身の密度 (人口 ÷ 面積)。
+    /// [`aggregate`] で束ねたメッシュでは、**中に含まれる125mメッシュの最大値**。
+    ///
+    /// 平均にしないのは、SORAが運航範囲の中で最も密度の高いところを採るため。
+    /// 束ねるときに平均すると、危ないセルが薄まって消える。
     ///
     /// メッシュの面積は緯度で変わるので、コードごとに計算した面積で割る。
     pub density: Option<f64>,
@@ -119,6 +127,62 @@ pub fn parse_csv(csv_text: &str) -> Result<Vec<Row>> {
         bail!("データ行がありません");
     }
     Ok(rows)
+}
+
+/// 束ねている途中の1セル。
+#[derive(Debug, Default)]
+pub struct Cell {
+    population: Option<i64>,
+    households: Option<i64>,
+    density: Option<f64>,
+}
+
+/// メッシュを粗くして束ねる。**メッシュコードを前から `digits` 桁で切るだけ。**
+///
+/// 地域メッシュは入れ子になっているので、8桁に切れば1km、6桁なら10kmになる。
+/// 集約のために別のデータを落とす必要はない。
+///
+/// **人口と世帯数は合計、密度は最大。** 人口・世帯数は125mの時点で秘匿されていない
+/// (実測: 東京都65,138メッシュのうち秘匿0件) ので、合計は正確に出る。
+///
+/// 都道府県をまたいで呼ぶことを想定して、`into` に積み上げる形にしてある。
+/// **1つの1kmメッシュが県境をまたぐことがある**ので、全県を積んでから確定する。
+pub fn accumulate(into: &mut BTreeMap<String, Cell>, rows: &[Row], digits: usize) {
+    for row in rows {
+        if row.mesh_code.len() < digits {
+            continue;
+        }
+        let cell = into.entry(row.mesh_code[..digits].to_string()).or_default();
+        if let Some(population) = row.population {
+            *cell.population.get_or_insert(0) += i64::from(population);
+        }
+        if let Some(households) = row.households {
+            *cell.households.get_or_insert(0) += i64::from(households);
+        }
+        if let Some(density) = row.density {
+            cell.density = Some(cell.density.map_or(density, |current| current.max(density)));
+        }
+    }
+}
+
+/// 束ねた結果を書き出せる形にする。
+pub fn aggregate(cells: BTreeMap<String, Cell>) -> Result<Vec<Row>> {
+    cells
+        .into_iter()
+        .map(|(mesh_code, cell)| {
+            let geometry = mesh::polygon(&mesh_code)
+                .with_context(|| format!("メッシュコードを解釈できません: {mesh_code}"))?;
+            Ok(Row {
+                mesh_code,
+                // 束ねた人口は i32 に収まる (全国で1.26億)。収まらなければ
+                // 束ね方を間違えているので、黙って丸めずに落とす。
+                population: cell.population.map(i32::try_from).transpose()?,
+                households: cell.households.map(i32::try_from).transpose()?,
+                density: cell.density,
+                geometry,
+            })
+        })
+        .collect()
 }
 
 fn polygon_bbox(polygon: &Polygon<f64>) -> [f64; 4] {
@@ -224,5 +288,77 @@ KEY_CODE,HTKSYORI,HTKSAKI,GASSAN,T001231001,T001231034
     fn rejects_a_file_that_is_not_mesh_statistics() {
         let err = parse_csv("KEY,VALUE\n,\n1,2\n").unwrap_err();
         assert!(format!("{err:#}").contains("KEY_CODE"), "{err:#}");
+    }
+
+    /// 同じ1kmメッシュ (53394611) に入る125mメッシュを並べたCSV。
+    const SIBLINGS: &str = "\
+KEY_CODE,HTKSYORI,HTKSAKI,GASSAN,T001231001,T001231034
+,,,,　人口（総数）,　世帯総数
+53394611111,0,,,100,40
+53394611444,0,,,300,120
+";
+
+    // 人口と世帯数は合計。125mの時点で秘匿されていないので、合計は正確に出る。
+    #[test]
+    fn sums_population_and_households() {
+        let rows = parse_csv(SIBLINGS).unwrap();
+        let mut cells = BTreeMap::new();
+        accumulate(&mut cells, &rows, 8);
+        let aggregated = aggregate(cells).unwrap();
+
+        assert_eq!(aggregated.len(), 1);
+        assert_eq!(aggregated[0].mesh_code, "53394611");
+        assert_eq!(aggregated[0].population, Some(400));
+        assert_eq!(aggregated[0].households, Some(160));
+    }
+
+    // **密度は平均ではなく最大。** 平均にすると危ないセルが薄まって消える。
+    // SORAは運航範囲の中で最も密度の高いところを採るため。
+    #[test]
+    fn keeps_the_highest_density_when_aggregating() {
+        let rows = parse_csv(SIBLINGS).unwrap();
+        let highest = rows
+            .iter()
+            .filter_map(|row| row.density)
+            .fold(f64::MIN, f64::max);
+
+        let mut cells = BTreeMap::new();
+        accumulate(&mut cells, &rows, 8);
+        let aggregated = aggregate(cells).unwrap();
+
+        let density = aggregated[0].density.unwrap();
+        assert!((density - highest).abs() < 1e-9, "{density} vs {highest}");
+        // 1kmの面積で割った値 (400人 / 約0.9km²) より、ずっと大きいはず。
+        assert!(density > 10_000.0, "{density}");
+    }
+
+    // 1つのメッシュが県境をまたぐことがあるので、複数のファイルから積み上げられること。
+    #[test]
+    fn accumulates_across_files() {
+        let mut cells = BTreeMap::new();
+        for csv in [SIBLINGS, SIBLINGS] {
+            accumulate(&mut cells, &parse_csv(csv).unwrap(), 8);
+        }
+        let aggregated = aggregate(cells).unwrap();
+        assert_eq!(aggregated.len(), 1);
+        assert_eq!(aggregated[0].population, Some(800));
+    }
+
+    // 束ねた先の矩形もメッシュコードから計算する。1kmは125mの64倍の面積。
+    #[test]
+    fn aggregated_geometry_is_the_parent_mesh() {
+        let rows = parse_csv(SIBLINGS).unwrap();
+        let mut cells = BTreeMap::new();
+        accumulate(&mut cells, &rows, 8);
+        let aggregated = aggregate(cells).unwrap();
+
+        let parent = mesh::area_km2("53394611").unwrap();
+        let child = mesh::area_km2("53394611111").unwrap();
+        assert!((parent / child - 64.0).abs() < 0.1, "{parent} / {child}");
+        assert_eq!(
+            aggregated[0].geometry.exterior().0.len(),
+            5,
+            "閉じた矩形は5点"
+        );
     }
 }

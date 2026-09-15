@@ -39,6 +39,8 @@ pub struct DatasetEntry {
     ///
     /// 語彙を持つ列は [`Description::summary_columns`] で指定する。
     pub summaries: BTreeMap<String, Vec<String>>,
+    /// 地域メッシュの細かさ (メッシュコードの桁数)。メッシュ以外は `None`。
+    pub mesh_digits: Option<u8>,
 }
 
 /// データセットの種別。ジオメトリの型と用途が種別ごとに決まる。
@@ -163,6 +165,12 @@ struct Description {
     /// 取り違えても壊れないよう [`MAX_VOCABULARY`] で歯止めを掛けてあるが、
     /// 歯止めに当たった列は選択肢が作れなくなる。
     summary_columns: &'static [&'static str],
+    /// 地域メッシュの細かさ (メッシュコードの桁数)。11桁=125m、8桁=1km。
+    ///
+    /// **同じ人口メッシュでも細かさの違うCollectionが並ぶ**ので、UIがどれを引くかを
+    /// これで決める。要求する細かさ以上のものの中から、いちばん粗いものを選べば
+    /// 読む量が最小になる。メッシュ以外は `None`。
+    mesh_digits: Option<u8>,
 }
 
 /// ファイル名の接頭辞と、そのデータセットの素性。
@@ -179,6 +187,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             description: "国土数値情報の行政区域から名称だけを抜き出したもの。地名検索の候補に使う。",
             attribution: MLIT_KSJ,
             summary_columns: &[],
+            mesh_digits: None,
         },
     ),
     (
@@ -190,6 +199,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             description: "国土数値情報の行政区域 (面)。逆ジオコーディングとハイライトに使う。",
             attribution: MLIT_KSJ,
             summary_columns: &[],
+            mesh_digits: None,
         },
     ),
     (
@@ -201,6 +211,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             description: "Overtureの行政区域から名称だけを抜き出したもの。地名検索の候補に使う。",
             attribution: OVERTURE,
             summary_columns: &[],
+            mesh_digits: None,
         },
     ),
     (
@@ -212,6 +223,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             description: "Overtureの行政区域 (面)。逆ジオコーディングとハイライトに使う。",
             attribution: OVERTURE,
             summary_columns: &[],
+            mesh_digits: None,
         },
     ),
     (
@@ -224,6 +236,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             attribution: OVERTURE,
             // Overtureの建物種別。"residential" "commercial" など。
             summary_columns: &["class"],
+            mesh_digits: None,
         },
     ),
     (
@@ -236,6 +249,20 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             attribution: MLIT_PLATEAU,
             // PLATEAUの用途。コードリストで解決済みの「住宅」「商業施設」など。
             summary_columns: &["usage"],
+            mesh_digits: None,
+        },
+    ),
+    // **`mesh_pop` より前に置くこと。** 前方一致で引くので、後ろだと吸われる。
+    (
+        "mesh_pop_1km",
+        Description {
+            kind: DatasetKind::PopulationMesh,
+            collection: "estat-mesh-pop-1km",
+            title: "人口メッシュ (1km)",
+            description: "令和2年国勢調査の地域メッシュ統計を1kmに束ねたもの。全国で1ファイル。引いた表示で125mを読むと転送量が跳ね上がるため、俯瞰用に別に持つ。人口・世帯数は合計、密度は中に含まれる125mメッシュの最大値。",
+            attribution: ESTAT_MESH,
+            summary_columns: &[],
+            mesh_digits: Some(8),
         },
     ),
     (
@@ -247,6 +274,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             description: "令和2年国勢調査の地域メッシュ統計 (125m)。人口・世帯数・人口密度を持つ。ジオメトリはメッシュコードから計算したもの。都道府県ごとに1ファイル。",
             attribution: ESTAT_MESH,
             summary_columns: &[],
+            mesh_digits: Some(11),
         },
     ),
     (
@@ -258,6 +286,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             description: "位置参照情報の大字・町丁目 (点)。住所検索に使う。",
             attribution: MLIT_ISJ,
             summary_columns: &[],
+            mesh_digits: None,
         },
     ),
     (
@@ -269,6 +298,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             description: "位置参照情報の街区 (点)。より細かい住所検索に使う。",
             attribution: MLIT_ISJ,
             summary_columns: &[],
+            mesh_digits: None,
         },
     ),
 ];
@@ -470,6 +500,7 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         row_count,
         columns,
         summaries,
+        mesh_digits: described.mesh_digits,
     })
 }
 

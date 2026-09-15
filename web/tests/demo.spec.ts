@@ -918,19 +918,57 @@ test('メッシュを粗くしても最大密度は下がらない', async ({ pa
   expect(await peak()).toBeGreaterThanOrEqual(fine);
 });
 
-// 配信しているのは125mメッシュだけで、粗いメッシュはその場で束ねている。
-// 引くほど元の行を多く読むので (実測でz7は21MB)、下限で止める。
-// 黙って消すと壊れて見えるため、理由を出す。
-test('引きすぎると人口密度は出ず、理由が出る', async ({ page }) => {
+/**
+ * 引いた表示では、**全国を1kmに束ねたファイル**を読む。
+ *
+ * 125mから束ねることもできるが、引くほど元の行を多く読むことになる
+ * (下限を置く前の実測でズーム7のとき21.1MB)。1kmの全国ファイルは5.5MBで、
+ * ここから10km・80kmへさらに束ねられる。
+ *
+ * **125mのファイルには触らないこと**を見る。触っていたら束ね直しており、
+ * 集約ファイルを作った意味が無い。
+ */
+test('引いた表示では1kmの集約ファイルだけを読む', async ({ page }) => {
   test.skip(!(await hasMesh(page)), '人口メッシュのデータが無い');
 
-  await showPopulationMesh(page);
+  const requested: string[] = [];
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('.parquet')) requested.push(path.split('/').pop()!);
+  });
+
+  // 都道府県をまたぐ広さ。125mを束ねていたら何十MBも読むことになる。
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 8 });
   });
-  await expect(page.locator('#mesh-summary')).toHaveText('拡大すると人口密度が出ます');
-  await expect.poll(() => sourceFeatureCount(page, 'population-mesh')).toBe(0);
+  await page.locator('#mesh-toggle').check();
+  await expect.poll(() => sourceFeatureCount(page, 'population-mesh')).toBeGreaterThan(0);
+
+  expect(requested).toContain('mesh_pop_1km.parquet');
+  expect(requested.filter((file) => /^mesh_pop_\d+\.parquet$/.test(file))).toEqual([]);
+  // 1kmのファイルから、さらに10kmへ束ねて出している。
+  // 配信の細かさと表示の細かさは別物。
+  await expect(page.locator('#mesh-summary')).toContainText('10kmメッシュ');
+});
+
+// メッシュコードは階層なので、1kmのファイルからさらに粗くできる。
+// 全国を俯瞰しても、いちばん危ない125mメッシュの密度が残っていること。
+test('全国を俯瞰しても最大密度は残る', async ({ page }) => {
+  test.skip(!(await hasMesh(page)), '人口メッシュのデータが無い');
+
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [138.0, 37.0], zoom: 5 });
+  });
+  await page.locator('#mesh-toggle').check();
+  await expect(page.locator('#mesh-summary')).toContainText('80kmメッシュ');
+
+  const text = (await page.locator('#mesh-summary').textContent()) ?? '';
+  const peak = Number(/最大 ([\d,]+) 人/.exec(text)![1].replace(/,/g, ''));
+  // 全国の125mメッシュの最大は217,219人/km² (パイプライン側で実測)。
+  // 束ねる途中で平均を取っていると、ここが桁ごと落ちる。
+  expect(peak).toBeGreaterThan(200_000);
 });
 
 test('クリアするとハイライトが消える', async ({ page }) => {
