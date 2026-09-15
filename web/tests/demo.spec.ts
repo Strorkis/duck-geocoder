@@ -403,16 +403,43 @@ test('使わないデータのItemは起動時に読まない', async ({ page })
   expect(requested.some((file) => file.startsWith('plateau-'))).toBe(true);
 });
 
+// 出典は既定でたたんである。出所が6件あって、広げると452×112pxの箱になるため。
+// ⓘ を押せば全文が出る。**文言そのものは縮めない** (表示義務があるため)。
+test('出典は既定でたたまれていて、押すと全文が出る', async ({ page }) => {
+  const attribution = page.locator('.maplibregl-ctrl-attrib');
+  await expect(attribution).not.toHaveClass(/maplibregl-compact-show/);
+
+  await page.locator('.maplibregl-ctrl-attrib-button').click();
+  // 出典は義務なので、法令・約款が求める文言がそのまま出ていること。
+  await expect(attribution).toContainText('（国土交通省）をもとに作成');
+  await expect(attribution).toContainText('ODbL');
+  await expect(attribution).toContainText('国土地理院');
+  // 何のデータの出典なのかが分かること。出典だけ並べても読み取れない。
+  await expect(attribution).toContainText('人口メッシュ');
+  await expect(attribution).toContainText('建物');
+});
+
 /**
- * 出典表示は出所が増えるほど行が増え、全幅に広がる。
- * 人口メッシュ (47都道府県) を足したときに1行から2行になり、左下のパネルを
- * 覆って「建物のある範囲へ移動」が押せなくなった。
+ * 出典表示は出所が増えるほど行が増える。
+ * 人口メッシュ (47都道府県) を足したときに1行から2行になり、全幅40pxに広がって
+ * 左下のパネルを覆い、「建物のある範囲へ移動」が押せなくなった。
  *
- * **出典は縮めない** (表示義務があるため)。避けるのはパネル側の役目で、
+ * たたんだいまも、広げれば同じことが起きうる。避けるのはパネル側の役目で、
  * 位置は実測した高さ (`--attribution-height`) から決めている。
  * 固定値に戻すと、出所を足したときにまた覆われる。
  */
 test('出典が何行になってもパネルは覆われない', async ({ page }) => {
+  // たたまれている状態では重なりようがない。**広げた状態**で見る。
+  await page.locator('.maplibregl-ctrl-attrib-button').click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          document.querySelector('.maplibregl-ctrl-attrib')!.getBoundingClientRect().height,
+      ),
+    )
+    .toBeGreaterThan(40);
+
   const overlap = await page.evaluate(() => {
     const rect = (selector: string) =>
       document.querySelector(selector)?.getBoundingClientRect() ?? null;

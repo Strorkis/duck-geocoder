@@ -1061,38 +1061,79 @@ const EMPTY_FEATURE_COLLECTION: GeoJSON.FeatureCollection = {
  * ライセンス違反になるため、データ側に追随させる。
  */
 /**
- * 出典表示の高さを測って CSS 変数 `--attribution-height` に入れる。
+ * 出典表示が下端から占めている高さを測り、CSS変数 `--attribution-space` に入れる。
  *
  * **出典は出所が増えるほど行が増える。** 人口メッシュ (47都道府県) を足したときに
  * 1行から2行になり、全幅40pxに広がって左下の「建物のある範囲へ移動」を覆った
- * (押せなくなった)。パネルの位置を固定値で避けると、出所を足すたびに破れる。
+ * (押せなくなった)。いまはたたんであるが、広げれば452×112pxの箱になる。
+ * パネルの位置を固定値で避けると、出所を足すたびに破れる。
+ *
+ * **高さではなく「下端からどこまで」を測る。** 出典の箱の下にはMapLibreが
+ * 余白を入れるので、高さだけで避けると余白のぶん足りない (実測で2px重なった)。
  *
  * 出典そのものは縮めない。表示義務があるので、避けるのはこちらの役目。
  */
 function watchAttributionHeight(map: MapLibreMap): void {
-  const attribution = map.getContainer().querySelector<HTMLElement>('.maplibregl-ctrl-attrib');
+  const container = map.getContainer();
+  const attribution = container.querySelector<HTMLElement>('.maplibregl-ctrl-attrib');
   if (!attribution) return;
   const apply = () => {
-    const { height } = attribution.getBoundingClientRect();
+    const space = container.getBoundingClientRect().bottom - attribution.getBoundingClientRect().top;
     document.documentElement.style.setProperty(
-      '--attribution-height',
-      `${Math.ceil(height)}px`,
+      '--attribution-space',
+      `${Math.ceil(space)}px`,
     );
   };
   new ResizeObserver(apply).observe(attribution);
   apply();
 }
 
-function initMap(collections: Collection[]): Promise<MapLibreMap> {
-  // 出典が同じCollection (位置参照情報の大字・町丁目と街区など) は1つにまとめる。
-  // 並べ替えは表示する文言で行う (組み立てたHTMLで並べると、順序がタグの中身に左右される)。
-  const credits = new Map(
-    collections.map((collection) => [collection.attribution, collection.attributionUrl]),
-  );
-  const dataCredits = [...credits]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([source, url]) => creditLink(url, source));
+/**
+ * 出典をたたんだ状態から始める。
+ *
+ * MapLibreは `compact` でも**初回だけ広げた状態**で出す。出所が6件あるこのアプリでは
+ * 418×230pxの箱になり、右下のパネルを押し上げてしまう。ⓘ を押せば出るので、
+ * 最初からたたんでおく。
+ *
+ * 広げ閉じはMapLibreがクラスの付け外しでやっているので、こちらも外して合わせる。
+ */
+function collapseAttribution(map: MapLibreMap): void {
+  map
+    .getContainer()
+    .querySelector('.maplibregl-ctrl-attrib')
+    ?.classList.remove('maplibregl-compact-show');
+}
 
+/**
+ * 出典の文言に、**それが何のデータの出典なのか**を添える。
+ *
+ * 出典だけを並べると、どれがどのデータのものか読み取れない
+ * (「（国土交通省）をもとに作成」が2つ並ぶ)。カタログの `title` を前置きして、
+ * 「建物 (PLATEAU): 「3D都市モデル…」」の形にする。
+ *
+ * 同じ出典を使うCollectionはまとめる (大字・町丁目と街区は同じ位置参照情報)。
+ */
+function buildDataCredits(collections: Collection[]): string[] {
+  const byAttribution = new Map<string, { url: string; titles: string[] }>();
+  for (const collection of collections) {
+    const entry = byAttribution.get(collection.attribution) ?? {
+      url: collection.attributionUrl,
+      titles: [],
+    };
+    // 同じ出典で細かさ違いのCollectionが並ぶことがある (人口メッシュの125mと1km)。
+    if (!entry.titles.includes(collection.title)) entry.titles.push(collection.title);
+    byAttribution.set(collection.attribution, entry);
+  }
+  // 並べ替えは表示する文言で行う (組み立てたHTMLで並べると、順序がタグの中身に左右される)。
+  return [...byAttribution]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(
+      ([attribution, { url, titles }]) =>
+        `<span class="credit"><b>${titles.join('・')}</b> ${creditLink(url, attribution)}</span>`,
+    );
+}
+
+function initMap(collections: Collection[]): Promise<MapLibreMap> {
   const map = new MapLibreMap({
     container: 'map',
     style: GSI_STYLE,
@@ -1101,7 +1142,13 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
     // 既定の出典表示を止め、カタログ由来の出典を足したものに差し替える。
     attributionControl: false,
   });
-  map.addControl(new AttributionControl({ customAttribution: dataCredits }));
+  // **たたんで出す。** 出所が増えるほど文言が伸びるので、広げたままだと
+  // 地図の下端を何行も占める (人口メッシュを足しただけで1行から2行になり、
+  // 左下のボタンを覆った)。ⓘ を押せば全文が出る。
+  map.addControl(
+    new AttributionControl({ compact: true, customAttribution: buildDataCredits(collections) }),
+  );
+  collapseAttribution(map);
   watchAttributionHeight(map);
   // 建物を立体で描くので、傾きを操作する手段を出しておく。
   // visualizePitch を付けるとコンパスが傾きも表し、クリックで方位と傾きが
