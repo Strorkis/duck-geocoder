@@ -1,0 +1,18 @@
+# **参考資料を読むためだけのもの。** 配信するデータを作る工程には入れない。
+#
+# パイプラインの出力は Rust に寄せてあり、そちらは Cargo.lock と cargo-audit で
+# 見ている。ここを増やすとその面が広がるので、読む側に限る
+# (AGENTS.md の「道具」を参照)。
+#
+# Python の版は .python-version が、パッケージは uv.lock が固定する。
+# uv 自体は mise が管理する。
+[project]
+name = "duck-geocoder-reference"
+version = "0.1.0"
+description = "参考資料 (PDFなど) を読むための道具"
+requires-python = ">=3.12"
+dependencies = [
+    # PDFのテキストと表を抽出する。日本語PDFは埋め込みフォントのCIDを使うので、
+    # ToUnicode CMap を解釈できるものが要る (素朴に展開すると文字化けする)。
+    "pdfplumber>=0.11.10",
+]

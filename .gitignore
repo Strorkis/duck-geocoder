@@ -4,3 +4,6 @@
 
 # Rust
 target/
+
+# Python (参考資料を読むための道具。uv.lock は追跡する)
+.venv/

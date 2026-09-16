@@ -6,3 +6,7 @@ jq = "latest"
 node = "lts"
 pnpm = "latest"
 rust = "stable"
+# 参考資料 (PDFなど) を読むためだけに使う。配信データを作る工程には入れない。
+# Pythonの版とパッケージはuvが見る (.python-version / pyproject.toml / uv.lock)。
+# rust がツールチェーンを、Cargo が crate を見るのと同じ形。
+uv = "latest"

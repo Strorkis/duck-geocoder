@@ -17,6 +17,27 @@ mise install
 sudo apt install -y build-essential cmake sqlite3 libsqlite3-dev
 ```
 
+**aptを使うのはここだけ。** 他の道具はすべてmise配下に置く。
+
+### 参考資料のPDFを読む
+
+`.reference/` に置いた仕様書などを読むために、Pythonを使えるようにしてある。
+**配信データを作る工程には入らない** ([AGENTS.md](../AGENTS.md) の「道具」)。
+
+miseが見るのは `uv` だけで、**Pythonの版は `.python-version`、パッケージは
+`uv.lock`** が固定する (`rust` がツールチェーンを、Cargoが crate を見るのと同じ形)。
+
+```sh
+mise exec -- uv run python - <<'PY'
+import pdfplumber
+with pdfplumber.open(".reference/UASL/800055328.pdf") as pdf:
+    print(pdf.pages[8].extract_text())   # 0始まりなので9ページ目
+PY
+```
+
+`pdftotext` や `pdftoppm` は入っていないので、**OCR・ページ画像化・分割結合はできない。**
+テキストと表 (`extract_tables()`) の抽出だけ。
+
 ## 1. データを手に入れる
 
 Overture Mapsは後述の切り出しコマンドで取れる。国土交通省のデータは手動でダウンロードする。

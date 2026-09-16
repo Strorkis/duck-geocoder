@@ -13,9 +13,9 @@
           },
           {
             "type": "command",
-            "// 何を止めるか": "道具ではなく『追跡下のファイルを差分の残らない形で書き換えること』を止める。パイプの中の sed は awk と同じで出力しか変えないので通す。python は mise 管理外かつ自由度が高く、何をしたかが後から読めないので止める。",
+            "// 何を止めるか": "道具ではなく『追跡下のファイルを差分の残らない形で書き換えること』を止める。パイプの中の sed は awk と同じで出力しか変えないので通す。python は mise/uv の管理外だと環境で壊れるうえ、何をしたかが後から読めないので、管理下 (mise exec -- uv run) 以外を止める。",
             "// なぜヒアドキュメントを見ないか": "コミットメッセージ本文に語が出ただけで止まると使いものにならない (実際にこのhookを入れたコミットが自分のメッセージで止まった)。`<<` より前だけを見る。",
-            "command": "cmd=$(mise exec -- jq -r '.tool_input.command // empty')\nhead=${cmd%%\"<<\"*}\nword() { printf '%s' \"$head\" | grep -qE \"(^|[;|&(]|[[:space:]])$1([[:space:]]|$)\"; }\nhint='この約束が作業の邪魔なら、黙って回避せず理由を添えて相談し、合意のうえ AGENTS.md と .claude/settings.json の両方を直してください (AGENTS.md の「約束の変え方」)。'\nif printf '%s' \"$head\" | grep -qE \"(^|[;|&(]|[[:space:]])sed([[:space:]]+-[^[:space:]]*i|[[:space:]]+--in-place)\"; then\n  echo \"sed -i でファイルを書き換えないでください。差分が残らず、fmt/lintのhookも通りません。追跡下のファイルは Read / Edit で変えてください (パイプの中の sed は通ります)。\\n$hint\" >&2\n  exit 2\nfi\ncase \"$cmd\" in *\"mise exec -- python\"*) exit 0 ;; esac\nif word python3 || word python; then\n  echo \"python は mise 管理外なので使わない約束です。JSONは jq、テキスト処理は awk を使ってください。\\n$hint\" >&2\n  exit 2\nfi\nexit 0",
+            "command": "cmd=$(mise exec -- jq -r '.tool_input.command // empty')\nhead=${cmd%%\"<<\"*}\nword() { printf '%s' \"$head\" | grep -qE \"(^|[;|&(]|[[:space:]])$1([[:space:]]|$)\"; }\nhint='この約束が作業の邪魔なら、黙って回避せず理由を添えて相談し、合意のうえ AGENTS.md と .claude/settings.json の両方を直してください (AGENTS.md の「約束の変え方」)。'\nif printf '%s' \"$head\" | grep -qE \"(^|[;|&(]|[[:space:]])sed([[:space:]]+-[^[:space:]]*i|[[:space:]]+--in-place)\"; then\n  echo \"sed -i でファイルを書き換えないでください。差分が残らず、fmt/lintのhookも通りません。追跡下のファイルは Read / Edit で変えてください (パイプの中の sed は通ります)。\\n$hint\" >&2\n  exit 2\nfi\ncase \"$cmd\" in *\"mise exec -- python\"*|*\"mise exec -- uv\"*) exit 0 ;; esac\nif word python3 || word python || word uv; then\n  echo \"python は mise/uv の管理下でだけ使う約束です。参考資料を読むなら 'mise exec -- uv run python' を使ってください。配信データを作る工程には入れません。JSONは jq、テキスト処理は awk です。\\n$hint\" >&2\n  exit 2\nfi\nexit 0",
             "statusMessage": "約束を確認中…",
             "timeout": 30
           }
