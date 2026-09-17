@@ -448,6 +448,30 @@ test('出典はパネルにデータごとの一覧として出る', async ({ pa
   await expect(mesh.locator('xpath=following-sibling::dd[1]')).toContainText('総務省統計局');
 });
 
+/**
+ * **ここにあるのは変換した複製で、原典は配布元にある。**
+ * 実物が欲しくなった人が辿れるように、配布元へのリンクを出す。
+ *
+ * カタログでは STACの `rel: "via"` (「このEntityが作られる元になった
+ * メタデータ/データ」) として持っている。出典表示のリンク先とは別物で、
+ * 例えばOvertureは出典がガイドページを指すのに対し、配布元はデータのページ。
+ */
+test('出典に配布元へのリンクが出る', async ({ page }) => {
+  await openSection(page, 'credits-section');
+
+  const via = page.locator('#credits .via');
+  await expect.poll(() => via.count()).toBeGreaterThan(2);
+
+  // 出典の文言そのものではなく、データを取ってきた場所を指していること。
+  const hrefs = await page.locator('#credits .via a').evaluateAll((links) =>
+    links.map((link) => (link as HTMLAnchorElement).href),
+  );
+  expect(hrefs.some((href) => href.includes('e-stat.go.jp'))).toBe(true);
+  expect(hrefs.some((href) => href.includes('nlftp.mlit.go.jp'))).toBe(true);
+  // Overtureは出典がガイドページ (docs.../attribution/) なので、そこと違うこと。
+  expect(hrefs.some((href) => href.includes('overturemaps.org/guides/'))).toBe(true);
+});
+
 // 初見で何から触ればいいか分かるよう、**見出しは畳まない**。
 // 中身をたたむのは画面を静かにするためで、できること自体は隠さない。
 test('できることは開かなくても見出しで分かる', async ({ page }) => {

@@ -130,6 +130,7 @@ pub fn write_geoparquet(rows: Vec<Row>, output: &Path) -> Result<()> {
         bbox,
         &["Point".to_string()],
         file_bbox,
+        None,
     )
     .with_context(|| format!("書き出しに失敗しました: {}", output.display()))
 }

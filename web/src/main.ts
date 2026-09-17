@@ -90,6 +90,11 @@ interface Collection {
   title: string;
   attribution: string;
   attributionUrl: string;
+  /**
+   * 配布元。**ここにあるのは変換した複製で、原典は配布元にある。**
+   * 実物が欲しくなった人が辿れるようにする (STACの `rel: "via"`)。
+   */
+  via: string | undefined;
   /** 収録範囲 (Item全部の和)。Itemを読まずに分かる。 */
   bbox: Bbox | null;
   summaries: Record<string, string[]>;
@@ -202,6 +207,7 @@ function toCollection(document: StacCollection): Collection {
     title: document.title ?? document.id,
     attribution: document['duck:attribution'],
     attributionUrl: document['duck:attribution_url'],
+    via: document.links.find((link) => link.rel === 'via')?.href,
     meshDigits: document['duck:mesh_digits'],
     bbox,
     summaries: document.summaries ?? {},
@@ -1115,21 +1121,24 @@ function collapseAttribution(map: MapLibreMap): void {
  */
 function groupCredits(
   collections: Collection[],
-): { titles: string[]; attribution: string; url: string }[] {
-  const byAttribution = new Map<string, { url: string; titles: string[] }>();
+): { titles: string[]; attribution: string; url: string; via: string[] }[] {
+  const byAttribution = new Map<string, { url: string; titles: string[]; via: string[] }>();
   for (const collection of collections) {
     const entry = byAttribution.get(collection.attribution) ?? {
       url: collection.attributionUrl,
       titles: [],
+      via: [],
     };
     // 同じ出典で細かさ違いのCollectionが並ぶことがある (人口メッシュの125mと1km)。
     if (!entry.titles.includes(collection.title)) entry.titles.push(collection.title);
+    // 同じ出典でも配布元のページが分かれることがある (Overtureの区域と建物)。
+    if (collection.via && !entry.via.includes(collection.via)) entry.via.push(collection.via);
     byAttribution.set(collection.attribution, entry);
   }
   // 並べ替えは表示する文言で行う (組み立てたHTMLで並べると、順序がタグの中身に左右される)。
   return [...byAttribution]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([attribution, { url, titles }]) => ({ titles, attribution, url }));
+    .map(([attribution, { url, titles, via }]) => ({ titles, attribution, url, via }));
 }
 
 function buildDataCredits(collections: Collection[]): string[] {
@@ -1151,17 +1160,35 @@ function buildDataCredits(collections: Collection[]): string[] {
  * ⓘ の側が引き続き唯一の出どころになる。
  */
 function renderCredits(container: HTMLElement, collections: Collection[]): void {
-  container.replaceChildren();
-  for (const { titles, attribution, url } of groupCredits(collections)) {
-    const term = document.createElement('dt');
-    term.textContent = titles.join('・');
-    const detail = document.createElement('dd');
+  const externalLink = (href: string, label: string) => {
     const link = document.createElement('a');
-    link.href = url;
+    link.href = href;
     link.target = '_blank';
     link.rel = 'noreferrer';
-    link.textContent = attribution;
-    detail.append(link);
+    link.textContent = label;
+    return link;
+  };
+
+  container.replaceChildren();
+  for (const { titles, attribution, url, via } of groupCredits(collections)) {
+    const term = document.createElement('dt');
+    term.textContent = titles.join('・');
+
+    const detail = document.createElement('dd');
+    detail.append(externalLink(url, attribution));
+
+    // **配布元へ辿れるようにする。** ここにあるのは変換した複製で、原典は向こうにある。
+    // 出典表示のリンク先とは別 (Overtureは出典がガイドページを指す)。
+    if (via.length > 0) {
+      const sources = document.createElement('div');
+      sources.className = 'via';
+      sources.append('配布元: ');
+      for (const [index, href] of via.entries()) {
+        if (index > 0) sources.append(' / ');
+        sources.append(externalLink(href, new URL(href).hostname));
+      }
+      detail.append(sources);
+    }
     container.append(term, detail);
   }
 }

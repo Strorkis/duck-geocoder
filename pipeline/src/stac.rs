@@ -111,6 +111,15 @@ fn duck_kind(kind: DatasetKind) -> Value {
     json!(kind)
 }
 
+/// 配布元へのリンク。
+///
+/// STACの `via` は「**このEntityが作られる元になったメタデータ/データ**」を指す関係
+/// (best-practices)。ここにあるのは変換した複製なので、**原典へ辿れるようにする。**
+/// 出典表示のリンク (`duck:attribution_url`) とは役割が違う。
+fn via_link(href: &str) -> Value {
+    json!({ "rel": "via", "href": href, "title": "配布元" })
+}
+
 fn item(entry: &DatasetEntry) -> Value {
     let mut properties = json!({
         // STACは datetime を必須にしているが、このパイプラインは元データの時点を
@@ -121,6 +130,24 @@ fn item(entry: &DatasetEntry) -> Value {
     });
     if !entry.geometry_types.is_empty() {
         properties["duck:geometry_types"] = json!(entry.geometry_types);
+    }
+
+    let mut links = vec![
+        json!({ "rel": "root", "href": "catalog.json", "type": JSON_MEDIA_TYPE }),
+        json!({
+            "rel": "collection",
+            "href": collection_file(entry.collection),
+            "type": JSON_MEDIA_TYPE,
+        }),
+        json!({
+            "rel": "parent",
+            "href": collection_file(entry.collection),
+            "type": JSON_MEDIA_TYPE,
+        }),
+    ];
+    // ファイルごとに配布元が違うもの (PLATEAUの都市ごとのzip) だけが持つ。
+    if let Some(via) = &entry.via {
+        links.push(via_link(via));
     }
 
     json!({
@@ -140,19 +167,7 @@ fn item(entry: &DatasetEntry) -> Value {
                 "roles": ["data"],
             }
         },
-        "links": [
-            { "rel": "root", "href": "catalog.json", "type": JSON_MEDIA_TYPE },
-            {
-                "rel": "collection",
-                "href": collection_file(entry.collection),
-                "type": JSON_MEDIA_TYPE,
-            },
-            {
-                "rel": "parent",
-                "href": collection_file(entry.collection),
-                "type": JSON_MEDIA_TYPE,
-            },
-        ],
+        "links": links,
     })
 }
 
@@ -219,6 +234,7 @@ fn collection(id: &str, entries: &[&DatasetEntry]) -> Result<Value> {
             { "rel": "parent", "href": "catalog.json", "type": JSON_MEDIA_TYPE },
             { "rel": "self", "href": collection_file(id), "type": JSON_MEDIA_TYPE },
             { "rel": "items", "href": items_file(id), "type": GEOJSON_MEDIA_TYPE },
+            via_link(first.collection_via),
         ],
     });
     if !summaries.is_empty() {
@@ -327,6 +343,8 @@ mod tests {
             }],
             summaries: BTreeMap::new(),
             mesh_digits: Some(11),
+            via: None,
+            collection_via: "https://example.invalid/download",
         }
     }
 
@@ -482,6 +500,49 @@ mod tests {
                 "Itemに列構成が入っている: {feature}"
             );
         }
+    }
+
+    /// 配布元へのリンク。**ここにあるのは変換した複製で、原典は配布元にある。**
+    /// 実物が欲しくなった人が辿れるようにするためのもの。
+    fn via_hrefs(document: &Value) -> Vec<&str> {
+        document["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|link| link["rel"] == "via")
+            .map(|link| link["href"].as_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn collection_links_to_where_the_data_came_from() {
+        let documents = build(&[entry("a", "a.parquet", None)]).unwrap();
+        assert_eq!(
+            via_hrefs(find(&documents, "estat-mesh-pop.json")),
+            vec!["https://example.invalid/download"]
+        );
+    }
+
+    // ファイルごとに配布元が違うもの (PLATEAUは都市ごとにzipのURLが違う) は、
+    // Item側にも出す。変換時にGeoParquetへ書いたものを拾っている。
+    #[test]
+    fn item_links_to_its_own_source_when_the_file_knows_it() {
+        let mut with_source = entry("a", "a.parquet", None);
+        with_source.via = Some("https://example.invalid/13103.zip".to_string());
+        let plain = entry("b", "b.parquet", None);
+
+        let documents = build(&[with_source, plain]).unwrap();
+        let features = find(&documents, "estat-mesh-pop-items.json")["features"]
+            .as_array()
+            .unwrap()
+            .clone();
+
+        assert_eq!(
+            via_hrefs(&features[0]),
+            vec!["https://example.invalid/13103.zip"]
+        );
+        // 分からないものは書かない。**推測で埋めない。**
+        assert!(via_hrefs(&features[1]).is_empty());
     }
 
     #[test]

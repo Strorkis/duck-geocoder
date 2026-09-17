@@ -581,6 +581,28 @@ PLATEAU306都市で350ファイルを超え、1つ読むたびに1往復する�
 | `duck:attribution` | 地図に出す出典の文言。**表示義務があるので縮めない** |
 | `duck:attribution_url` | 出典元のURL |
 | `duck:geometry_types` | ジオメトリの種類 |
+| `duck:mesh_digits` | 地域メッシュの細かさ (コードの桁数) |
+
+### 配布元へのリンク (`rel: "via"`)
+
+**ここにあるのは変換した複製で、原典は配布元にある。** 実物が欲しくなった人が
+辿れるよう、STACの `rel: "via"` を出している。仕様上「このEntityが作られる元に
+なったメタデータ/データ」を指す関係。
+
+**出典表示のリンク先 (`duck:attribution_url`) とは役割が違う。**
+Overtureは出典がガイドページを指すのに対し、配布元はデータのページになる。
+
+| | 何を指すか | どこから来るか |
+| --- | --- | --- |
+| Collection | その出所のダウンロードページ | `Description::via` |
+| **Item** | **そのファイル1つの配布元** | GeoParquetの `duck:via` |
+
+ファイルごとに配布元が違うもの (PLATEAUは都市ごとにzipのURLが違う) は、
+**変換時にGeoParquetのKVメタデータへ書く** (`geoparquet::VIA_KEY`)。
+分からないとき — 手元のzipから変換した場合など — は**書かない。推測で埋めない。**
+
+`optimize_geoparquet` はKVメタデータを解釈せずそのまま引き継ぐので、
+空間パッキングを掛けても残る。
 
 **既知の穴1: `datetime` を埋めていない。**
 

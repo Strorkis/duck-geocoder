@@ -224,10 +224,21 @@ pub fn geometry_columns<G: GeometryTrait<T = f64>>(
     Ok((geometry_array, bbox_array, file_bbox))
 }
 
+/// このファイルの元になったデータの在り処を書くキー。
+///
+/// **原典は配布元にある。** ここにあるのは変換した複製なので、
+/// 実物が欲しい人が辿れるようにする。カタログでは STAC の `rel: "via"`
+/// (「このEntityが作られる元になったメタデータ/データ」) として出る。
+pub const VIA_KEY: &str = "duck:via";
+
 /// 非ジオメトリ列とジオメトリ列 (`geometry_columns` で作ったもの) を合わせて
 /// GeoParquetとして書き出す。圧縮はしない。空間的な並べ替えと圧縮は配信用の
 /// 最適化 ([`crate::spatial_pack`] / `optimize_geoparquet`) の役目で、
 /// ここでは変換直後の中間ファイルを書くだけでよい。
+///
+/// `via` はこのファイル1つの配布元。**ファイルごとに違う場合だけ渡す**
+/// (PLATEAUは都市ごとにzipのURLが違う)。出所全体で1つなら、カタログ側の
+/// `Description` が持っているのでここでは `None` でよい。
 #[allow(clippy::too_many_arguments)]
 pub fn write(
     path: &Path,
@@ -237,6 +248,7 @@ pub fn write(
     bbox: ArrayRef,
     geometry_types: &[String],
     file_bbox: [f64; 4],
+    via: Option<&str>,
 ) -> Result<()> {
     let mut fields: Vec<Field> = other_columns.iter().map(|(f, _)| f.clone()).collect();
     let mut arrays: Vec<ArrayRef> = other_columns.into_iter().map(|(_, a)| a).collect();
@@ -268,6 +280,9 @@ pub fn write(
         ArrowWriter::try_new(file, schema, None).context("ArrowWriterの作成に失敗しました")?;
     writer.write(&batch).context("書き込みに失敗しました")?;
     writer.append_key_value_metadata(KeyValue::new("geo".to_string(), geo_json));
+    if let Some(via) = via {
+        writer.append_key_value_metadata(KeyValue::new(VIA_KEY.to_string(), via.to_string()));
+    }
     writer.close().context("ファイルを閉じられません")?;
     Ok(())
 }
@@ -401,6 +416,7 @@ mod tests {
             bbox,
             &["Point".to_string()],
             file_bbox,
+            Some("https://example.invalid/source.zip"),
         )
         .unwrap();
 
@@ -431,6 +447,18 @@ mod tests {
             .unwrap();
         let covering = covering_bbox(&geo_json).unwrap();
         assert_eq!(covering.column, "bbox");
+
+        // 配布元がファイルに残ること。ここにあるのは変換した複製なので、
+        // 原典へ辿る手掛かりを落としてはいけない。
+        let via = builder
+            .metadata()
+            .file_metadata()
+            .key_value_metadata()
+            .unwrap()
+            .iter()
+            .find(|kv| kv.key == VIA_KEY)
+            .and_then(|kv| kv.value.clone());
+        assert_eq!(via.as_deref(), Some("https://example.invalid/source.zip"));
 
         std::fs::remove_file(&path).ok();
     }

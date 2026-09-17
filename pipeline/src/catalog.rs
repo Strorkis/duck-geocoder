@@ -41,6 +41,12 @@ pub struct DatasetEntry {
     pub summaries: BTreeMap<String, Vec<String>>,
     /// 地域メッシュの細かさ (メッシュコードの桁数)。メッシュ以外は `None`。
     pub mesh_digits: Option<u8>,
+    /// **このファイル1つの配布元。** GeoParquetの `duck:via` から読む。
+    ///
+    /// ファイルごとに違うもの (PLATEAUの都市ごとのzip) だけが持つ。
+    pub via: Option<String>,
+    /// **この出所の配布元。** 出所全体で1つ。ファイル側に `via` が無くてもこれはある。
+    pub collection_via: &'static str,
 }
 
 /// データセットの種別。ジオメトリの型と用途が種別ごとに決まる。
@@ -171,6 +177,11 @@ struct Description {
     /// これで決める。要求する細かさ以上のものの中から、いちばん粗いものを選べば
     /// 読む量が最小になる。メッシュ以外は `None`。
     mesh_digits: Option<u8>,
+    /// **この出所の配布元。** 実物が欲しい人が辿る先。
+    ///
+    /// 出典表示のリンク先 ([`Attribution::url`]) とは別物。Overtureでは
+    /// 出典表示がガイドページを指すのに対し、配布元はデータのページになる。
+    via: &'static str,
 }
 
 /// ファイル名の接頭辞と、そのデータセットの素性。
@@ -188,6 +199,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             attribution: MLIT_KSJ,
             summary_columns: &[],
             mesh_digits: None,
+            via: "https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N03-2026.html",
         },
     ),
     (
@@ -200,6 +212,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             attribution: MLIT_KSJ,
             summary_columns: &[],
             mesh_digits: None,
+            via: "https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N03-2026.html",
         },
     ),
     (
@@ -212,6 +225,8 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             attribution: OVERTURE,
             summary_columns: &[],
             mesh_digits: None,
+            // 出典表示のリンク先 (attribution.url) はガイドページなので、配布元とは別。
+            via: "https://docs.overturemaps.org/guides/divisions/",
         },
     ),
     (
@@ -224,6 +239,8 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             attribution: OVERTURE,
             summary_columns: &[],
             mesh_digits: None,
+            // 出典表示のリンク先 (attribution.url) はガイドページなので、配布元とは別。
+            via: "https://docs.overturemaps.org/guides/divisions/",
         },
     ),
     (
@@ -237,6 +254,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             // Overtureの建物種別。"residential" "commercial" など。
             summary_columns: &["class"],
             mesh_digits: None,
+            via: "https://docs.overturemaps.org/guides/buildings/",
         },
     ),
     (
@@ -250,6 +268,8 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             // PLATEAUの用途。コードリストで解決済みの「住宅」「商業施設」など。
             summary_columns: &["usage"],
             mesh_digits: None,
+            // 都市ごとのzipのURLはファイル側 (`duck:via`) が持つ。ここは入口。
+            via: "https://www.geospatial.jp/ckan/dataset/plateau",
         },
     ),
     // **`mesh_pop` より前に置くこと。** 前方一致で引くので、後ろだと吸われる。
@@ -262,6 +282,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             description: "令和2年国勢調査の地域メッシュ統計を1kmに束ねたもの。全国で1ファイル。引いた表示で125mを読むと転送量が跳ね上がるため、俯瞰用に別に持つ。人口・世帯数は合計、密度は中に含まれる125mメッシュの最大値。",
             attribution: ESTAT_MESH,
             summary_columns: &[],
+            via: "https://www.e-stat.go.jp/gis/statmap-search?page=1&type=1",
             mesh_digits: Some(8),
         },
     ),
@@ -274,6 +295,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             description: "令和2年国勢調査の地域メッシュ統計 (125m)。人口・世帯数・人口密度を持つ。ジオメトリはメッシュコードから計算したもの。都道府県ごとに1ファイル。",
             attribution: ESTAT_MESH,
             summary_columns: &[],
+            via: "https://www.e-stat.go.jp/gis/statmap-search?page=1&type=1",
             mesh_digits: Some(11),
         },
     ),
@@ -287,6 +309,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             attribution: MLIT_ISJ,
             summary_columns: &[],
             mesh_digits: None,
+            via: "https://nlftp.mlit.go.jp/cgi-bin/isj/dls/_choose_method.cgi",
         },
     ),
     (
@@ -299,6 +322,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             attribution: MLIT_ISJ,
             summary_columns: &[],
             mesh_digits: None,
+            via: "https://nlftp.mlit.go.jp/cgi-bin/isj/dls/_choose_method.cgi",
         },
     ),
 ];
@@ -466,6 +490,15 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         (None, _) => bail!("GeoParquetの `geo` メタデータがありません: {file}"),
     };
 
+    // ファイルごとの配布元。変換時に書いてあれば拾う (PLATEAUの都市ごとのzipなど)。
+    let via = file_metadata
+        .key_value_metadata()
+        .and_then(|kv| {
+            kv.iter()
+                .find(|entry| entry.key == crate::geoparquet::VIA_KEY)
+        })
+        .and_then(|entry| entry.value.clone());
+
     let columns = file_metadata
         .schema_descr()
         .columns()
@@ -501,6 +534,8 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         columns,
         summaries,
         mesh_digits: described.mesh_digits,
+        via,
+        collection_via: described.via,
     })
 }
 

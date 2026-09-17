@@ -379,7 +379,10 @@ fn transform_ring(ring: LineString<f64>, proj: &proj::Proj) -> Result<LineString
 }
 
 /// 変換した行をGeoParquetとして書き出す。
-pub fn write_geoparquet(rows: Vec<Row>, output: &Path) -> Result<()> {
+/// `via` はこの都市のCityGML zipのURL。**都市ごとに違う**ので、
+/// 出所全体で1つのカタログ側ではなくファイルに書く。
+/// 手元のzipから変換したときは分からないので `None`。
+pub fn write_geoparquet(rows: Vec<Row>, output: &Path, via: Option<&str>) -> Result<()> {
     let mut building_id = Vec::with_capacity(rows.len());
     let mut name = Vec::with_capacity(rows.len());
     let mut usage = Vec::with_capacity(rows.len());
@@ -420,6 +423,7 @@ pub fn write_geoparquet(rows: Vec<Row>, output: &Path) -> Result<()> {
         bbox,
         &["MultiPolygon".to_string()],
         file_bbox,
+        via,
     )
     .with_context(|| format!("書き出しに失敗しました: {}", output.display()))
 }

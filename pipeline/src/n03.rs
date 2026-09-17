@@ -184,6 +184,7 @@ pub fn write_geoparquet(rows: Vec<Row>, output: &Path) -> Result<()> {
         bbox,
         &["MultiPolygon".to_string()],
         file_bbox,
+        None,
     )
     .with_context(|| format!("書き出しに失敗しました: {}", output.display()))
 }
