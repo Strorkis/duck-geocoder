@@ -30,7 +30,7 @@ miseが見るのは `uv` だけで、**Pythonの版は `.python-version`、パ�
 ```sh
 mise exec -- uv run python - <<'PY'
 import pdfplumber
-with pdfplumber.open(".reference/UASL/800055328.pdf") as pdf:
+with pdfplumber.open(".reference/docs/UASL/800055328.pdf") as pdf:
     print(pdf.pages[8].extract_text())   # 0始まりなので9ページ目
 PY
 ```
