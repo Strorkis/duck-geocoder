@@ -5,6 +5,9 @@ duckdb = "latest"
 jq = "latest"
 node = "lts"
 pnpm = "latest"
+# 変換結果をR2へ上げる。`copy` は消さず `sync` は消すので、区別がコマンド名に出る
+# (公開中のデータを消さないために copy を使う。docs/deploy.md を参照)。
+rclone = "latest"
 rust = "stable"
 # 参考資料 (PDFなど) を読むためだけに使う。配信データを作る工程には入れない。
 # Pythonの版とパッケージはuvが見る (.python-version / pyproject.toml / uv.lock)。
