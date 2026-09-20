@@ -548,3 +548,92 @@ body,
   padding: 0.5rem 0.7rem;
   border-radius: 0.3rem;
 }
+
+/* レイヤー一覧。**1データ1行**にして、オープンデータが増えても
+   縦に伸びないようにする (種別ごとに節を積むと頭打ちが無い)。 */
+.layer-heading {
+  margin: 0.4rem 0 0.2rem;
+  font-weight: 600;
+  font-size: 0.8rem;
+  color: #555;
+}
+
+#layer-list > .layer-heading:first-child {
+  margin-top: 0;
+}
+
+.layer-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0;
+}
+
+.layer-row .layer-name {
+  flex: none;
+  cursor: pointer;
+}
+
+/* 出所と版。行の右側に寄せて、名前を読む邪魔をしない。 */
+.layer-row .layer-source {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  color: #888;
+  font-size: 0.7rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 収録の無いもの。**隠さない** — 「無い」と分かるのも情報なので、薄く出す。 */
+.layer-row.absent {
+  opacity: 0.5;
+}
+
+/* 裏方 (検索が使うもの)。切れてはいけないのでチェックボックスを出さない。
+   チェックボックスの幅だけ字下げして、切り替えられる行と見分けられるようにする。 */
+.layer-row.support {
+  padding-left: 1.3rem;
+  color: #777;
+}
+
+.layer-settings-button {
+  flex: none;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0.1rem 0.2rem;
+  color: #666;
+}
+
+.layer-settings-button:hover {
+  color: #14508c;
+}
+
+/* 設定は一覧と**入れ替える**。重ねて出すと結局縦に伸びる。 */
+#layer-list[hidden],
+#layer-settings[hidden] {
+  display: none;
+}
+
+#layer-back {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin-bottom: 0.3rem;
+  color: #14508c;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+#layer-settings-title {
+  margin: 0 0 0.4rem;
+  font-weight: 600;
+}
+
+#layer-settings-body > div[hidden] {
+  display: none;
+}

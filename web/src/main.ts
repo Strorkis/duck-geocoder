@@ -1619,8 +1619,6 @@ async function main() {
   const usageNoneButton = document.querySelector<HTMLButtonElement>('#usage-none')!;
   const buildingCountEl = document.querySelector<HTMLParagraphElement>('#building-count')!;
   const railwaySectionEl = document.querySelector<HTMLDivElement>('#railway-section')!;
-  const railwayToggle = document.querySelector<HTMLInputElement>('#railway-toggle')!;
-  const railwayControlsEl = document.querySelector<HTMLDivElement>('#railway-controls')!;
   const railwayTypesEl = document.querySelector<HTMLDivElement>('#railway-types')!;
   const railwayAllButton = document.querySelector<HTMLButtonElement>('#railway-all')!;
   const railwayNoneButton = document.querySelector<HTMLButtonElement>('#railway-none')!;
@@ -1628,8 +1626,21 @@ async function main() {
   let railwayTypeInputs: HTMLInputElement[] = [];
 
   const meshSectionEl = document.querySelector<HTMLDivElement>('#mesh-section')!;
-  const meshToggle = document.querySelector<HTMLInputElement>('#mesh-toggle')!;
-  const meshControlsEl = document.querySelector<HTMLDivElement>('#mesh-controls')!;
+
+  // レイヤー一覧まわり。**データは節を積まずに1データ1行で並べる** —
+  // 種別ごとに `<details>` を足していくと、オープンデータが増えるだけ縦に伸びる。
+  const layerListEl = document.querySelector<HTMLDivElement>('#layer-list')!;
+  const layerRowsEl = document.querySelector<HTMLDivElement>('#layer-rows')!;
+  const layerAbsentEl = document.querySelector<HTMLDivElement>('#layer-absent')!;
+  const layerAbsentRowsEl = document.querySelector<HTMLDivElement>('#layer-absent-rows')!;
+  const layerSupportEl = document.querySelector<HTMLDivElement>('#layer-support')!;
+  const layerSupportRowsEl = document.querySelector<HTMLDivElement>('#layer-support-rows')!;
+  const layerSettingsEl = document.querySelector<HTMLDivElement>('#layer-settings')!;
+  const layerSettingsTitleEl = document.querySelector<HTMLParagraphElement>(
+    '#layer-settings-title',
+  )!;
+  const layerSettingsBodyEl = document.querySelector<HTMLDivElement>('#layer-settings-body')!;
+  const layerBackButton = document.querySelector<HTMLButtonElement>('#layer-back')!;
   const aircraftSelect = document.querySelector<HTMLSelectElement>('#aircraft-class')!;
   const meshLegendBody = document.querySelector<HTMLTableSectionElement>('#mesh-legend tbody')!;
   const meshSummaryEl = document.querySelector<HTMLParagraphElement>('#mesh-summary')!;
@@ -1647,8 +1658,9 @@ async function main() {
   let railwayVintage: string | undefined;
   let ensureSpatial: () => Promise<void>;
   let ensureOaza: () => Promise<void>;
+  let collections: Collection[] = [];
   try {
-    const collections = await fetchCollections();
+    collections = await fetchCollections();
     const [db, createdMap] = await Promise.all([
       initDuckDb(collections),
       initMap(collections),
@@ -1904,6 +1916,13 @@ async function main() {
     const coverage = map.getSource('buildings-coverage') as GeoJSONSource | undefined;
     if (!mapSource || !activeSource) return;
 
+    if (!isLayerVisible('buildings')) {
+      await coverage?.setData(EMPTY_FEATURE_COLLECTION);
+      await mapSource.setData(EMPTY_FEATURE_COLLECTION);
+      buildingCountEl.textContent = '';
+      return;
+    }
+
     // 建物が出ないズームでは、代わりに収録範囲の枠を出す。
     // **切れるようにしてある** — 収録範囲が全国に広がれば、枠は日本を囲む箱に
     // なって意味を失う。そのとき既定を変えられるよう、先に切り替えを用意した。
@@ -2023,7 +2042,7 @@ async function main() {
       meshSummaryEl.textContent = message;
     };
 
-    if (!meshToggle.checked) {
+    if (!isLayerVisible('mesh')) {
       await clear('');
       return;
     }
@@ -2138,7 +2157,7 @@ async function main() {
       railwaySummaryEl.textContent = message;
     };
 
-    if (!railwayToggle.checked) {
+    if (!isLayerVisible('railway')) {
       await clear('');
       return;
     }
@@ -2223,7 +2242,6 @@ async function main() {
   };
 
   if (railwaySources.length > 0) {
-    railwaySectionEl.hidden = false;
 
     // 選択肢はカタログの語彙から作る。色見本を添えて、地図の色と対応付ける。
     for (const type of railwayInstitutionTypes) {
@@ -2249,15 +2267,10 @@ async function main() {
     railwayAllButton.addEventListener('click', () => setAll(true));
     railwayNoneButton.addEventListener('click', () => setAll(false));
 
-    railwayToggle.addEventListener('change', () => {
-      railwayControlsEl.hidden = !railwayToggle.checked;
-      requestRailwayRefresh();
-    });
     map.on('moveend', requestRailwayRefresh);
   }
 
   if (meshSources.length > 0) {
-    meshSectionEl.hidden = false;
     for (const [index, { label }] of AIRCRAFT_CLASSES.entries()) {
       const option = document.createElement('option');
       option.value = String(index);
@@ -2266,10 +2279,6 @@ async function main() {
     }
     renderLegend();
 
-    meshToggle.addEventListener('change', () => {
-      meshControlsEl.hidden = !meshToggle.checked;
-      requestMeshRefresh();
-    });
     // 機体を変えても地図の色は変わらない (色は密度の帯で決まる)。
     // 変わるのは凡例と要約に出る iGRC の値だけなので、引き直さない。
     aircraftSelect.addEventListener('change', () => {
@@ -2280,9 +2289,184 @@ async function main() {
     map.on('moveend', requestMeshRefresh);
   }
 
+  // ---- レイヤー一覧 -------------------------------------------------------
+  //
+  // **Collection とレイヤー行は1対1ではない。** 建物は出所違いの択一 (PLATEAU /
+  // Overture)、人口メッシュは細かさ違い、鉄道は路線と駅で常に一緒に出す。
+  // 一覧に並べるのは「使う側から見た1つのもの」。
+  interface Layer {
+    id: string;
+    title: string;
+    /** 行に出す出所。版が分かっていれば添える。 */
+    source: string;
+    vintage?: string;
+    /** 収録範囲。**この場所にあるか**の判定に使う。複数Collectionなら和。 */
+    bbox: Bbox | null;
+    visible: boolean;
+    /** 設定の中身。一覧から開いたときに出す。 */
+    settings: HTMLElement;
+    refresh: () => void;
+  }
+
+  const byKind = (kind: DatasetKind) => collections.filter((c) => c.kind === kind);
+  const collectionsOf = (...kinds: DatasetKind[]) => kinds.flatMap((kind) => byKind(kind));
+
+  const layers: Layer[] = [];
+  if (activeSource) {
+    const buildingCollections = collectionsOf('plateau_buildings', 'buildings');
+    layers.push({
+      id: 'buildings',
+      title: '建物',
+      source: buildingSources.map((s) => s.label).join(' / '),
+      vintage: buildingCollections.find((c) => c.vintage)?.vintage,
+      bbox: unionBbox(buildingCollections.map((c) => c.bbox).filter((b): b is Bbox => b !== null)),
+      // 建物はこのアプリの出発点なので既定で出す。
+      visible: true,
+      settings: buildingsSection,
+      refresh: requestRefresh,
+    });
+  }
+  if (meshSources.length > 0) {
+    const meshCollections = collectionsOf('population_mesh');
+    layers.push({
+      id: 'mesh',
+      title: '人口密度',
+      source: '国勢調査',
+      vintage: meshCollections.find((c) => c.vintage)?.vintage,
+      bbox: unionBbox(meshCollections.map((c) => c.bbox).filter((b): b is Bbox => b !== null)),
+      visible: false,
+      settings: meshSectionEl,
+      refresh: requestMeshRefresh,
+    });
+  }
+  if (railwaySources.length > 0) {
+    const railwayCollections = collectionsOf('railway', 'railway_station');
+    layers.push({
+      id: 'railway',
+      title: '鉄道',
+      source: '国土数値情報',
+      vintage: railwayVintage,
+      bbox: unionBbox(railwayCollections.map((c) => c.bbox).filter((b): b is Bbox => b !== null)),
+      visible: false,
+      settings: railwaySectionEl,
+      refresh: requestRailwayRefresh,
+    });
+  }
+
+  const isLayerVisible = (id: string) => layers.find((l) => l.id === id)?.visible ?? false;
+
+  // 設定はパネルの中身を入れ替えて出す。**取り外さない** — 外すと
+  // 参照は生きていてもDOMから消え、CSSもテストのセレクタも当たらなくなる。
+  for (const layer of layers) {
+    layer.settings.hidden = true;
+    layerSettingsBodyEl.append(layer.settings);
+  }
+
+  const showLayerList = () => {
+    layerSettingsEl.hidden = true;
+    layerListEl.hidden = false;
+  };
+
+  const openLayerSettings = (layer: Layer) => {
+    for (const other of layers) other.settings.hidden = other !== layer;
+    layerSettingsTitleEl.textContent = layer.title;
+    layerListEl.hidden = true;
+    layerSettingsEl.hidden = false;
+  };
+
+  layerBackButton.addEventListener('click', showLayerList);
+
+  /** 表示範囲と収録範囲が重なるか。**通信しない** (起動時に読んだbboxだけを見る)。 */
+  const coversView = (bbox: Bbox | null): boolean => {
+    if (!bbox) return true; // 分からないものは落とさない
+    const b = map.getBounds();
+    const [west, south, east, north] = bbox;
+    return (
+      west <= b.getEast() && east >= b.getWest() && south <= b.getNorth() && north >= b.getSouth()
+    );
+  };
+
+  const layerRow = (layer: Layer, present: boolean): HTMLElement => {
+    const row = document.createElement('div');
+    row.className = present ? 'layer-row' : 'layer-row absent';
+    row.dataset.layer = layer.id;
+
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.checked = layer.visible;
+    toggle.id = `layer-toggle-${layer.id}`;
+    toggle.addEventListener('change', () => {
+      layer.visible = toggle.checked;
+      layer.refresh();
+    });
+
+    const name = document.createElement('label');
+    name.className = 'layer-name';
+    name.htmlFor = toggle.id;
+    name.textContent = layer.title;
+
+    const source = document.createElement('span');
+    source.className = 'layer-source';
+    source.textContent = layer.vintage ? `${layer.source} · ${layer.vintage}` : layer.source;
+
+    const settings = document.createElement('button');
+    settings.type = 'button';
+    settings.className = 'layer-settings-button';
+    settings.textContent = '⚙';
+    settings.title = `${layer.title}の設定`;
+    settings.addEventListener('click', () => openLayerSettings(layer));
+
+    row.append(toggle, name, source, settings);
+    return row;
+  };
+
+  /** 裏方 (検索・逆ジオコーディングが使うもの)。**切れてはいけない**ので出すだけ。 */
+  const supportRow = (title: string, source: string): HTMLElement => {
+    const row = document.createElement('div');
+    row.className = 'layer-row support';
+    const name = document.createElement('span');
+    name.className = 'layer-name';
+    name.textContent = title;
+    const sourceEl = document.createElement('span');
+    sourceEl.className = 'layer-source';
+    sourceEl.textContent = source;
+    row.append(name, sourceEl);
+    return row;
+  };
+
+  const renderLayerList = () => {
+    const present = layers.filter((layer) => coversView(layer.bbox));
+    const absent = layers.filter((layer) => !coversView(layer.bbox));
+    layerRowsEl.replaceChildren(...present.map((layer) => layerRow(layer, true)));
+    layerAbsentRowsEl.replaceChildren(...absent.map((layer) => layerRow(layer, false)));
+    layerAbsentEl.hidden = absent.length === 0;
+  };
+
+  if (layers.length > 0) {
+    renderLayerList();
+    // 収録範囲はCollectionのbbox (=ファイルの和) なので**粗い**。PLATEAUを全国に
+    // 広げると「日本全体」になり、306都市の外でも「ある」と出る。正確な範囲は
+    // Itemが持っていて、レイヤーをONにすると `ensure()` が読んで `filesInView` が絞る。
+    map.on('moveend', renderLayerList);
+  }
+
+  // 裏方は種別から引く。**一覧に出すが切らせない** (外すと検索が壊れる)。
+  const supportKinds: [DatasetKind, string][] = [
+    ['admin', '行政区域'],
+    ['oaza', '地名 (大字・町丁目)'],
+    ['block', '街区'],
+  ];
+  const supportRows = supportKinds.flatMap(([kind, title]) => {
+    const collection = byKind(kind)[0];
+    return collection ? [supportRow(title, collection.attribution.split('（')[0])] : [];
+  });
+  if (supportRows.length > 0) {
+    layerSupportRowsEl.replaceChildren(...supportRows);
+    layerSupportEl.hidden = false;
+  }
+
   if (activeSource) {
     map.on('moveend', requestRefresh);
-    buildingsSection.hidden = false;
 
     for (const source of buildingSources) {
       const option = document.createElement('option');

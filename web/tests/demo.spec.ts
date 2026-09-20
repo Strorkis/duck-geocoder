@@ -59,7 +59,7 @@ async function hasPlateau(page: Page): Promise<boolean> {
 
 /** PLATEAUの建物が見える状態にする。PLATEAUは既定の出所なので選び直さない。 */
 async function showPlateauBuildings(page: Page) {
-  await openSection(page, 'buildings-section');
+  await openLayerSettings(page, 'buildings');
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 16 });
@@ -100,11 +100,43 @@ async function skipIfDataMissing(page: Page) {
  *
  * できることは1枚のパネルにまとめてあり、**中身は既定でたたんである**。
  * 見出しだけが並ぶので「何ができるか」は読めるが、操作するには開く必要がある。
+ *
+ * **データのレイヤーはここには無い** ([`openLayerSettings`])。節を積むと
+ * オープンデータが増えるだけ縦に伸びるので、一覧に移してある。
  */
 async function openSection(page: Page, id: string) {
   await page.locator(`#${id} > summary`).click();
   await expect(page.locator(`#${id}`)).toHaveAttribute('open', '');
 }
+
+/**
+ * レイヤーの設定を開く。一覧の ⚙ を押すと、**パネルの中身が入れ替わる**
+ * (重ねて出すと結局縦に伸びるため)。
+ */
+async function openLayerSettings(page: Page, layer: string) {
+  await page.locator(`[data-layer="${layer}"] .layer-settings-button`).click();
+  await expect(page.locator('#layer-settings')).toBeVisible();
+  await expect(page.locator('#layer-list')).toBeHidden();
+}
+
+/**
+ * レイヤーの表示/非表示を切り替える。
+ *
+ * **チェックボックスは一覧にある。** 設定を開いていると一覧は隠れているので、
+ * 先に戻る。テスト側で開閉の順番を気にしなくて済むようにするため。
+ */
+async function setLayerVisible(page: Page, layer: string, visible: boolean) {
+  if (await page.locator('#layer-settings').isVisible()) {
+    await page.locator('#layer-back').click();
+    await expect(page.locator('#layer-list')).toBeVisible();
+  }
+  const toggle = page.locator(`#layer-toggle-${layer}`);
+  if (visible) await toggle.check();
+  else await toggle.uncheck();
+}
+
+const showLayer = (page: Page, layer: string) => setLayerVisible(page, layer, true);
+const hideLayer = (page: Page, layer: string) => setLayerVisible(page, layer, false);
 
 /** 初期化 (DuckDB + 地図) の完了を待つ。 */
 async function waitForReady(page: Page) {
@@ -472,17 +504,25 @@ test('出典に配布元へのリンクが出る', async ({ page }) => {
   expect(hrefs.some((href) => href.includes('overturemaps.org/guides/'))).toBe(true);
 });
 
-// 初見で何から触ればいいか分かるよう、**見出しは畳まない**。
-// 中身をたたむのは画面を静かにするためで、できること自体は隠さない。
-test('できることは開かなくても見出しで分かる', async ({ page }) => {
+// 初見で何から触ればいいか分かるよう、**できること自体は隠さない**。
+// 中身をたたむのは画面を静かにするためで、名前は開かなくても読める。
+test('できることは開かなくても分かる', async ({ page }) => {
   const panel = page.locator('#display-panel');
-  for (const heading of ['地図', '建物', '人口密度', '使い方', '出典']) {
+
+  // データは一覧にそのまま並ぶ。**開く操作すら要らない。**
+  for (const layer of ['建物', '人口密度']) {
+    await expect(panel.locator('.layer-row', { hasText: layer }).first()).toBeVisible();
+  }
+  // データ以外は節のまま。見出しは畳まない。
+  for (const heading of ['地図', '使い方', '出典']) {
     await expect(panel.locator('summary', { hasText: heading }).first()).toBeVisible();
   }
-  // 中身は既定でたたんである。
-  for (const id of ['map-section', 'buildings-section', 'mesh-section', 'help']) {
+  // 節の中身は既定でたたんである。
+  for (const id of ['map-section', 'help', 'credits-section']) {
     await expect(page.locator(`#${id}`)).not.toHaveAttribute('open', '');
   }
+  // レイヤーの設定も既定では出さない (一覧が先)。
+  await expect(page.locator('#layer-settings')).toBeHidden();
 });
 
 /**
@@ -536,7 +576,7 @@ test('ボタンを押すと建物のある範囲へ移動する', async ({ page 
 
   expect(await sourceFeatureCount(page, 'buildings')).toBe(0);
 
-  await openSection(page, 'buildings-section');
+  await openLayerSettings(page, 'buildings');
   await page.locator('#goto-buildings').click();
 
   await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
@@ -556,7 +596,7 @@ test('建物を読み込んでいる間は合図が出る', async ({ page }) => 
 
   await expect(page.locator('#busy')).toBeHidden();
 
-  await openSection(page, 'buildings-section');
+  await openLayerSettings(page, 'buildings');
   await page.locator('#goto-buildings').click();
   // flyTo に1.5秒かかるので、押した直後から出ていること。
   await expect(page.locator('#busy')).toBeVisible();
@@ -588,7 +628,7 @@ test('建物を読み込んでいる間は「拡大すると建物が出ます�
     await route.continue();
   });
 
-  await openSection(page, 'buildings-section');
+  await openLayerSettings(page, 'buildings');
   await page.locator('#goto-buildings').click();
   // 取得に入ったことは合図の文言で見分ける (移動中とは別の文言にしてある)。
   await expect(page.locator('#busy')).toContainText('建物を読み込み中…');
@@ -818,8 +858,8 @@ test('建物はホバーで情報が出て、地図は動かない', async ({ pa
 test('絞り込みは列の有無で決まる', async ({ page }) => {
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
 
-  await expect(page.locator('#buildings-section')).toBeVisible();
-  await openSection(page, 'buildings-section');
+  await expect(page.locator('[data-layer="buildings"]')).toBeVisible();
+  await openLayerSettings(page, 'buildings');
   // 属性の揃っているPLATEAUが既定。
   await expect(page.locator('#building-source')).toHaveValue(/plateau/);
   await expect(page.locator('#building-filters')).toBeVisible();
@@ -941,13 +981,14 @@ async function hasMesh(page: Page): Promise<boolean> {
 
 /** 人口密度を表示し、描かれるまで待つ。 */
 async function showPopulationMesh(page: Page, zoom = 13) {
-  await openSection(page, 'mesh-section');
   await page.evaluate((z) => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: z });
   }, zoom);
-  await page.locator('#mesh-toggle').check();
+  // **チェックボックスは一覧にある。**設定を先に開くと一覧が隠れて押せない。
+  await showLayer(page, 'mesh');
   await expect.poll(() => sourceFeatureCount(page, 'population-mesh')).toBeGreaterThan(0);
+  await openLayerSettings(page, 'mesh');
 }
 
 // 地上リスクの中心はSORAのiGRCで、その入力は人口密度。
@@ -955,7 +996,7 @@ async function showPopulationMesh(page: Page, zoom = 13) {
 test('人口密度は切り替えで出せる', async ({ page }) => {
   test.skip(!(await hasMesh(page)), '人口メッシュのデータが無い');
 
-  await expect(page.locator('#mesh-section')).toBeVisible();
+  await expect(page.locator('[data-layer="mesh"]')).toBeVisible();
   // 既定は消えている。チェックするまで読みにも行かない。
   expect(await sourceFeatureCount(page, 'population-mesh')).toBe(0);
 
@@ -963,7 +1004,7 @@ test('人口密度は切り替えで出せる', async ({ page }) => {
   await expect(page.locator('#mesh-summary')).toContainText('人/km²');
 
   // 外せば消える。
-  await page.locator('#mesh-toggle').uncheck();
+  await hideLayer(page, 'mesh');
   await expect.poll(() => sourceFeatureCount(page, 'population-mesh')).toBe(0);
 });
 
@@ -1031,13 +1072,13 @@ test('メッシュを粗くしても最大密度は下がらない', async ({ pa
 test('メッシュのセルはすべて同じ大きさ', async ({ page }) => {
   test.skip(!(await hasMesh(page)), '人口メッシュのデータが無い');
 
-  await openSection(page, 'mesh-section');
+  await openLayerSettings(page, 'mesh');
   for (const zoom of [15, 13, 11, 8]) {
     await page.evaluate((z) => {
       const map = (window as unknown as TestWindow).__map!;
       map.jumpTo({ center: [139.7454, 35.6586], zoom: z });
     }, zoom);
-    if (zoom === 15) await page.locator('#mesh-toggle').check();
+    if (zoom === 15) await showLayer(page, 'mesh');
     await expect.poll(() => sourceFeatureCount(page, 'population-mesh')).toBeGreaterThan(1);
 
     const sizes = await page.evaluate(async () => {
@@ -1085,8 +1126,8 @@ test('引いた表示では1kmの集約ファイルだけを読む', async ({ pa
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 8 });
   });
-  await openSection(page, 'mesh-section');
-  await page.locator('#mesh-toggle').check();
+  await openLayerSettings(page, 'mesh');
+  await showLayer(page, 'mesh');
   await expect.poll(() => sourceFeatureCount(page, 'population-mesh')).toBeGreaterThan(0);
 
   expect(requested).toContain('mesh_pop_1km.parquet');
@@ -1105,8 +1146,8 @@ test('全国を俯瞰しても最大密度は残る', async ({ page }) => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [138.0, 37.0], zoom: 5 });
   });
-  await openSection(page, 'mesh-section');
-  await page.locator('#mesh-toggle').check();
+  await openLayerSettings(page, 'mesh');
+  await showLayer(page, 'mesh');
   await expect(page.locator('#mesh-summary')).toContainText('80kmメッシュ');
 
   const text = (await page.locator('#mesh-summary').textContent()) ?? '';
@@ -1135,27 +1176,28 @@ async function hasRailway(page: Page): Promise<boolean> {
 
 /** 鉄道を表示し、描かれるまで待つ。 */
 async function showRailway(page: Page, zoom = 12) {
-  await openSection(page, 'railway-section');
   await page.evaluate((z) => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7671, 35.6812], zoom: z }); // 東京駅
   }, zoom);
-  await page.locator('#railway-toggle').check();
+  // **チェックボックスは一覧にある。**設定を先に開くと一覧が隠れて押せない。
+  await showLayer(page, 'railway');
   await expect.poll(() => sourceFeatureCount(page, 'railway')).toBeGreaterThan(0);
+  await openLayerSettings(page, 'railway');
 }
 
 // 既定では出さない (建物を見に来た人の邪魔になる)。出せることが分かる形にする。
 test('鉄道は切り替えで出せる', async ({ page }) => {
   test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
 
-  await expect(page.locator('#railway-section')).toBeVisible();
+  await expect(page.locator('[data-layer="railway"]')).toBeVisible();
   // チェックするまで読みにも行かない。
   expect(await sourceFeatureCount(page, 'railway')).toBe(0);
 
   await showRailway(page);
   await expect(page.locator('#railway-summary')).toContainText('路線');
 
-  await page.locator('#railway-toggle').uncheck();
+  await hideLayer(page, 'railway');
   await expect.poll(() => sourceFeatureCount(page, 'railway')).toBe(0);
 });
 
@@ -1293,7 +1335,7 @@ test('鉄道はホバーで路線名と事業者が出る', async ({ page }) => 
 test('収録範囲の枠は切り替えられる', async ({ page }) => {
   test.skip(!(await hasBuildings(page)), '建物データが無い');
 
-  await openSection(page, 'buildings-section');
+  await openLayerSettings(page, 'buildings');
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 10 });
@@ -1305,4 +1347,75 @@ test('収録範囲の枠は切り替えられる', async ({ page }) => {
 
   await page.locator('#coverage-toggle').check();
   await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBe(1);
+});
+
+/**
+ * データは**1行ずつの一覧**になっていて、種別ごとに節を積まない。
+ * 節を積むとオープンデータが増えるだけ縦に伸び、頭打ちが無くなる。
+ */
+test('データはレイヤーの一覧に並ぶ', async ({ page }) => {
+  await expect(page.locator('#layer-list')).toBeVisible();
+  const rows = page.locator('#layer-rows .layer-row, #layer-absent-rows .layer-row');
+  expect(await rows.count()).toBeGreaterThan(0);
+
+  // 行には出所が添えてある。どこのデータかが一覧のまま読める。
+  await expect(page.locator('.layer-row .layer-source').first()).toBeVisible();
+});
+
+/**
+ * 設定は一覧と**入れ替える** (重ねて出すと結局縦に伸びるため)。
+ *
+ * **高さがレイヤーの数に比例しないことが要点。** 設定そのものは縦長でありうる
+ * (建物は用途が14個ある) が、それは「いちばん複雑な1つ」で頭打ちになる。
+ * データを足しても増えるのは一覧の1行だけ。
+ *
+ * ここで見張るのは**画面からはみ出さないこと**。パネルが画面より高くなると、
+ * 下にあるものへ到達できなくなる。
+ */
+test('設定を開いてもパネルは画面に収まる', async ({ page }) => {
+  test.skip(!(await hasBuildings(page)), '建物データが無い');
+
+  const panel = page.locator('#display-panel');
+  const viewport = page.viewportSize()!.height;
+
+  await openLayerSettings(page, 'buildings');
+  const opened = (await panel.boundingBox())!.height;
+  expect(opened, `設定がはみ出している: ${opened}px / 画面 ${viewport}px`).toBeLessThan(viewport);
+
+  // 一覧に戻れること。戻れないと他のレイヤーを触れなくなる。
+  await page.locator('#layer-back').click();
+  await expect(page.locator('#layer-list')).toBeVisible();
+  await expect(page.locator('#layer-settings')).toBeHidden();
+});
+
+/**
+ * 検索と逆ジオコーディングが使っているデータは**切れてはいけない**
+ * (外すと検索が壊れる)。一覧には出すが、チェックボックスは付けない。
+ */
+test('検索に使うデータは一覧に出るが切り替えられない', async ({ page }) => {
+  const support = page.locator('#layer-support');
+  await expect(support).toBeVisible();
+  await expect(support).toContainText('行政区域');
+  expect(await support.locator('input[type="checkbox"]').count()).toBe(0);
+});
+
+/**
+ * 収録範囲の外へ行くと「この範囲には無い」へ移る。**隠さない** —
+ * 「無い」と分かるのも情報なので、薄く出したままにする。
+ */
+test('収録範囲の外では「この範囲には無い」に移る', async ({ page }) => {
+  test.skip(!(await hasBuildings(page)), '建物データが無い');
+
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7454, 35.6586], zoom: 14 }); // 港区
+  });
+  await expect(page.locator('#layer-rows [data-layer="buildings"]')).toBeVisible();
+
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [141.35, 43.06], zoom: 14 }); // 札幌 (建物の収録なし)
+  });
+  await expect(page.locator('#layer-absent [data-layer="buildings"]')).toBeVisible();
+  await expect(page.locator('#layer-absent')).toContainText('この範囲には無い');
 });

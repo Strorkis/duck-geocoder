@@ -47,6 +47,33 @@
         開閉にJavaScriptが要らないので details を使う。
       -->
       <div id="display-panel">
+        <!--
+          データは**レイヤーの一覧**にする。種別ごとに節を積むと、オープンデータを
+          足すたびに縦へ伸びて頭打ちが無い。一覧は1データ1行で、設定は
+          **パネルの中身を入れ替えて**出す (地図を隠さず、縦にも伸びない)。
+        -->
+        <div id="layer-view">
+          <div id="layer-list">
+            <p class="layer-heading">この場所のデータ</p>
+            <div id="layer-rows"></div>
+            <!-- 収録が無いものも出す。「無い」と分かるのも情報なので隠さない。 -->
+            <div id="layer-absent" hidden>
+              <p class="layer-heading">この範囲には無い</p>
+              <div id="layer-absent-rows"></div>
+            </div>
+            <!-- 検索と逆ジオコーディングが使っているもの。**切れてはいけない**
+                 (外すと検索が壊れる) ので、チェックボックスは出さない。 -->
+            <div id="layer-support" hidden>
+              <p class="layer-heading">検索に使用</p>
+              <div id="layer-support-rows"></div>
+            </div>
+          </div>
+          <div id="layer-settings" hidden>
+            <button id="layer-back" type="button">← 一覧へ</button>
+            <p id="layer-settings-title"></p>
+            <div id="layer-settings-body"></div>
+          </div>
+        </div>
         <details id="map-section">
           <summary>地図</summary>
           <div class="field">
@@ -54,9 +81,8 @@
             <select id="basemap"></select>
           </div>
         </details>
-        <!-- 建物まわり。データが無ければJavaScript側で隠す (地図の切り替えは残す)。 -->
-        <details id="buildings-section" hidden>
-          <summary>建物</summary>
+        <!-- 建物の設定。レイヤー一覧から開かれたときに #layer-settings-body へ移す。 -->
+        <div id="buildings-section" hidden>
           <!-- 建物は一部の範囲しか収録していない。偶然そこへ行かないと
                機能があること自体に気づけないので、移動する手段を置く。
                データが無いときはJavaScript側で隠したままにする。 -->
@@ -94,17 +120,10 @@
           <!-- 絞り込みの外に置く。中に入れると、絞り込める列を持たない出所を
                選んだときに件数ごと消えてしまう。 -->
           <p id="building-count" class="note"></p>
-        </details>
-        <!-- 地上リスク (SORAのiGRC)。データが無ければJavaScript側で隠す。 -->
-        <details id="mesh-section" hidden>
-          <summary>人口密度 (地上リスク)</summary>
-          <div class="field">
-            <label class="toggle">
-              <input id="mesh-toggle" type="checkbox" />
-              地図に重ねる
-            </label>
-          </div>
-          <div id="mesh-controls" hidden>
+        </div>
+        <!-- 地上リスク (SORAのiGRC)。表示の切り替えは一覧のチェックボックスが持つ。 -->
+        <div id="mesh-section" hidden>
+          <div id="mesh-controls">
             <div class="field">
               <label for="aircraft-class">機体 (最大寸法 / 最大速度)</label>
               <select id="aircraft-class"></select>
@@ -119,16 +138,9 @@
             </table>
             <p id="mesh-summary" class="note"></p>
           </div>
-        </details>
-        <details id="railway-section" hidden>
-          <summary>鉄道</summary>
-          <div class="field">
-            <label class="toggle">
-              <input id="railway-toggle" type="checkbox" />
-              地図に重ねる
-            </label>
-          </div>
-          <div id="railway-controls" hidden>
+        </div>
+        <div id="railway-section" hidden>
+          <div id="railway-controls">
             <!-- 事業者種別で絞る。選択肢はカタログの語彙から作るので、
                  出所が増えてもここに書き足さなくてよい。 -->
             <div class="field">
@@ -143,7 +155,7 @@
             </div>
             <p id="railway-summary" class="note"></p>
           </div>
-        </details>
+        </div>
         <details id="help">
           <summary>使い方</summary>
           <ul>
