@@ -245,6 +245,16 @@ fn collection(id: &str, entries: &[&DatasetEntry]) -> Result<Value> {
     if let Some(digits) = first.mesh_digits {
         body["duck:mesh_digits"] = json!(digits);
     }
+    // **いつ時点のデータか。** ファイルごとに違いうる (PLATEAUは都市ごとに
+    // 更新年度が揃っていない) ので、**揃っているときだけ**Collectionに出す。
+    // 揃っていないものを代表値で1つに丸めると、古い都市を新しいと誤解させる。
+    let vintages: std::collections::BTreeSet<&str> = entries
+        .iter()
+        .filter_map(|entry| entry.vintage.as_deref())
+        .collect();
+    if vintages.len() == 1 && entries.iter().all(|entry| entry.vintage.is_some()) {
+        body["duck:vintage"] = json!(vintages.iter().next());
+    }
     Ok(body)
 }
 
@@ -344,6 +354,7 @@ mod tests {
             summaries: BTreeMap::new(),
             mesh_digits: Some(11),
             via: None,
+            vintage: None,
             collection_via: "https://example.invalid/download",
         }
     }

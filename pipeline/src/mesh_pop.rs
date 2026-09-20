@@ -229,7 +229,7 @@ pub fn write_geoparquet(rows: Vec<Row>, output: &Path) -> Result<()> {
         &["Polygon".to_string()],
         file_bbox,
         // 配布元は出所全体で1つ (e-Statの統計GIS)。カタログ側が持つ。
-        None,
+        geoparquet::Provenance::default(),
     )
 }
 

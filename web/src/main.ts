@@ -64,6 +64,14 @@ interface StacCollection {
   'duck:attribution_url': string;
   /** 地域メッシュの細かさ (メッシュコードの桁数)。メッシュ以外には無い。 */
   'duck:mesh_digits'?: number;
+  /**
+   * **いつ時点のデータか。** 配布元が名乗っている形 (`N02-25 (2026-03-06)` など)。
+   *
+   * ファイルごとに版が違うCollection (PLATEAUは都市ごとに更新年度が揃っていない)
+   * には入っていない。**古いものを新しいと思って使う事故を防ぐためのもの**なので、
+   * 揃っていないものを代表値で1つに丸めない。
+   */
+  'duck:vintage'?: string;
   extent: { spatial: { bbox: (number | null)[][] } };
   /**
    * 列がとりうる値。列名 → 値 (件数の多い順)。語彙を持たない列は入っていない。
@@ -104,6 +112,8 @@ interface Collection {
   columns: Set<string>;
   /** 地域メッシュの細かさ (メッシュコードの桁数)。メッシュ以外は undefined。 */
   meshDigits: number | undefined;
+  /** いつ時点のデータか。**ファイルごとに版が違うものには入っていない。** */
+  vintage: string | undefined;
   /** Itemを読む。**Collectionごとに1回だけ**通信する。 */
   items: () => Promise<StacItem[]>;
 }
@@ -211,6 +221,7 @@ function toCollection(document: StacCollection): Collection {
     attributionUrl: document['duck:attribution_url'],
     via: document.links.find((link) => link.rel === 'via')?.href,
     meshDigits: document['duck:mesh_digits'],
+    vintage: document['duck:vintage'],
     bbox,
     summaries: document.summaries ?? {},
     columns: new Set(
@@ -511,6 +522,8 @@ async function initDuckDb(collections: Collection[]): Promise<{
   railwaySources: RailwaySource[];
   /** 事業者種別の語彙。絞り込みの選択肢をここから作る。 */
   railwayInstitutionTypes: string[];
+  /** 鉄道がいつ時点のものか。ホバーで出す。 */
+  railwayVintage: string | undefined;
   /** 空間関数を使う前に呼ぶ。 */
   ensureSpatial: () => Promise<void>;
   /** 地名 (isj_oaza) を引く前に呼ぶ。 */
@@ -721,6 +734,10 @@ async function initDuckDb(collections: Collection[]): Promise<{
 
   // 絞り込みの選択肢はカタログの語彙から作る。**事業者種別の列名をここに書かない**のは
   // 建物の用途と同じ理由で、語彙を出すかどうかをパイプライン側の一箇所で決めるため。
+  const railwayVintage = railwaySources[0]
+    ? byKind(railwaySources[0].kind)[0]?.vintage
+    : undefined;
+
   const railwayInstitutionTypes = railwaySources[0]
     ? ((byKind(railwaySources[0].kind)[0]?.summaries['institution_type'] ?? []) as string[])
     : [];
@@ -752,6 +769,7 @@ async function initDuckDb(collections: Collection[]): Promise<{
     meshSources,
     railwaySources,
     railwayInstitutionTypes,
+    railwayVintage,
     ensureSpatial,
     ensureOaza,
   };
@@ -1271,26 +1289,44 @@ function collapseAttribution(map: MapLibreMap): void {
  *
  * 同じ出典を使うCollectionはまとめる (大字・町丁目と街区は同じ位置参照情報)。
  */
-function groupCredits(
-  collections: Collection[],
-): { titles: string[]; attribution: string; url: string; via: string[] }[] {
-  const byAttribution = new Map<string, { url: string; titles: string[]; via: string[] }>();
+function groupCredits(collections: Collection[]): {
+  titles: string[];
+  attribution: string;
+  url: string;
+  via: string[];
+  vintages: string[];
+}[] {
+  const byAttribution = new Map<
+    string,
+    { url: string; titles: string[]; via: string[]; vintages: string[] }
+  >();
   for (const collection of collections) {
     const entry = byAttribution.get(collection.attribution) ?? {
       url: collection.attributionUrl,
       titles: [],
       via: [],
+      vintages: [],
     };
     // 同じ出典で細かさ違いのCollectionが並ぶことがある (人口メッシュの125mと1km)。
     if (!entry.titles.includes(collection.title)) entry.titles.push(collection.title);
     // 同じ出典でも配布元のページが分かれることがある (Overtureの区域と建物)。
     if (collection.via && !entry.via.includes(collection.via)) entry.via.push(collection.via);
+    // 版。**分からないものは足さない** (「不明」と書くより、出さない方が誤解が少ない)。
+    if (collection.vintage && !entry.vintages.includes(collection.vintage)) {
+      entry.vintages.push(collection.vintage);
+    }
     byAttribution.set(collection.attribution, entry);
   }
   // 並べ替えは表示する文言で行う (組み立てたHTMLで並べると、順序がタグの中身に左右される)。
   return [...byAttribution]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([attribution, { url, titles, via }]) => ({ titles, attribution, url, via }));
+    .map(([attribution, { url, titles, via, vintages }]) => ({
+      titles,
+      attribution,
+      url,
+      via,
+      vintages,
+    }));
 }
 
 function buildDataCredits(collections: Collection[]): string[] {
@@ -1322,9 +1358,17 @@ function renderCredits(container: HTMLElement, collections: Collection[]): void 
   };
 
   container.replaceChildren();
-  for (const { titles, attribution, url, via } of groupCredits(collections)) {
+  for (const { titles, attribution, url, via, vintages } of groupCredits(collections)) {
     const term = document.createElement('dt');
     term.textContent = titles.join('・');
+    // **いつ時点のデータか。** 出所だけでは版が分からず、古いものを新しいと
+    // 思って使う事故になる。分かっているものだけ添える。
+    if (vintages.length > 0) {
+      const vintage = document.createElement('span');
+      vintage.className = 'vintage';
+      vintage.textContent = vintages.join(' / ');
+      term.append(' ', vintage);
+    }
 
     const detail = document.createElement('dd');
     detail.append(externalLink(url, attribution));
@@ -1564,6 +1608,7 @@ async function main() {
   const basemapSelect = document.querySelector<HTMLSelectElement>('#basemap')!;
   const buildingsSection = document.querySelector<HTMLDivElement>('#buildings-section')!;
   const sourceSelect = document.querySelector<HTMLSelectElement>('#building-source')!;
+  const coverageToggle = document.querySelector<HTMLInputElement>('#coverage-toggle')!;
   const filtersEl = document.querySelector<HTMLDivElement>('#building-filters')!;
   const heightField = document.querySelector<HTMLDivElement>('#height-field')!;
   const usageField = document.querySelector<HTMLDivElement>('#usage-field')!;
@@ -1599,6 +1644,7 @@ async function main() {
   let meshSources: MeshSource[] = [];
   let railwaySources: RailwaySource[] = [];
   let railwayInstitutionTypes: string[] = [];
+  let railwayVintage: string | undefined;
   let ensureSpatial: () => Promise<void>;
   let ensureOaza: () => Promise<void>;
   try {
@@ -1612,6 +1658,7 @@ async function main() {
     meshSources = db.meshSources;
     railwaySources = db.railwaySources;
     railwayInstitutionTypes = db.railwayInstitutionTypes;
+    railwayVintage = db.railwayVintage;
     ({ ensureSpatial, ensureOaza } = db);
     map = createdMap;
     renderCredits(creditsEl, collections);
@@ -1858,9 +1905,11 @@ async function main() {
     if (!mapSource || !activeSource) return;
 
     // 建物が出ないズームでは、代わりに収録範囲の枠を出す。
+    // **切れるようにしてある** — 収録範囲が全国に広がれば、枠は日本を囲む箱に
+    // なって意味を失う。そのとき既定を変えられるよう、先に切り替えを用意した。
     const zoomedOut = map.getZoom() < BUILDINGS_MIN_ZOOM;
     await coverage?.setData(
-      zoomedOut && activeSource.bbox
+      zoomedOut && coverageToggle.checked && activeSource.bbox
         ? bboxFeatureCollection(activeSource.bbox)
         : EMPTY_FEATURE_COLLECTION,
     );
@@ -2286,6 +2335,8 @@ async function main() {
       usageNoneButton.onclick = () => setAll(false);
     };
 
+    coverageToggle.addEventListener('change', requestRefresh);
+
     sourceSelect.addEventListener('change', () => {
       activeSource = buildingSources.find((s) => s.id === sourceSelect.value);
       if (!activeSource) return;
@@ -2383,6 +2434,36 @@ async function main() {
     offset: 12,
   });
 
+  /**
+   * ホバーの中身を組み立てる。
+   *
+   * **`setText` に改行を渡しても効かない。** テキストノードになるので `\n` は
+   * 空白に潰れ、項目が横一列に並んで読めなくなる。かといって `setHTML` は
+   * データ由来の文字列 (駅名や事業者名) をそのままHTMLとして解釈するので使わない。
+   * 要素を組んで `setDOMContent` に渡す。
+   *
+   * `rows` は [項目名, 値]。**項目名が空なら見出し**として大きく出す。
+   */
+  const hoverContent = (rows: [string, string | null][]): HTMLElement => {
+    const box = document.createElement('div');
+    box.className = 'hover-info';
+    for (const [label, value] of rows) {
+      if (value === null) continue;
+      const line = document.createElement('div');
+      if (label) {
+        const name = document.createElement('span');
+        name.className = 'label';
+        name.textContent = label;
+        line.append(name, document.createTextNode(value));
+      } else {
+        line.className = 'title';
+        line.textContent = value;
+      }
+      box.append(line);
+    }
+    return box;
+  };
+
   if (activeSource) {
     map.on('mousemove', 'buildings-3d', (e) => {
       const building = e.features?.[0];
@@ -2391,14 +2472,16 @@ async function main() {
       updateCursor();
 
       const props = building.properties;
-      const text = [
-        (props.name as string | null) ?? '(名称なし)',
-        props.category ? `用途: ${props.category as string}` : null,
-        props.height ? `高さ: ${props.height as number}m` : null,
-      ]
-        .filter(Boolean)
-        .join('\n');
-      hoverPopup.setLngLat(e.lngLat).setText(text).addTo(map);
+      hoverPopup
+        .setLngLat(e.lngLat)
+        .setDOMContent(
+          hoverContent([
+            ['', (props.name as string | null) ?? '(名称なし)'],
+            ['用途', (props.category as string | null) ?? null],
+            ['高さ', props.height ? `${props.height as number} m` : null],
+          ]),
+        )
+        .addTo(map);
     });
 
     map.on('mouseleave', 'buildings-3d', () => {
@@ -2406,6 +2489,43 @@ async function main() {
       updateCursor();
       hoverPopup.remove();
     });
+  }
+
+  if (railwaySources.length > 0) {
+    // 駅を先に置く。路線と重なっている場所では駅の方が知りたいことが多い。
+    // (MapLibreは先に登録したレイヤーのイベントが先に来るわけではないので、
+    //  重なりは `queryRenderedFeatures` の順ではなくレイヤーごとに拾う)
+    for (const layer of ['railway-station', 'railway-line']) {
+      map.on('mousemove', layer, (e) => {
+        const feature = e.features?.[0];
+        if (!feature) return;
+        hoveringBuilding = true;
+        updateCursor();
+
+        const props = feature.properties;
+        const station = props.stationName as string | null;
+        hoverPopup
+          .setLngLat(e.lngLat)
+          .setDOMContent(
+            hoverContent([
+              // 駅なら駅名を見出しにする。路線には駅名が入っていない。
+              ['', station ? `${station}駅` : (props.lineName as string)],
+              ['路線', station ? (props.lineName as string) : null],
+              ['事業者', props.operator as string],
+              ['種別', props.institutionType as string],
+              ['区分', props.railwayClass as string],
+              ['時点', railwayVintage ?? null],
+            ]),
+          )
+          .addTo(map);
+      });
+
+      map.on('mouseleave', layer, () => {
+        hoveringBuilding = false;
+        updateCursor();
+        hoverPopup.remove();
+      });
+    }
   }
 
   // 逆ジオコーディング: クリックした地点がどの行政区域かを引き、

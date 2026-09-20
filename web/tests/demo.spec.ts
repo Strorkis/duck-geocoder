@@ -1245,3 +1245,64 @@ test('鉄道は範囲に重なる分しか読まない', async ({ page }) => {
     2.6 * 1024 * 1024,
   );
 });
+
+// 出所を見ただけでは版が分からず、古いものを新しいと思って使う事故になる。
+// 分かっているものには版を添える (分からないものには**書かない**)。
+test('出典にいつ時点のデータかが出る', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+
+  await openSection(page, 'credits-section');
+  // 鉄道はメタデータXMLから版を読んでいる (N02-25)。
+  await expect(page.locator('#credits .vintage').first()).toBeVisible();
+  await expect(page.locator('#credits')).toContainText('N02-');
+});
+
+// 駅名や路線名が読めないと、線が引いてあるだけで何の路線か分からない。
+test('鉄道はホバーで路線名と事業者が出る', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+
+  await showRailway(page, 15);
+  // 線の上を通るまで動かす。中心に必ず線があるとは限らないので、
+  // 描かれた地物の座標をそのまま使う。
+  const point = await page.evaluate(async () => {
+    const map = (window as unknown as TestWindow).__map!;
+    const source = map.getSource('railway') as GeoJSONSource;
+    const data = await source.getData();
+    if (data.type !== 'FeatureCollection') return null;
+    const line = data.features.find((f) => f.geometry.type === 'LineString');
+    if (!line || line.geometry.type !== 'LineString') return null;
+    const [lng, lat] = line.geometry.coordinates[0] as [number, number];
+    map.jumpTo({ center: [lng, lat], zoom: 16 });
+    const p = map.project([lng, lat]);
+    return { x: Math.round(p.x), y: Math.round(p.y) };
+  });
+  expect(point, '路線が1本も描かれていない').not.toBeNull();
+
+  await page.locator('#map canvas').hover({ position: point! });
+  const popup = page.locator('.maplibregl-popup-content');
+  await expect(popup).toBeVisible();
+  // 項目名は値と分かれた列になっている (`setText` の改行は潰れるので要素で組んでいる)。
+  await expect(popup).toContainText('事業者');
+  await expect(popup.locator('.hover-info .label').first()).toBeVisible();
+});
+
+/**
+ * 収録範囲の枠は、建物が一部の都市にしか無いことを示すためのもの。
+ * **全国に広がれば日本を囲む箱になって意味を失う**ので、切れるようにしてある。
+ */
+test('収録範囲の枠は切り替えられる', async ({ page }) => {
+  test.skip(!(await hasBuildings(page)), '建物データが無い');
+
+  await openSection(page, 'buildings-section');
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7454, 35.6586], zoom: 10 });
+  });
+  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBe(1);
+
+  await page.locator('#coverage-toggle').uncheck();
+  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBe(0);
+
+  await page.locator('#coverage-toggle').check();
+  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBe(1);
+});

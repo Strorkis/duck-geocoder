@@ -86,6 +86,43 @@ pub struct Row {
     pub geometry: LineString<f64>,
 }
 
+/// メタデータXML (JMP20スキーマ) から、**いつ時点のデータか**を読む。
+///
+/// `<title>` に「国土数値情報（鉄道）　N02-25」のようにデータセットの識別子が入り、
+/// 先頭の `<date>` がその版の日付になっている。**ファイル名からは読まない** —
+/// 展開先の名前は変えられるので、中身から取る。
+///
+/// 返すのは「N02-25 (2026-03-06)」のような文字列。
+/// **こちらで年度に直したりしない。**配布元が名乗っている形をそのまま持ち回る。
+pub fn extract_vintage(xml_text: &str) -> Result<String> {
+    let doc = roxmltree::Document::parse(xml_text).context("メタデータXMLを読めません")?;
+
+    let title = doc
+        .descendants()
+        .find(|n| n.has_tag_name("title"))
+        .and_then(|n| n.text())
+        .context("メタデータXMLに title がありません")?
+        .trim();
+
+    // 全角スペースで区切られた最後の要素が識別子 (N02-25)。
+    let identifier = title
+        .split(['\u{3000}', ' '])
+        .rfind(|part| !part.is_empty())
+        .context("title からデータセット識別子を取り出せません")?;
+
+    let date = doc
+        .descendants()
+        .find(|n| n.has_tag_name("date") && n.children().any(|c| c.has_tag_name("date")))
+        .and_then(|n| n.children().find(|c| c.has_tag_name("date")))
+        .and_then(|n| n.text())
+        .map(str::trim);
+
+    Ok(match date {
+        Some(date) => format!("{identifier} ({date})"),
+        None => identifier.to_string(),
+    })
+}
+
 /// LineStringの外接矩形 `[xmin, ymin, xmax, ymax]`。
 fn line_string_bbox(ls: &LineString<f64>) -> [f64; 4] {
     ls.coords().fold(
@@ -196,17 +233,17 @@ fn shared_columns(rows: &[Row]) -> Vec<(Field, ArrayRef)> {
 }
 
 /// 路線をGeoParquetとして書き出す。
-pub fn write_sections(rows: Vec<Row>, output: &Path) -> Result<()> {
+pub fn write_sections(rows: Vec<Row>, output: &Path, vintage: Option<&str>) -> Result<()> {
     let columns = shared_columns(&rows);
     let geometries: Vec<LineString<f64>> = rows.into_iter().map(|r| r.geometry).collect();
-    write(output, columns, geometries)
+    write(output, columns, geometries, vintage)
 }
 
 /// 駅をGeoParquetとして書き出す。
 ///
 /// **駅名の無い行があればエラーにする。** 路線のファイルを駅として書き出そうとした
 /// ときに、駅名が全部NULLのファイルを黙って作らないため。
-pub fn write_stations(rows: Vec<Row>, output: &Path) -> Result<()> {
+pub fn write_stations(rows: Vec<Row>, output: &Path, vintage: Option<&str>) -> Result<()> {
     if let Some(i) = rows.iter().position(|r| r.station_name.is_none()) {
         bail!("駅名 (N02_005) を持たない行があります (行 {i})。路線のGeoJSONを渡していませんか");
     }
@@ -235,13 +272,14 @@ pub fn write_stations(rows: Vec<Row>, output: &Path) -> Result<()> {
     ));
 
     let geometries: Vec<LineString<f64>> = rows.into_iter().map(|r| r.geometry).collect();
-    write(output, columns, geometries)
+    write(output, columns, geometries, vintage)
 }
 
 fn write(
     output: &Path,
     columns: Vec<(Field, ArrayRef)>,
     geometries: Vec<LineString<f64>>,
+    vintage: Option<&str>,
 ) -> Result<()> {
     let (geometry, bbox, file_bbox) = geoparquet::geometry_columns(&geometries, line_string_bbox)?;
 
@@ -253,7 +291,11 @@ fn write(
         bbox,
         &["LineString".to_string()],
         file_bbox,
-        None,
+        geoparquet::Provenance {
+            // 配布元は出所全体で1つ (国土数値情報の鉄道データ)。カタログ側が持つ。
+            via: None,
+            vintage,
+        },
     )
     .with_context(|| format!("書き出しに失敗しました: {}", output.display()))
 }
@@ -370,8 +412,35 @@ mod tests {
         let rows = parse_geojson(SECTION_SAMPLE).unwrap();
         let dir = std::env::temp_dir().join("n02_test_sections_as_stations");
         std::fs::create_dir_all(&dir).unwrap();
-        let err = write_stations(rows, &dir.join("out.parquet")).unwrap_err();
+        let err = write_stations(rows, &dir.join("out.parquet"), None).unwrap_err();
         assert!(format!("{err:#}").contains("駅名"));
+    }
+
+    const META_SAMPLE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+    <MD_Metadata xmlns="http://zgate.gsi.go.jp/ch/jmp/">
+      <identificationInfo>
+        <citation>
+          <title>国土数値情報（鉄道）　N02-25</title>
+          <date><date>2026-03-06</date><dateType>003</dateType></date>
+        </citation>
+      </identificationInfo>
+    </MD_Metadata>"#;
+
+    #[test]
+    fn reads_vintage_from_metadata() {
+        assert_eq!(
+            extract_vintage(META_SAMPLE).unwrap(),
+            "N02-25 (2026-03-06)",
+            "配布元が名乗っている形をそのまま持ち回る (年度に直さない)"
+        );
+    }
+
+    /// 版が読めないまま黙って通すと、**いつのデータか分からないものを配る**ことになる。
+    #[test]
+    fn rejects_metadata_without_title() {
+        let without_title = r#"<MD_Metadata xmlns="http://zgate.gsi.go.jp/ch/jmp/"></MD_Metadata>"#;
+        let err = extract_vintage(without_title).unwrap_err();
+        assert!(format!("{err:#}").contains("title"));
     }
 
     /// コードリストの写し間違いを見張る。配布元のページと件数が合うこと。

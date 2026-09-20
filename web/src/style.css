@@ -514,3 +514,37 @@ body,
   font-size: 0.7rem;
   vertical-align: middle;
 }
+
+/* 版 (いつ時点のデータか)。出典の見出しに添える。主役ではないので小さく。 */
+#credits .vintage {
+  color: #777;
+  font-size: 0.7rem;
+  font-weight: normal;
+}
+
+/* ホバーの中身。1項目1行で読ませる。
+   `setText` の改行はテキストノードになって潰れるので、要素を組んで渡している。 */
+.hover-info {
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+.hover-info .title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #222;
+  margin-bottom: 0.15rem;
+}
+
+/* 項目名。値と揃えて、目が縦に走れるようにする。 */
+.hover-info .label {
+  display: inline-block;
+  min-width: 3.2rem;
+  color: #777;
+}
+
+/* MapLibreの既定は本文が詰まって見えるので、少しだけ広げる。 */
+.maplibregl-popup-content {
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.3rem;
+}

@@ -231,6 +231,25 @@ pub fn geometry_columns<G: GeometryTrait<T = f64>>(
 /// (「このEntityが作られる元になったメタデータ/データ」) として出る。
 pub const VIA_KEY: &str = "duck:via";
 
+/// **いつ時点のデータか**を書くキー。
+///
+/// 出所を見ただけでは版が分からず、古いものを新しいと思って使う事故が起きる。
+/// 配布元が名乗っている版 (`N02-25` のような識別子や年度) をそのまま入れる。
+/// **こちらで解釈して年に直したりしない。**
+pub const VINTAGE_KEY: &str = "duck:vintage";
+
+/// 配布元の素性。変換したときにしか分からないので、GeoParquetのKVメタデータに残す。
+///
+/// **ファイルごとに違いうる。** PLATEAUは都市ごとにzipが分かれていて更新年度も
+/// 揃っていないので、Collection単位ではなくファイル単位で持つ。
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Provenance<'a> {
+    /// このファイルの配布元。分からないときは書かない (**推測で埋めない**)。
+    pub via: Option<&'a str>,
+    /// いつ時点のデータか。
+    pub vintage: Option<&'a str>,
+}
+
 /// 非ジオメトリ列とジオメトリ列 (`geometry_columns` で作ったもの) を合わせて
 /// GeoParquetとして書き出す。圧縮はしない。空間的な並べ替えと圧縮は配信用の
 /// 最適化 ([`crate::spatial_pack`] / `optimize_geoparquet`) の役目で、
@@ -248,7 +267,7 @@ pub fn write(
     bbox: ArrayRef,
     geometry_types: &[String],
     file_bbox: [f64; 4],
-    via: Option<&str>,
+    provenance: Provenance<'_>,
 ) -> Result<()> {
     let mut fields: Vec<Field> = other_columns.iter().map(|(f, _)| f.clone()).collect();
     let mut arrays: Vec<ArrayRef> = other_columns.into_iter().map(|(_, a)| a).collect();
@@ -280,8 +299,12 @@ pub fn write(
         ArrowWriter::try_new(file, schema, None).context("ArrowWriterの作成に失敗しました")?;
     writer.write(&batch).context("書き込みに失敗しました")?;
     writer.append_key_value_metadata(KeyValue::new("geo".to_string(), geo_json));
-    if let Some(via) = via {
+    if let Some(via) = provenance.via {
         writer.append_key_value_metadata(KeyValue::new(VIA_KEY.to_string(), via.to_string()));
+    }
+    if let Some(vintage) = provenance.vintage {
+        writer
+            .append_key_value_metadata(KeyValue::new(VINTAGE_KEY.to_string(), vintage.to_string()));
     }
     writer.close().context("ファイルを閉じられません")?;
     Ok(())
@@ -416,7 +439,10 @@ mod tests {
             bbox,
             &["Point".to_string()],
             file_bbox,
-            Some("https://example.invalid/source.zip"),
+            Provenance {
+                via: Some("https://example.invalid/source.zip"),
+                vintage: Some("TEST-01 (2026-01-01)"),
+            },
         )
         .unwrap();
 

@@ -45,6 +45,11 @@ pub struct DatasetEntry {
     ///
     /// ファイルごとに違うもの (PLATEAUの都市ごとのzip) だけが持つ。
     pub via: Option<String>,
+    /// **いつ時点のデータか。** GeoParquetの `duck:vintage` から読む。
+    ///
+    /// 出所を見ただけでは版が分からず、古いものを新しいと思って使う事故が起きる。
+    /// 配布元が名乗っている形 (`N02-25 (2026-03-06)` など) をそのまま持ち回る。
+    pub vintage: Option<String>,
     /// **この出所の配布元。** 出所全体で1つ。ファイル側に `via` が無くてもこれはある。
     pub collection_via: &'static str,
 }
@@ -534,14 +539,15 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         (None, _) => bail!("GeoParquetの `geo` メタデータがありません: {file}"),
     };
 
-    // ファイルごとの配布元。変換時に書いてあれば拾う (PLATEAUの都市ごとのzipなど)。
-    let via = file_metadata
-        .key_value_metadata()
-        .and_then(|kv| {
-            kv.iter()
-                .find(|entry| entry.key == crate::geoparquet::VIA_KEY)
-        })
-        .and_then(|entry| entry.value.clone());
+    // ファイルごとの素性。変換時に書いてあれば拾う (PLATEAUの都市ごとのzipなど)。
+    let key_value = |key: &str| {
+        file_metadata
+            .key_value_metadata()
+            .and_then(|kv| kv.iter().find(|entry| entry.key == key))
+            .and_then(|entry| entry.value.clone())
+    };
+    let via = key_value(crate::geoparquet::VIA_KEY);
+    let vintage = key_value(crate::geoparquet::VINTAGE_KEY);
 
     let columns = file_metadata
         .schema_descr()
@@ -579,6 +585,7 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         summaries,
         mesh_digits: described.mesh_digits,
         via,
+        vintage,
         collection_via: described.via,
     })
 }

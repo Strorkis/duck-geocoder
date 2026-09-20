@@ -423,7 +423,12 @@ pub fn write_geoparquet(rows: Vec<Row>, output: &Path, via: Option<&str>) -> Res
         bbox,
         &["MultiPolygon".to_string()],
         file_bbox,
-        via,
+        geoparquet::Provenance {
+            via,
+            // PLATEAUは都市ごとに更新年度が違うが、zipからは読めていない。
+            // 分かるようになったらここに入れる (**推測で埋めない**)。
+            vintage: None,
+        },
     )
     .with_context(|| format!("書き出しに失敗しました: {}", output.display()))
 }

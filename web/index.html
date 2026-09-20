@@ -65,6 +65,14 @@
             <label for="building-source">建物データ</label>
             <select id="building-source"></select>
           </div>
+          <!-- 収録範囲の枠。建物が出ないズームでどこにデータがあるかを示すためのもので、
+               収録範囲が広がれば要らなくなる。切れるようにしておく。 -->
+          <div class="field">
+            <label class="toggle">
+              <input id="coverage-toggle" type="checkbox" checked />
+              収録範囲を枠で示す
+            </label>
+          </div>
           <!-- 絞り込みは属性が揃っている出所 (PLATEAU) でだけ出す。 -->
           <div id="building-filters" hidden>
             <div class="field" id="height-field">
