@@ -49,7 +49,9 @@ type DatasetKind =
   | 'block'
   | 'buildings'
   | 'plateau_buildings'
-  | 'population_mesh';
+  | 'population_mesh'
+  | 'railway'
+  | 'railway_station';
 
 /** STAC Collection。`duck:` の付いたものはSTACに無い独自項目。 */
 interface StacCollection {
@@ -343,6 +345,38 @@ interface BuildingSource {
  * 建物と違って「引いた状態で見たい」データなので、ズームに応じて
  * メッシュを粗くして出す ([`meshDigits`])。
  */
+/**
+ * 鉄道 (国土数値情報 N02)。路線と駅で列構成が違うので別のCollectionになっている。
+ *
+ * **駅のジオメトリも線**。原典がホームの延長を線で持っているので、点ではない。
+ */
+interface RailwaySource {
+  id: string;
+  /** 路線か駅か。描き分けと、駅名を引くかどうかに使う。 */
+  kind: 'railway' | 'railway_station';
+  bbox: Bbox | null;
+  files: { file: string; bbox: Bbox | null }[];
+  ensure: () => Promise<void>;
+}
+
+/**
+ * 事業者種別ごとの色。**語彙はカタログから来る**ので、ここには色だけを持つ。
+ *
+ * 種別を選んだのは、5つしかなくて凡例に収まり、かつ
+ * 「新幹線か在来線か」「公営か民営か」という運航側が気にする区別に近いため。
+ * 鉄道区分 (普通鉄道/軌道/モノレールなど11種) は細かすぎて色では読めない。
+ */
+const RAILWAY_COLORS: Record<string, string> = {
+  JRの新幹線: '#c2185b',
+  JR在来線: '#1565c0',
+  公営鉄道: '#2e7d32',
+  民営鉄道: '#ef6c00',
+  第三セクター: '#6a1b9a',
+};
+
+/** 語彙に無い種別が来たときの色。カタログが増えても消えないようにする。 */
+const RAILWAY_FALLBACK_COLOR = '#616161';
+
 interface MeshSource {
   id: string;
   /** このデータの細かさ (メッシュコードの桁数)。11桁=125m、8桁=1km。 */
@@ -473,6 +507,10 @@ async function initDuckDb(collections: Collection[]): Promise<{
   buildingSources: BuildingSource[];
   /** 人口メッシュ。細かさの違うものが並ぶ。空なら地上リスクの表示を出さない。 */
   meshSources: MeshSource[];
+  /** 鉄道 (路線と駅)。空なら鉄道の節を出さない。 */
+  railwaySources: RailwaySource[];
+  /** 事業者種別の語彙。絞り込みの選択肢をここから作る。 */
+  railwayInstitutionTypes: string[];
   /** 空間関数を使う前に呼ぶ。 */
   ensureSpatial: () => Promise<void>;
   /** 地名 (isj_oaza) を引く前に呼ぶ。 */
@@ -659,6 +697,34 @@ async function initDuckDb(collections: Collection[]): Promise<{
     return [source];
   });
 
+  // 鉄道。路線と駅で列構成が違うのでCollectionが分かれている。
+  // どちらも無ければ鉄道の節を出さないだけで、他の機能は動く。
+  const railwaySources: RailwaySource[] = (['railway', 'railway_station'] as const).flatMap(
+    (kind) => {
+      const collection = byKind(kind)[0];
+      if (!collection) return [];
+      const source: RailwaySource = {
+        id: collection.id,
+        kind,
+        bbox: collection.bbox,
+        files: [],
+        ensure: once(async () => {
+          const items = await collection.items();
+          source.files = itemFiles(items);
+          await register(source.files.map(({ file }) => file));
+          await ensureSpatial();
+        }),
+      };
+      return [source];
+    },
+  );
+
+  // 絞り込みの選択肢はカタログの語彙から作る。**事業者種別の列名をここに書かない**のは
+  // 建物の用途と同じ理由で、語彙を出すかどうかをパイプライン側の一箇所で決めるため。
+  const railwayInstitutionTypes = railwaySources[0]
+    ? ((byKind(railwaySources[0].kind)[0]?.summaries['institution_type'] ?? []) as string[])
+    : [];
+
   // 行政区域は1つの自治体が複数のポリゴン行に分かれることがある (飛び地や島など) ので、
   // 検索には名称を重複排除したものを使う。
   //
@@ -680,7 +746,15 @@ async function initDuckDb(collections: Collection[]): Promise<{
            FROM admin;`,
   );
 
-  return { conn, buildingSources, meshSources, ensureSpatial, ensureOaza };
+  return {
+    conn,
+    buildingSources,
+    meshSources,
+    railwaySources,
+    railwayInstitutionTypes,
+    ensureSpatial,
+    ensureOaza,
+  };
 }
 
 /**
@@ -774,6 +848,84 @@ async function fetchMeshInView(
       code: r.code,
       population: Number(r.population ?? 0),
       density: r.density,
+    };
+  });
+}
+
+/** 鉄道1件分の表示用データ。路線と駅で同じ形にしてある。 */
+interface RailwayFeature {
+  geojson: GeoJSON.Geometry;
+  /** N02_003 (路線名)。 */
+  lineName: string;
+  /** N02_004 (運営会社)。 */
+  operator: string;
+  /** 事業者種別を解決した名前。色はこれで決める。 */
+  institutionType: string;
+  /** 鉄道区分を解決した名前。 */
+  railwayClass: string;
+  /** 駅名。路線には無い。 */
+  stationName: string | null;
+}
+
+/**
+ * 表示範囲に入る鉄道を取り出す。建物と同じく bbox 列で先に絞り、
+ * 画面中心に近い順に上限まで取る (上限に当たっても帯状に欠けないため)。
+ *
+ * 駅のファイルにしか `station_name` が無いので、SELECT する列を出所で変える。
+ * 路線側で `station_name` を書くとスキーマに無い列で落ちる。
+ */
+async function fetchRailwayInView(
+  conn: duckdb.AsyncDuckDBConnection,
+  source: RailwaySource,
+  bounds: ViewBounds,
+  institutionTypes: string[] | null,
+  limit: number,
+): Promise<RailwayFeature[]> {
+  const files = filesInView(source, bounds);
+  if (files.length === 0) return [];
+  const list = files.map((file) => `'${file}'`).join(', ');
+
+  const conditions = [
+    `bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}`,
+    `bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}`,
+  ];
+  if (institutionTypes) {
+    // 建物の用途と同じく、1つも選ばれていなければ1件も出さない。
+    const types = institutionTypes.map((t) => `'${t.replace(/'/g, "''")}'`).join(', ');
+    conditions.push(types.length > 0 ? `institution_type IN (${types})` : 'false');
+  }
+
+  const stationSelect = source.kind === 'railway_station' ? 'station_name' : 'NULL';
+  const lonScale = Math.cos((bounds.centerLat * Math.PI) / 180);
+
+  const result = await conn.query(`
+    SELECT
+      ST_AsGeoJSON(geometry) AS geojson,
+      line_name, operator, institution_type, railway_class,
+      ${stationSelect} AS station_name
+    FROM read_parquet([${list}])
+    WHERE ${conditions.join('\n      AND ')}
+    ORDER BY
+      pow(((bbox.xmin + bbox.xmax) / 2 - ${bounds.centerLon}) * ${lonScale}, 2)
+      + pow((bbox.ymin + bbox.ymax) / 2 - ${bounds.centerLat}, 2)
+    LIMIT ${limit};
+  `);
+  return result.toArray().map((row) => {
+    const r = row.toJSON() as unknown as {
+      geojson: string;
+      line_name: string;
+      operator: string;
+      institution_type: string;
+      railway_class: string;
+      station_name: string | null;
+    };
+    return {
+      geojson: JSON.parse(r.geojson) as GeoJSON.Geometry,
+      lineName: r.line_name,
+      operator: r.operator,
+      institutionType: r.institution_type,
+      railwayClass: r.railway_class,
+      stationName: r.station_name,
     };
   });
 }
@@ -1242,6 +1394,53 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
         },
       });
 
+      // 鉄道は人口メッシュの上、建物の下。メッシュの色が透けて読める濃さにする。
+      map.addSource('railway', {
+        type: 'geojson',
+        data: EMPTY_FEATURE_COLLECTION,
+      });
+      map.addLayer({
+        id: 'railway-line',
+        type: 'line',
+        source: 'railway',
+        // 色は引くときに決めてしまう (`RAILWAY_COLORS`)。人口メッシュと同じく、
+        // スタイル式で分岐を組むより凡例と同じ表から作る方がずれない。
+        paint: {
+          'line-color': ['get', 'color'],
+          // 引いたときに線が潰れないよう、ズームで太さを変える。
+          'line-width': ['interpolate', ['linear'], ['zoom'], 8, 1, 12, 2, 16, 3.5],
+          'line-opacity': 0.9,
+        },
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+      });
+
+      // 駅も線 (原典がホームの延長を線で持っている) なので、太さと白い縁取りで
+      // 路線と区別する。点に潰すと原典より情報が減る。
+      map.addSource('railway-stations', {
+        type: 'geojson',
+        data: EMPTY_FEATURE_COLLECTION,
+      });
+      map.addLayer({
+        id: 'railway-station-casing',
+        type: 'line',
+        source: 'railway-stations',
+        paint: {
+          'line-color': '#ffffff',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 10, 5, 16, 11],
+        },
+        layout: { 'line-cap': 'round' },
+      });
+      map.addLayer({
+        id: 'railway-station',
+        type: 'line',
+        source: 'railway-stations',
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': ['interpolate', ['linear'], ['zoom'], 10, 3, 16, 7],
+        },
+        layout: { 'line-cap': 'round' },
+      });
+
       // 建物はハイライトより先に追加して、下に敷く。
       // 出典表示はカタログ由来のものが上の AttributionControl に入っている。
       map.addSource('buildings', {
@@ -1374,6 +1573,15 @@ async function main() {
   const usageAllButton = document.querySelector<HTMLButtonElement>('#usage-all')!;
   const usageNoneButton = document.querySelector<HTMLButtonElement>('#usage-none')!;
   const buildingCountEl = document.querySelector<HTMLParagraphElement>('#building-count')!;
+  const railwaySectionEl = document.querySelector<HTMLDivElement>('#railway-section')!;
+  const railwayToggle = document.querySelector<HTMLInputElement>('#railway-toggle')!;
+  const railwayControlsEl = document.querySelector<HTMLDivElement>('#railway-controls')!;
+  const railwayTypesEl = document.querySelector<HTMLDivElement>('#railway-types')!;
+  const railwayAllButton = document.querySelector<HTMLButtonElement>('#railway-all')!;
+  const railwayNoneButton = document.querySelector<HTMLButtonElement>('#railway-none')!;
+  const railwaySummaryEl = document.querySelector<HTMLParagraphElement>('#railway-summary')!;
+  let railwayTypeInputs: HTMLInputElement[] = [];
+
   const meshSectionEl = document.querySelector<HTMLDivElement>('#mesh-section')!;
   const meshToggle = document.querySelector<HTMLInputElement>('#mesh-toggle')!;
   const meshControlsEl = document.querySelector<HTMLDivElement>('#mesh-controls')!;
@@ -1389,6 +1597,8 @@ async function main() {
   let map: MapLibreMap;
   let buildingSources: BuildingSource[] = [];
   let meshSources: MeshSource[] = [];
+  let railwaySources: RailwaySource[] = [];
+  let railwayInstitutionTypes: string[] = [];
   let ensureSpatial: () => Promise<void>;
   let ensureOaza: () => Promise<void>;
   try {
@@ -1400,6 +1610,8 @@ async function main() {
     conn = db.conn;
     buildingSources = db.buildingSources;
     meshSources = db.meshSources;
+    railwaySources = db.railwaySources;
+    railwayInstitutionTypes = db.railwayInstitutionTypes;
     ({ ensureSpatial, ensureOaza } = db);
     map = createdMap;
     renderCredits(creditsEl, collections);
@@ -1847,6 +2059,153 @@ async function main() {
       showFailure('人口密度の読み込みに失敗しました');
     });
   };
+
+  /**
+   * 鉄道を引き直す。
+   *
+   * **引いた表示では出さない。** 路線のジオメトリ列は4.6MBあり、全国を一度に
+   * 読むと起動時の転送量 (1.5MB) を大きく超える。建物 (ズーム15以上) ほど
+   * 寄らなくても意味のある縮尺なので、そこまでは絞らない。
+   */
+  const RAILWAY_MIN_ZOOM = 10;
+  /** 1回に描く上限。路線と駅の合計ではなく、それぞれに掛かる。 */
+  const RAILWAY_LIMIT = 4000;
+  let railwayToken = 0;
+  let railwayShown = false;
+
+  const refreshRailway = async () => {
+    const lineSource = map.getSource('railway') as GeoJSONSource | undefined;
+    const stationSource = map.getSource('railway-stations') as GeoJSONSource | undefined;
+    if (!lineSource || !stationSource) return;
+
+    // メッシュと同じく、既に空なら何もしない。`moveend` ごとに空データを
+    // ワーカーへ往復させると、建物の描画と同じワーカーを取り合うことになる。
+    const clear = async (message: string) => {
+      if (railwayShown) {
+        await lineSource.setData(EMPTY_FEATURE_COLLECTION);
+        await stationSource.setData(EMPTY_FEATURE_COLLECTION);
+        railwayShown = false;
+      }
+      railwaySummaryEl.textContent = message;
+    };
+
+    if (!railwayToggle.checked) {
+      await clear('');
+      return;
+    }
+    if (map.getZoom() < RAILWAY_MIN_ZOOM) {
+      await clear('拡大すると鉄道が出ます');
+      return;
+    }
+
+    const selectedTypes = [...railwayTypeInputs]
+      .filter((input) => input.checked)
+      .map((input) => input.value);
+
+    const token = ++railwayToken;
+    const results = await busy('鉄道を読み込み中…', async () => {
+      const b = map.getBounds();
+      const c = map.getCenter();
+      const bounds: ViewBounds = {
+        west: b.getWest(),
+        south: b.getSouth(),
+        east: b.getEast(),
+        north: b.getNorth(),
+        centerLon: c.lng,
+        centerLat: c.lat,
+      };
+      return Promise.all(
+        railwaySources.map(async (source) => {
+          await source.ensure();
+          return {
+            kind: source.kind,
+            features: await fetchRailwayInView(
+              conn,
+              source,
+              bounds,
+              railwayInstitutionTypes.length > 0 ? selectedTypes : null,
+              RAILWAY_LIMIT,
+            ),
+          };
+        }),
+      );
+    });
+    if (token !== railwayToken) return;
+
+    const toGeoJson = (features: RailwayFeature[]): GeoJSON.FeatureCollection => ({
+      type: 'FeatureCollection',
+      features: features.map((feature) => ({
+        type: 'Feature',
+        properties: {
+          // 色は引くときに決める (凡例と同じ表から作る)。
+          color: RAILWAY_COLORS[feature.institutionType] ?? RAILWAY_FALLBACK_COLOR,
+          lineName: feature.lineName,
+          operator: feature.operator,
+          institutionType: feature.institutionType,
+          railwayClass: feature.railwayClass,
+          stationName: feature.stationName,
+        },
+        geometry: feature.geojson,
+      })),
+    });
+
+    const lines = results.find((r) => r.kind === 'railway')?.features ?? [];
+    const stations = results.find((r) => r.kind === 'railway_station')?.features ?? [];
+
+    railwayShown = true;
+    await lineSource.setData(toGeoJson(lines));
+    await stationSource.setData(toGeoJson(stations));
+
+    if (lines.length === 0 && stations.length === 0) {
+      railwaySummaryEl.textContent = 'この範囲に鉄道がありません';
+      return;
+    }
+    const capped = lines.length >= RAILWAY_LIMIT || stations.length >= RAILWAY_LIMIT;
+    railwaySummaryEl.textContent =
+      `路線 ${lines.length.toLocaleString()} / 駅 ${stations.length.toLocaleString()}` +
+      (capped ? ' (上限に達しました。拡大すると全部出ます)' : '');
+  };
+
+  const requestRailwayRefresh = () => {
+    refreshRailway().catch((e: unknown) => {
+      console.error('[railway] failed', e);
+      showFailure('鉄道の読み込みに失敗しました');
+    });
+  };
+
+  if (railwaySources.length > 0) {
+    railwaySectionEl.hidden = false;
+
+    // 選択肢はカタログの語彙から作る。色見本を添えて、地図の色と対応付ける。
+    for (const type of railwayInstitutionTypes) {
+      const label = document.createElement('label');
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = type;
+      input.checked = true;
+      const swatch = document.createElement('span');
+      swatch.className = 'swatch';
+      swatch.style.background = RAILWAY_COLORS[type] ?? RAILWAY_FALLBACK_COLOR;
+      label.append(input, swatch, document.createTextNode(type));
+      railwayTypesEl.append(label);
+    }
+    railwayTypeInputs = [...railwayTypesEl.querySelectorAll<HTMLInputElement>('input')];
+    for (const input of railwayTypeInputs) {
+      input.addEventListener('change', requestRailwayRefresh);
+    }
+    const setAll = (checked: boolean) => {
+      for (const input of railwayTypeInputs) input.checked = checked;
+      requestRailwayRefresh();
+    };
+    railwayAllButton.addEventListener('click', () => setAll(true));
+    railwayNoneButton.addEventListener('click', () => setAll(false));
+
+    railwayToggle.addEventListener('change', () => {
+      railwayControlsEl.hidden = !railwayToggle.checked;
+      requestRailwayRefresh();
+    });
+    map.on('moveend', requestRailwayRefresh);
+  }
 
   if (meshSources.length > 0) {
     meshSectionEl.hidden = false;

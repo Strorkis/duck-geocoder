@@ -318,6 +318,35 @@ body,
   width: auto;
 }
 
+/* 事業者種別の絞り込み。5つしかないので1列に並べ、色見本で地図と対応付ける。 */
+#railway-types {
+  border: 1px solid #eee;
+  border-radius: 0.3rem;
+  padding: 0.3rem;
+}
+
+#railway-types label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.1rem 0;
+  font-weight: normal;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+/* 色見本。地図の線と同じ色をJavaScriptが入れる。線のデータなので細長くする。 */
+#railway-types .swatch {
+  display: inline-block;
+  width: 1rem;
+  height: 0.25rem;
+  border-radius: 0.125rem;
+}
+
+#railway-controls[hidden] {
+  display: none;
+}
+
 /* 凡例。色の段と iGRC の対応を示す。 */
 #mesh-legend {
   width: 100%;

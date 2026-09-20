@@ -112,6 +112,30 @@
             <p id="mesh-summary" class="note"></p>
           </div>
         </details>
+        <details id="railway-section" hidden>
+          <summary>鉄道</summary>
+          <div class="field">
+            <label class="toggle">
+              <input id="railway-toggle" type="checkbox" />
+              地図に重ねる
+            </label>
+          </div>
+          <div id="railway-controls" hidden>
+            <!-- 事業者種別で絞る。選択肢はカタログの語彙から作るので、
+                 出所が増えてもここに書き足さなくてよい。 -->
+            <div class="field">
+              <label>
+                事業者種別
+                <span class="bulk">
+                  <button id="railway-all" type="button">全部</button>
+                  <button id="railway-none" type="button">解除</button>
+                </span>
+              </label>
+              <div id="railway-types"></div>
+            </div>
+            <p id="railway-summary" class="note"></p>
+          </div>
+        </details>
         <details id="help">
           <summary>使い方</summary>
           <ul>

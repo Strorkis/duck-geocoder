@@ -1126,3 +1126,122 @@ test('クリアするとハイライトが消える', async ({ page }) => {
   await expect.poll(() => highlightFeatureCount(page)).toBe(0);
   await expect(page.locator('#search-input')).toHaveValue('');
 });
+
+const RAILWAY_DATASET = 'n02_sections_all';
+
+async function hasRailway(page: Page): Promise<boolean> {
+  return (await datasetUrl(page, RAILWAY_DATASET)) !== null;
+}
+
+/** 鉄道を表示し、描かれるまで待つ。 */
+async function showRailway(page: Page, zoom = 12) {
+  await openSection(page, 'railway-section');
+  await page.evaluate((z) => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7671, 35.6812], zoom: z }); // 東京駅
+  }, zoom);
+  await page.locator('#railway-toggle').check();
+  await expect.poll(() => sourceFeatureCount(page, 'railway')).toBeGreaterThan(0);
+}
+
+// 既定では出さない (建物を見に来た人の邪魔になる)。出せることが分かる形にする。
+test('鉄道は切り替えで出せる', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+
+  await expect(page.locator('#railway-section')).toBeVisible();
+  // チェックするまで読みにも行かない。
+  expect(await sourceFeatureCount(page, 'railway')).toBe(0);
+
+  await showRailway(page);
+  await expect(page.locator('#railway-summary')).toContainText('路線');
+
+  await page.locator('#railway-toggle').uncheck();
+  await expect.poll(() => sourceFeatureCount(page, 'railway')).toBe(0);
+});
+
+/**
+ * 駅は点ではなく線。原典 (国土数値情報) がホームの延長を線で持っているので、
+ * 使いやすさのために点へ潰したりしていないことを見張る。
+ */
+test('駅は線として配られている', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+
+  await showRailway(page);
+  await expect.poll(() => sourceFeatureCount(page, 'railway-stations')).toBeGreaterThan(0);
+
+  const types = await page.evaluate(async () => {
+    const map = (window as unknown as TestWindow).__map!;
+    const source = map.getSource('railway-stations') as GeoJSONSource;
+    const data = await source.getData();
+    if (data.type !== 'FeatureCollection') return [];
+    return [...new Set(data.features.map((feature) => feature.geometry.type))];
+  });
+  expect(types).toEqual(['LineString']);
+});
+
+/**
+ * 事業者種別で絞れる。選択肢はカタログの語彙から作っているので、
+ * ここが空になると「絞り込みが黙って消えた」ことになる。
+ */
+test('鉄道は事業者種別で絞れる', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+
+  await showRailway(page);
+  const boxes = page.locator('#railway-types input[type="checkbox"]');
+  expect(await boxes.count()).toBeGreaterThan(0);
+
+  const before = await sourceFeatureCount(page, 'railway');
+  await page.locator('#railway-none').click();
+  await expect.poll(() => sourceFeatureCount(page, 'railway')).toBe(0);
+
+  await page.locator('#railway-all').click();
+  await expect.poll(() => sourceFeatureCount(page, 'railway')).toBe(before);
+});
+
+// 引いた表示では出さない。路線のジオメトリ列は4.6MBあり、全国を一度に読むと
+// 起動時の転送量 (1.5MB) を大きく超える。
+test('引いた表示では鉄道を読みに行かない', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+
+  await showRailway(page);
+
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [138.0, 37.0], zoom: 6 });
+  });
+  await expect(page.locator('#railway-summary')).toContainText('拡大すると鉄道が出ます');
+  expect(await sourceFeatureCount(page, 'railway')).toBe(0);
+});
+
+/**
+ * 1都市を見るときに、路線ファイル全体を読まないこと。
+ *
+ * 路線の geometry 列は4.6MBある。row group を空間的に詰めてあるので、
+ * 表示範囲に重なる row group だけが読まれるはず。ここが効かなくなると
+ * 「鉄道を出した瞬間に数MB」という状態に黙って落ちる。
+ *
+ * **row group を細かくしても減らない** (実測: 4個で1,715KB、15個で1,548KB)。
+ * 東京の路線がそもそも密で、読む量を決めているのは分割の粗さではなく
+ * ジオメトリの頂点数の方。減らすなら簡略化だが、それは配るデータを
+ * 変えることになるので別の判断になる。
+ */
+test('鉄道は範囲に重なる分しか読まない', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+
+  const dataset = await datasetUrl(page, RAILWAY_DATASET);
+  let fetchedBytes = 0;
+  page.on('response', (response) => {
+    if (response.url() !== dataset) return;
+    if (response.request().method() === 'HEAD') return;
+    fetchedBytes += Number(response.headers()['content-length'] ?? 0);
+  });
+
+  await showRailway(page);
+
+  expect(fetchedBytes, '転送量を計測できていない').toBeGreaterThan(0);
+  console.log(`鉄道 (路線) の転送量: ${(fetchedBytes / 1024).toFixed(0)} KB`);
+  // ファイルは5.2MB。半分を超えるようなら row group の詰め方が効いていない。
+  expect(fetchedBytes, `路線を読みすぎ: ${(fetchedBytes / 1024).toFixed(0)} KB`).toBeLessThan(
+    2.6 * 1024 * 1024,
+  );
+});
