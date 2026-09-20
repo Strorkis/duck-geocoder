@@ -74,6 +74,13 @@ pub enum DatasetKind {
     /// 同じ種別にすると `read_parquet([...])` で1つのビューに束ねられてしまい、
     /// スキーマが合わずに壊れる。
     PlateauBuildings,
+    /// 鉄道路線 (線)。第三者リスクと「落としてはいけない場所」に使う。
+    Railway,
+    /// 鉄道駅 (線)。**点ではない** — 原典がホームの延長を線で持っている。
+    ///
+    /// [`DatasetKind::Railway`] と分けているのは駅名などの列が増えるため
+    /// ([`DatasetKind::PlateauBuildings`] と同じ理由)。
+    RailwayStation,
 }
 
 /// 列1つ。項目名はSTACのTable拡張に合わせてある。
@@ -116,6 +123,17 @@ const MLIT_ISJ: Attribution = Attribution {
 const MLIT_KSJ: Attribution = Attribution {
     text: "「国土数値情報（行政区域データ）」（国土交通省）をもとに作成",
     url: "https://nlftp.mlit.go.jp/ksj/",
+    license: "other",
+    provider: "国土交通省",
+};
+
+/// 国土数値情報の鉄道データ (N02)。**2020年度以降はオープンデータ扱い**で、
+/// 行政区域 (N03) と違って複製に国土地理院長の承認を求める記載が無い。
+/// 出所ごとに条件が違うので、行政区域とは別の出典にしてある。
+/// <https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N02-2022.html>
+const MLIT_KSJ_RAILWAY: Attribution = Attribution {
+    text: "「国土数値情報（鉄道データ）」（国土交通省）をもとに作成",
+    url: "https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N02-2022.html",
     license: "other",
     provider: "国土交通省",
 };
@@ -213,6 +231,32 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             summary_columns: &[],
             mesh_digits: None,
             via: "https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N03-2026.html",
+        },
+    ),
+    (
+        "n02_stations",
+        Description {
+            kind: DatasetKind::RailwayStation,
+            collection: "ksj-railway-stations",
+            title: "鉄道駅",
+            description: "国土数値情報の鉄道データのうち駅。原典がホームの延長を線で持っているので、点に潰さず線のまま配っている。",
+            attribution: MLIT_KSJ_RAILWAY,
+            summary_columns: &["railway_class", "institution_type"],
+            mesh_digits: None,
+            via: "https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N02-2022.html",
+        },
+    ),
+    (
+        "n02_sections",
+        Description {
+            kind: DatasetKind::Railway,
+            collection: "ksj-railway",
+            title: "鉄道路線",
+            description: "国土数値情報の鉄道データのうち路線 (線)。鉄道区分と事業者種別はコードを名前に解決したうえで、原典のコードも併せて持つ。",
+            attribution: MLIT_KSJ_RAILWAY,
+            summary_columns: &["railway_class", "institution_type"],
+            mesh_digits: None,
+            via: "https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N02-2022.html",
         },
     ),
     (
@@ -683,19 +727,25 @@ mod tests {
         }
     }
 
-    // 建物は用途で絞り込める唯一のデータセットで、その選択肢はカタログの語彙から作る。
-    // 建物の出所を足したときにここを書き忘れると、UIから用途の絞り込みが黙って消える。
+    // 絞り込める種別の選択肢は、カタログの語彙から作る。出所を足したときに
+    // ここを書き忘れると、UIから絞り込みが黙って消える。
+    //
+    // もとは「建物だけが絞り込める」前提だったが、鉄道も区分と事業者種別で
+    // 絞れるようにしたので、種別の一覧として持つ形に変えた。
     #[test]
-    fn building_datasets_declare_a_vocabulary() {
+    fn filterable_datasets_declare_a_vocabulary() {
         for (prefix, described) in DESCRIPTIONS {
-            let is_building = matches!(
+            let is_filterable = matches!(
                 described.kind,
-                DatasetKind::Buildings | DatasetKind::PlateauBuildings
+                DatasetKind::Buildings
+                    | DatasetKind::PlateauBuildings
+                    | DatasetKind::Railway
+                    | DatasetKind::RailwayStation
             );
             assert_eq!(
-                is_building,
+                is_filterable,
                 !described.summary_columns.is_empty(),
-                "{prefix}: 建物には語彙にする列が要る / 建物以外には要らない",
+                "{prefix}: 絞り込める種別には語彙にする列が要る / それ以外には要らない",
             );
         }
     }

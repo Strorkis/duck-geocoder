@@ -42,23 +42,6 @@ fn multi_polygon_bbox(mp: &MultiPolygon<f64>) -> [f64; 4] {
         )
 }
 
-/// GeoJSON の `crs` フィールド (例: "urn:ogc:def:crs:EPSG::6668") からEPSGコードを取り出す。
-fn extract_epsg(foreign_members: Option<&geojson::JsonObject>) -> Result<u32> {
-    let name = foreign_members
-        .context("geojson has no crs (foreign_members is empty)")?
-        .get("crs")
-        .and_then(|c| c.get("properties"))
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_str())
-        .context("crs.properties.name not found in geojson")?;
-
-    name.rsplit(':')
-        .next()
-        .context("could not parse EPSG code from crs name")?
-        .parse::<u32>()
-        .with_context(|| format!("crs name is not a valid EPSG code: {name:?}"))
-}
-
 /// MultiPolygon の全頂点を変換する。
 fn transform_multi_polygon(mp: MultiPolygon<f64>, proj: &Proj) -> Result<MultiPolygon<f64>> {
     let polygons =
@@ -91,7 +74,7 @@ pub fn parse_geojson(geojson_str: &str) -> Result<Vec<Row>> {
         _ => bail!("expected a FeatureCollection"),
     };
 
-    let source_epsg = extract_epsg(collection.foreign_members.as_ref())?;
+    let source_epsg = crate::extract_epsg_from_geojson(collection.foreign_members.as_ref())?;
 
     let mut rows_with_source_geometry: Vec<(Row, MultiPolygon<f64>)> = collection
         .features

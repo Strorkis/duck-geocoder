@@ -10,6 +10,7 @@ pub mod isj_block;
 pub mod isj_oaza;
 pub mod mesh;
 pub mod mesh_pop;
+pub mod n02;
 pub mod n03;
 pub mod overture;
 pub mod plateau;
@@ -48,6 +49,26 @@ pub fn extract_epsg_from_isj_metadata_xml(xml_text: &str) -> Result<u32> {
         "JGD2011 / (B, L)" => Ok(6668),
         other => bail!("unrecognized reference system identifier in metadata XML: {other:?}"),
     }
+}
+
+/// GeoJSON の `crs` フィールド (例: "urn:ogc:def:crs:EPSG::6668") からEPSGコードを取り出す。
+///
+/// 国土数値情報のGeoJSONはどれも同じ形でこれを持っている。**決め打ちしないのは、
+/// 将来JGD2024などに変わったときに黙って誤変換しないため。**
+pub fn extract_epsg_from_geojson(foreign_members: Option<&geojson::JsonObject>) -> Result<u32> {
+    let name = foreign_members
+        .context("geojson has no crs (foreign_members is empty)")?
+        .get("crs")
+        .and_then(|c| c.get("properties"))
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .context("crs.properties.name not found in geojson")?;
+
+    name.rsplit(':')
+        .next()
+        .context("could not parse EPSG code from crs name")?
+        .parse::<u32>()
+        .with_context(|| format!("crs name is not a valid EPSG code: {name:?}"))
 }
 
 /// zipアーカイブの中から `matches` に一致する唯一のエントリを探し、その生バイト列を返す。
