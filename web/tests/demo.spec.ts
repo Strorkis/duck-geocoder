@@ -507,15 +507,21 @@ test('出典に配布元へのリンクが出る', async ({ page }) => {
 // 初見で何から触ればいいか分かるよう、**できること自体は隠さない**。
 // 中身をたたむのは画面を静かにするためで、名前は開かなくても読める。
 test('できることは開かなくても分かる', async ({ page }) => {
-  const panel = page.locator('#display-panel');
+  const panel = page.locator('#data-panel');
 
   // データは一覧にそのまま並ぶ。**開く操作すら要らない。**
   for (const layer of ['建物', '人口密度']) {
     await expect(panel.locator('.layer-row', { hasText: layer }).first()).toBeVisible();
   }
-  // データ以外は節のまま。見出しは畳まない。
-  for (const heading of ['地図', '使い方', '出典']) {
-    await expect(panel.locator('summary', { hasText: heading }).first()).toBeVisible();
+  // データ以外は節のまま。**置き場所が違う** — 背景地図は検索欄の下、
+  // 使い方と出典は右下 (MapLibreの ⓘ と同じ性格なので同じ側に集めた)。
+  await expect(
+    page.locator('#search-panel summary', { hasText: '地図' }).first(),
+  ).toBeVisible();
+  for (const heading of ['使い方', '出典']) {
+    await expect(
+      page.locator('#info-panel summary', { hasText: heading }).first(),
+    ).toBeVisible();
   }
   // 節の中身は既定でたたんである。
   for (const id of ['map-section', 'help', 'credits-section']) {
@@ -550,7 +556,7 @@ test('出典が何行になってもパネルは覆われない', async ({ page 
     const rect = (selector: string) =>
       document.querySelector(selector)?.getBoundingClientRect() ?? null;
     const attribution = rect('.maplibregl-ctrl-attrib');
-    const panels = ['#display-panel']
+    const panels = ['#data-panel', '#info-panel']
       .map((selector) => ({ selector, box: rect(selector) }))
       .filter((panel) => panel.box !== null);
     if (!attribution) throw new Error('出典表示が見つからない');
@@ -612,10 +618,11 @@ test('建物を読み込んでいる間は合図が出る', async ({ page }) => 
  * 手元はデータの取得が速すぎるので、取得を止めて読み込み中のまま観察する。
  * 単に遅らせて最後に見るだけでは、そのころには件数に変わっていて何も検出できない。
  */
-test('建物を読み込んでいる間は「拡大すると建物が出ます」と言わない', async ({ page }) => {
+test('建物を読み込んでいる間は「寄ると出ます」と言わない', async ({ page }) => {
   test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
 
-  const zoomedOutMessage = '拡大すると建物が出ます';
+  // **どこまで寄れば出るかを数字で言う。**文言は BUILDINGS_MIN_ZOOM から作られる。
+  const zoomedOutMessage = /ズーム\d+まで寄ると出ます/;
   await expect(page.locator('#building-count')).toHaveText(zoomedOutMessage);
 
   // 合図を確かめるまでデータを渡さない。
@@ -1251,7 +1258,7 @@ test('引いた表示では鉄道を読みに行かない', async ({ page }) => 
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [138.0, 37.0], zoom: 6 });
   });
-  await expect(page.locator('#railway-summary')).toContainText('拡大すると鉄道が出ます');
+  await expect(page.locator('#railway-summary')).toContainText('まで寄ると出ます');
   expect(await sourceFeatureCount(page, 'railway')).toBe(0);
 });
 
@@ -1375,7 +1382,7 @@ test('データはレイヤーの一覧に並ぶ', async ({ page }) => {
 test('設定を開いてもパネルは画面に収まる', async ({ page }) => {
   test.skip(!(await hasBuildings(page)), '建物データが無い');
 
-  const panel = page.locator('#display-panel');
+  const panel = page.locator('#data-panel');
   const viewport = page.viewportSize()!.height;
 
   await openLayerSettings(page, 'buildings');
@@ -1418,4 +1425,52 @@ test('収録範囲の外では「この範囲には無い」に移る', async ({
   });
   await expect(page.locator('#layer-absent [data-layer="buildings"]')).toBeVisible();
   await expect(page.locator('#layer-absent')).toContainText('この範囲には無い');
+});
+
+/**
+ * **出ない理由は一覧のまま読めること。**
+ *
+ * 要約 (`#building-count` など) は設定の中にあるので、そこだけに出すと
+ * 設定を開かない限り「なぜ出ないのか」が分からない。行へ写している。
+ *
+ * あわせて、**どこまで寄れば出るかを数字で言う**。「拡大すると」だけでは
+ * どれだけ動かせばいいのか分からない。
+ */
+test('出ない理由が一覧に出て、寄る先が数字で分かる', async ({ page }) => {
+  test.skip(!(await hasBuildings(page)), '建物データが無い');
+
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7454, 35.6586], zoom: 12 });
+  });
+
+  const status = page.locator('[data-layer-status="buildings"]');
+  await expect(status).toContainText('ズーム');
+  await expect(status).toContainText('まで寄ると出ます');
+});
+
+/** 一覧の🔍は**いまの位置のまま**寄る。場所ごと動かす「範囲へ移動」とは別。 */
+test('レイヤーの🔍はその場でズームする', async ({ page }) => {
+  test.skip(!(await hasBuildings(page)), '建物データが無い');
+
+  const center = await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7454, 35.6586], zoom: 12 });
+    const c = map.getCenter();
+    return { lng: c.lng, lat: c.lat };
+  });
+
+  await page.locator('[data-layer="buildings"] .layer-zoom-button').click();
+
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as TestWindow).__map!.getZoom()))
+    .toBeGreaterThanOrEqual(15);
+
+  // 場所は動かさない。見たい場所は既に画面にあることが多い。
+  const after = await page.evaluate(() => {
+    const c = (window as unknown as TestWindow).__map!.getCenter();
+    return { lng: c.lng, lat: c.lat };
+  });
+  expect(Math.abs(after.lng - center.lng)).toBeLessThan(0.001);
+  expect(Math.abs(after.lat - center.lat)).toBeLessThan(0.001);
 });

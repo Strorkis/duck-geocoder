@@ -32,6 +32,15 @@
           </button>
         </div>
         <ul id="results"></ul>
+        <!-- 背景地図は検索欄の下。地理院地図と同じ位置で、データのレイヤーとは
+             性格が違う (下敷きであって、探しているデータではない)。 -->
+        <details id="map-section">
+          <summary>地図</summary>
+          <div class="field">
+            <label for="basemap">種類</label>
+            <select id="basemap"></select>
+          </div>
+        </details>
       </div>
       <div id="map"></div>
       <!-- 初期化が終わったあとの待ち時間を知らせる。初期化のオーバーレイ (#loading) と
@@ -46,7 +55,15 @@
         「何ができるか」は開かなくても読める。
         開閉にJavaScriptが要らないので details を使う。
       -->
-      <div id="display-panel">
+      <!--
+        データは左下、使い方と出典は右下に分ける。
+
+        **右下はMapLibreの出典表示 (ⓘ) の場所**で、そこにデータのパネルを重ねると
+        出典に押し上げられる (実測で出典が2行になったときに「建物のある範囲へ移動」が
+        押せなくなった)。よく触るデータを衝突しない左下へ移し、出典と同じ性格の
+        「使い方・出典」だけを右下に残す。
+      -->
+      <div id="data-panel">
         <!--
           データは**レイヤーの一覧**にする。種別ごとに節を積むと、オープンデータを
           足すたびに縦へ伸びて頭打ちが無い。一覧は1データ1行で、設定は
@@ -74,13 +91,6 @@
             <div id="layer-settings-body"></div>
           </div>
         </div>
-        <details id="map-section">
-          <summary>地図</summary>
-          <div class="field">
-            <label for="basemap">種類</label>
-            <select id="basemap"></select>
-          </div>
-        </details>
         <!-- 建物の設定。レイヤー一覧から開かれたときに #layer-settings-body へ移す。 -->
         <div id="buildings-section" hidden>
           <!-- 建物は一部の範囲しか収録していない。偶然そこへ行かないと
@@ -156,6 +166,9 @@
             <p id="railway-summary" class="note"></p>
           </div>
         </div>
+      </div>
+      <!-- 使い方と出典。**出典と同じ性格のもの**なので、MapLibreの ⓘ と同じ右下に置く。 -->
+      <div id="info-panel">
         <details id="help">
           <summary>使い方</summary>
           <ul>

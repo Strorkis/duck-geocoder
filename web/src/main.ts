@@ -1935,7 +1935,9 @@ async function main() {
 
     if (zoomedOut) {
       await mapSource.setData(EMPTY_FEATURE_COLLECTION);
-      buildingCountEl.textContent = '拡大すると建物が出ます';
+      // **どこまで寄れば出るかを数字で言う。**「拡大すると」だけだと、
+      // どれだけ動かせばいいのか分からない。
+      buildingCountEl.textContent = `ズーム${BUILDINGS_MIN_ZOOM}まで寄ると出ます`;
       return;
     }
 
@@ -2162,7 +2164,7 @@ async function main() {
       return;
     }
     if (map.getZoom() < RAILWAY_MIN_ZOOM) {
-      await clear('拡大すると鉄道が出ます');
+      await clear(`ズーム${RAILWAY_MIN_ZOOM}まで寄ると出ます`);
       return;
     }
 
@@ -2303,6 +2305,8 @@ async function main() {
     /** 収録範囲。**この場所にあるか**の判定に使う。複数Collectionなら和。 */
     bbox: Bbox | null;
     visible: boolean;
+    /** 出るのに要るズーム。**無ければどの縮尺でも出る。** */
+    minZoom?: number;
     /** 設定の中身。一覧から開いたときに出す。 */
     settings: HTMLElement;
     refresh: () => void;
@@ -2322,6 +2326,7 @@ async function main() {
       bbox: unionBbox(buildingCollections.map((c) => c.bbox).filter((b): b is Bbox => b !== null)),
       // 建物はこのアプリの出発点なので既定で出す。
       visible: true,
+      minZoom: BUILDINGS_MIN_ZOOM,
       settings: buildingsSection,
       refresh: requestRefresh,
     });
@@ -2348,10 +2353,13 @@ async function main() {
       vintage: railwayVintage,
       bbox: unionBbox(railwayCollections.map((c) => c.bbox).filter((b): b is Bbox => b !== null)),
       visible: false,
+      minZoom: RAILWAY_MIN_ZOOM,
       settings: railwaySectionEl,
       refresh: requestRailwayRefresh,
     });
   }
+
+  const layerStatus: Record<string, string> = {};
 
   const isLayerVisible = (id: string) => layers.find((l) => l.id === id)?.visible ?? false;
 
@@ -2405,9 +2413,35 @@ async function main() {
     name.htmlFor = toggle.id;
     name.textContent = layer.title;
 
+    // 状態 (件数や「拡大すると出ます」) は**行に出す**。設定の中に置くと、
+    // 開かない限り読めない。出ない理由が分からないのがいちばん困る。
+    const status = document.createElement('span');
+    status.className = 'layer-status';
+    status.dataset.layerStatus = layer.id;
+    status.textContent = layerStatus[layer.id] ?? '';
+
     const source = document.createElement('span');
     source.className = 'layer-source';
     source.textContent = layer.vintage ? `${layer.source} · ${layer.vintage}` : layer.source;
+
+    // **いまの位置のまま寄る。** 「建物のある範囲へ移動」は場所ごと動かすが、
+    // 見たい場所は既に画面にあることが多く、足りないのはズームだけ。
+    const zoomIn = document.createElement('button');
+    zoomIn.type = 'button';
+    zoomIn.className = 'layer-zoom-button';
+    zoomIn.textContent = '🔍';
+    zoomIn.title = `ズーム${layer.minZoom ?? 0}まで寄る`;
+    zoomIn.hidden = layer.minZoom === undefined;
+    zoomIn.addEventListener('click', () => {
+      if (layer.minZoom === undefined) return;
+      // 出していなければ一緒に出す。寄っただけで何も出ないのは分かりにくい。
+      if (!layer.visible) {
+        layer.visible = true;
+        toggle.checked = true;
+      }
+      map.easeTo({ zoom: layer.minZoom, duration: 600 });
+      layer.refresh();
+    });
 
     const settings = document.createElement('button');
     settings.type = 'button';
@@ -2416,8 +2450,37 @@ async function main() {
     settings.title = `${layer.title}の設定`;
     settings.addEventListener('click', () => openLayerSettings(layer));
 
-    row.append(toggle, name, source, settings);
+    // **2段にする。** 名前・状態・出所・ボタンを1行に詰めると、幅の取り合いで
+    // 出所が幅0まで潰れた (17.5remのパネルで実際に起きた)。
+    // 段が増えても**データ1つにつき1行**なので、増え方は変わらない。
+    const head = document.createElement('div');
+    head.className = 'layer-head';
+    head.append(toggle, name, zoomIn, settings);
+
+    const sub = document.createElement('div');
+    sub.className = 'layer-sub';
+    sub.append(source, status);
+
+    row.append(head, sub);
     return row;
+  };
+
+  /**
+   * 設定の中にある要約を、一覧の行へ写す。
+   *
+   * 「拡大すると建物が出ます」のような**出ない理由**は、設定を開かないと
+   * 読めない場所にあると意味がない。要約を書いている側 (`refreshBuildings` など) は
+   * 触らず、**書かれたものを監視して写す** — 書き換え箇所が増えても追従する。
+   */
+  const mirrorStatus = (layerId: string, from: HTMLElement) => {
+    const apply = () => {
+      layerStatus[layerId] = from.textContent ?? '';
+      for (const el of document.querySelectorAll(`[data-layer-status="${layerId}"]`)) {
+        el.textContent = layerStatus[layerId];
+      }
+    };
+    new MutationObserver(apply).observe(from, { childList: true, characterData: true, subtree: true });
+    apply();
   };
 
   /** 裏方 (検索・逆ジオコーディングが使うもの)。**切れてはいけない**ので出すだけ。 */
@@ -2441,6 +2504,15 @@ async function main() {
     layerAbsentRowsEl.replaceChildren(...absent.map((layer) => layerRow(layer, false)));
     layerAbsentEl.hidden = absent.length === 0;
   };
+
+  const statusSources: [string, HTMLElement][] = [
+    ['buildings', buildingCountEl],
+    ['mesh', meshSummaryEl],
+    ['railway', railwaySummaryEl],
+  ];
+  for (const [id, el] of statusSources) {
+    if (layers.some((layer) => layer.id === id)) mirrorStatus(id, el);
+  }
 
   if (layers.length > 0) {
     renderLayerList();

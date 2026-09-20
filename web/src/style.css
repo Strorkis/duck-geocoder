@@ -105,31 +105,31 @@ body,
 
 /* できることは1枚のパネルにまとめ、節ごとにたたむ。
    四隅に散らしていたときは、初見で何から触ればいいか分からなかった。 */
-#display-panel > details {
+#data-panel > details {
   border-top: 1px solid #eee;
 }
 
-#display-panel > details:first-child {
+#data-panel > details:first-child {
   border-top: none;
 }
 
 /* 見出しはたたまない。開かなくても「何ができるか」が読める状態を保つ。 */
-#display-panel > details > summary {
+#data-panel > details > summary {
   padding: 0.4rem 0;
   font-weight: 600;
   cursor: pointer;
 }
 
-#display-panel > details > summary:hover {
+#data-panel > details > summary:hover {
   color: #14508c;
 }
 
-#display-panel > details[hidden] {
+#data-panel > details[hidden] {
   display: none;
 }
 
 /* 節を開いたときの中身。見出しとの間を空ける。 */
-#display-panel > details > *:not(summary):first-of-type {
+#data-panel > details > *:not(summary):first-of-type {
   margin-top: 0.2rem;
 }
 
@@ -182,12 +182,15 @@ body,
   font-size: 0.7rem;
 }
 
-/* 表示の設定 (地図・建物・人口密度・使い方・出典) をまとめたパネル。
-   MapLibreの出典表示も右下なので、その上に重ならない高さから始める。 */
-#display-panel {
+/* データのパネル。**左下**に置く。
+
+   右下はMapLibreの出典表示 (ⓘ) の場所で、そこに重ねると出典が伸びたときに
+   押し上げられる (出典が2行になって「建物のある範囲へ移動」が押せなくなった)。
+   よく触るデータは衝突しない側へ置く。 */
+#data-panel {
   position: absolute;
-  right: 1rem;
-  bottom: calc(var(--attribution-space, 2rem) + 0.5rem);
+  left: 1rem;
+  bottom: 1rem;
   z-index: 1;
   /* 用途を2列で並べるので、長い名前 (店舗等併用共同住宅など) が切れない幅を取る。 */
   width: 17.5rem;
@@ -202,30 +205,30 @@ body,
   color: #333;
 }
 
-#display-panel[hidden],
+#data-panel[hidden],
 #buildings-section[hidden],
 #building-filters[hidden] {
   display: none;
 }
 
-#display-panel .field {
+#data-panel .field {
   margin-bottom: 0.7rem;
 }
 
 /* 節の見出しが太字なので、中のラベルは太字にしない (見出しと同じ重みだと階層が潰れる)。 */
-#display-panel .field > label {
+#data-panel .field > label {
   display: block;
   margin-bottom: 0.25rem;
   color: #555;
 }
 
-#display-panel select,
-#display-panel input[type='range'] {
+#data-panel select,
+#data-panel input[type='range'] {
   width: 100%;
   box-sizing: border-box;
 }
 
-#display-panel select {
+#data-panel select {
   padding: 0.25rem;
   border: 1px solid #ccc;
   border-radius: 0.3rem;
@@ -256,12 +259,12 @@ body,
   text-overflow: ellipsis;
 }
 
-#display-panel .field > label .bulk {
+#data-panel .field > label .bulk {
   float: right;
   font-weight: normal;
 }
 
-#display-panel .bulk button {
+#data-panel .bulk button {
   margin-left: 0.2rem;
   padding: 0 0.3rem;
   font-size: 0.75rem;
@@ -271,7 +274,7 @@ body,
   cursor: pointer;
 }
 
-#display-panel .bulk button:hover {
+#data-panel .bulk button:hover {
   background: #f0f4ff;
 }
 
@@ -280,7 +283,7 @@ body,
   display: none;
 }
 
-#display-panel .note {
+#data-panel .note {
   margin: 0;
   color: #666;
   font-size: 0.8rem;
@@ -306,7 +309,7 @@ body,
 }
 
 /* チェックボックスは見出しではないので、ラベルをブロックにしない。 */
-#display-panel .field > label.toggle {
+#data-panel .field > label.toggle {
   display: flex;
   align-items: center;
   gap: 0.4rem;
@@ -314,7 +317,7 @@ body,
   cursor: pointer;
 }
 
-#display-panel .field > label.toggle input {
+#data-panel .field > label.toggle input {
   width: auto;
 }
 
@@ -563,24 +566,35 @@ body,
 }
 
 .layer-row {
+  padding: 0.3rem 0;
+}
+
+/* 1段目: チェックボックスと名前、右にボタン。 */
+.layer-head {
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  padding: 0.25rem 0;
+}
+
+/* 2段目: 出所と状態。**1行に詰めると出所が幅0まで潰れる**ので段を分けた。 */
+.layer-sub {
+  display: flex;
+  gap: 0.4rem;
+  padding-left: 1.3rem;
+  font-size: 0.7rem;
+  line-height: 1.4;
 }
 
 .layer-row .layer-name {
-  flex: none;
+  flex: 1;
+  min-width: 0;
   cursor: pointer;
 }
 
-/* 出所と版。行の右側に寄せて、名前を読む邪魔をしない。 */
+/* 出所と版。名前の下に小さく添える。 */
 .layer-row .layer-source {
-  flex: 1;
   min-width: 0;
-  text-align: right;
   color: #888;
-  font-size: 0.7rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -635,5 +649,99 @@ body,
 }
 
 #layer-settings-body > div[hidden] {
+  display: none;
+}
+
+/* 使い方と出典。**右下** — MapLibreの ⓘ と同じ性格のものを同じ側へ集める。
+   出典が伸びると押し上げられるので、実測した高さ (`--attribution-space`) の上に置く。 */
+#info-panel {
+  position: absolute;
+  right: 1rem;
+  bottom: calc(var(--attribution-space, 2rem) + 0.5rem);
+  z-index: 1;
+  width: 15rem;
+  max-width: calc(100vw - 2rem);
+  max-height: calc(100vh - 5rem);
+  overflow-y: auto;
+  padding: 0.6rem 0.8rem;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 0.4rem;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  font-size: 0.85rem;
+  color: #333;
+}
+
+#info-panel > details {
+  border-top: 1px solid #eee;
+}
+
+#info-panel > details:first-child {
+  border-top: none;
+}
+
+#info-panel > details > summary {
+  padding: 0.4rem 0;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#info-panel > details > summary:hover {
+  color: #14508c;
+}
+
+/* 背景地図の選択。検索欄の下に置くので、検索結果と同じ見た目に揃える。 */
+#search-panel > #map-section {
+  margin-top: 0.3rem;
+  padding: 0 0.8rem 0.3rem;
+  background: white;
+  border-radius: 0.4rem;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  font-size: 0.85rem;
+}
+
+#search-panel > #map-section > summary {
+  padding: 0.4rem 0;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#search-panel > #map-section select {
+  width: 100%;
+  padding: 0.25rem;
+  border: 1px solid #ccc;
+  border-radius: 0.3rem;
+  background: white;
+}
+
+#search-panel > #map-section .field {
+  margin-bottom: 0.4rem;
+}
+
+#search-panel > #map-section label {
+  display: block;
+  margin-bottom: 0.25rem;
+  color: #555;
+}
+
+/* レイヤーの状態 (件数や「ズーム15まで寄ると出ます」)。**行に出す** —
+   設定の中に置くと、開かない限り出ない理由が読めない。 */
+.layer-row .layer-status {
+  flex: none;
+  margin-left: auto;
+  color: #666;
+  text-align: right;
+}
+
+.layer-zoom-button {
+  flex: none;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.8rem;
+  line-height: 1;
+  padding: 0.1rem 0.2rem;
+}
+
+.layer-zoom-button[hidden] {
   display: none;
 }
