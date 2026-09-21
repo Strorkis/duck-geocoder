@@ -249,7 +249,9 @@ function itemFiles(items: StacItem[]): { file: string; bbox: Bbox | null }[] {
  */
 type SearchResult =
   | { kind: 'admin'; label: string; adminId: string }
-  | { kind: 'oaza'; label: string; lon: number; lat: number };
+  | { kind: 'oaza'; label: string; lon: number; lat: number }
+  // 駅。**人が実際に検索する語**なので、地名と並べて出す。
+  | { kind: 'station'; label: string; lon: number; lat: number };
 
 /** 範囲 [xmin, ymin, xmax, ymax] (WGS84)。 */
 type Bbox = [number, number, number, number];
@@ -528,6 +530,8 @@ async function initDuckDb(collections: Collection[]): Promise<{
   ensureSpatial: () => Promise<void>;
   /** 地名 (isj_oaza) を引く前に呼ぶ。 */
   ensureOaza: () => Promise<void>;
+  /** 駅を引く前に呼ぶ。駅が配信されていなければ undefined。 */
+  ensureStations: (() => Promise<void>) | undefined;
 }> {
   const bundle = await duckdb.selectBundle({
     mvp: {
@@ -645,6 +649,25 @@ async function initDuckDb(collections: Collection[]): Promise<{
       SELECT count(pref_name || county_name || city_name || ward_name) FROM admin_names;
     `);
   });
+
+  /**
+   * 駅を検索に載せる。**無ければ検索の候補が増えないだけ。**
+   *
+   * 地名と同じく、検索するまで読まない。読むのは `station_name` (71KB) と
+   * `line_name` (7KB)、位置に使う bbox の4列 (299KB) で、**初回だけ**。
+   * 行政区域の名称で起きた「row groupに散らばって往復42回」という問題は、
+   * 駅のファイルが **1 row group** なので起きない。
+   */
+  const stationCollection = byKind('railway_station')[0];
+  const ensureStations = stationCollection
+    ? once(async () => {
+        const files = (await stationCollection.items()).map((item) => item.assets.data.href);
+        await register(files);
+        const list = files.map((file) => `'${file}'`).join(', ');
+        await conn.query(`CREATE VIEW station AS SELECT * FROM read_parquet([${list}]);`);
+        await conn.query(`SELECT count(station_name || line_name) FROM station;`);
+      })
+    : undefined;
 
   // 建物は任意。無ければ建物レイヤーを出さないだけで、他の機能は動く。
   // 並び順がそのまま選択肢の順になり、先頭が既定になる。
@@ -772,6 +795,7 @@ async function initDuckDb(collections: Collection[]): Promise<{
     railwayVintage,
     ensureSpatial,
     ensureOaza,
+    ensureStations,
   };
 }
 
@@ -1088,6 +1112,57 @@ async function searchAddress(
   });
 
   return [...admins, ...oazas].slice(0, MAX_RESULTS);
+}
+
+/**
+ * 駅を名前で引く。
+ *
+ * **路線名も対象にする。**「山手線」でその路線の駅が出る。
+ *
+ * **駅名・路線名・運営会社の組でユニークにする。** 同じ駅名の行が路線の数だけあり
+ * (「東京」は12路線)、そのまま出すと候補が同じ名前で埋まる。
+ * 乗り換えでまとめるか県で分けるかは扱いが難しいので、まずは組で分ける。
+ *
+ * **運営会社まで入れないと壊れる。**「本線」は複数の会社が使う一般名で、
+ * 駅名と路線名だけだと住吉駅 (兵庫と福岡) が同じ組になり、平均を取ると
+ * **600km離れた中間点**に飛ぶ。実測で3組 (10,134組中) がこれに当たり、
+ * 会社を足すと最大の広がりが1kmに収まる。
+ *
+ * 位置は **bboxの中心**。駅は点ではなく線 (ホームの延長) なので、
+ * `bbox.xmin` をそのまま使うと端に寄る。
+ */
+async function searchStations(
+  conn: duckdb.AsyncDuckDBConnection,
+  keyword: string,
+): Promise<SearchResult[]> {
+  const expr = `station_name || line_name || operator`;
+  const result = await conn.query(`
+    SELECT
+      station_name, line_name, operator,
+      avg((bbox.xmin + bbox.xmax) / 2) AS lon,
+      avg((bbox.ymin + bbox.ymax) / 2) AS lat
+    FROM station
+    WHERE ${buildMatchConditions(keyword, expr)}
+    GROUP BY station_name, line_name, operator
+    ORDER BY length(station_name || line_name)
+    LIMIT ${MAX_RESULTS};
+  `);
+  return result.toArray().map((row) => {
+    const r = row.toJSON() as unknown as {
+      station_name: string;
+      line_name: string;
+      operator: string;
+      lon: number;
+      lat: number;
+    };
+    return {
+      kind: 'station' as const,
+      // 同じ駅名が並ぶので路線名で見分けられるようにする。
+      label: `${r.station_name}駅 (${r.line_name})`,
+      lon: r.lon,
+      lat: r.lat,
+    };
+  });
 }
 
 /**
@@ -1634,6 +1709,8 @@ async function main() {
   const layerAbsentEl = document.querySelector<HTMLDivElement>('#layer-absent')!;
   const layerAbsentRowsEl = document.querySelector<HTMLDivElement>('#layer-absent-rows')!;
   const layerSupportEl = document.querySelector<HTMLDivElement>('#layer-support')!;
+  // 検索に使うデータの行を用意できたか。出すのはフォーカスしたとき。
+  let hasSupportRows = false;
   const layerSupportRowsEl = document.querySelector<HTMLDivElement>('#layer-support-rows')!;
   const layerSettingsEl = document.querySelector<HTMLDivElement>('#layer-settings')!;
   const layerSettingsTitleEl = document.querySelector<HTMLParagraphElement>(
@@ -1658,6 +1735,7 @@ async function main() {
   let railwayVintage: string | undefined;
   let ensureSpatial: () => Promise<void>;
   let ensureOaza: () => Promise<void>;
+  let ensureStations: (() => Promise<void>) | undefined;
   let collections: Collection[] = [];
   try {
     collections = await fetchCollections();
@@ -1671,7 +1749,7 @@ async function main() {
     railwaySources = db.railwaySources;
     railwayInstitutionTypes = db.railwayInstitutionTypes;
     railwayVintage = db.railwayVintage;
-    ({ ensureSpatial, ensureOaza } = db);
+    ({ ensureSpatial, ensureOaza, ensureStations } = db);
     map = createdMap;
     renderCredits(creditsEl, collections);
   } catch (e) {
@@ -1791,8 +1869,8 @@ async function main() {
   };
 
   const showResult = async (result: SearchResult) => {
-    // 地名(代表点しか無い)はその地点へ飛ぶ。ポリゴンは消す。
-    if (result.kind === 'oaza') {
+    // 地名(代表点しか無い)と駅はその地点へ飛ぶ。ポリゴンは消す。
+    if (result.kind === 'oaza' || result.kind === 'station') {
       await Promise.all([
         setSourceData('highlight', null),
         setSourceData('selected-point', {
@@ -1851,7 +1929,7 @@ async function main() {
       const li = document.createElement('li');
       const badge = document.createElement('span');
       badge.className = 'badge';
-      badge.textContent = row.kind === 'admin' ? '行政区域' : '地名';
+      badge.textContent = { admin: '行政区域', oaza: '地名', station: '駅' }[row.kind];
       li.append(badge, row.label);
       li.addEventListener('click', () => {
         resultsEl.innerHTML = '';
@@ -1874,8 +1952,17 @@ async function main() {
     debounceTimer = window.setTimeout(() => {
       // 初回は ensureOaza の読み込みを待つので、ここだけ数秒かかることがある。
       busy('検索中…', async () => {
-        await ensureOaza();
-        return searchAddress(conn, keyword);
+        // 駅は配信されていないこともある。無ければ地名と行政区域だけで引く。
+        await Promise.all([ensureOaza(), ensureStations?.()]);
+        const [places, stations] = await Promise.all([
+          searchAddress(conn, keyword),
+          ensureStations ? searchStations(conn, keyword) : Promise.resolve([]),
+        ]);
+        // 地名を先に出す。**駅名で引いたときは駅が先**に来てほしいので、
+        // 語がそのまま駅名に一致したものだけ前に出す。
+        const exact = stations.filter((s) => s.label.startsWith(`${keyword}駅`));
+        const rest = stations.filter((s) => !exact.includes(s));
+        return [...exact, ...places, ...rest].slice(0, MAX_RESULTS);
       })
         .then(renderResults)
         .catch((e: unknown) => {
@@ -1885,12 +1972,34 @@ async function main() {
     }, debounceMs);
   };
 
-  input.addEventListener('input', () => runSearch(200));
+  /**
+   * 「検索に使用」を出すかどうか。**打っている間だけ出す。**
+   *
+   * 常時出しておくと検索欄が200pxまで伸びて左上の地図を覆い、
+   * クリックが届かなくなる (実測156px)。かといってフォーカスだけを条件にすると、
+   * **起動時に検索欄へ自動でフォーカスが当たる**ので結局出っぱなしになる。
+   */
+  const updateSupportVisibility = () => {
+    layerSupportEl.hidden = !(
+      hasSupportRows &&
+      document.activeElement === input &&
+      input.value.trim().length > 0
+    );
+  };
+
+  input.addEventListener('input', () => {
+    updateSupportVisibility();
+    runSearch(200);
+  });
   // 候補を選ぶと一覧を閉じるので、再びフォーカスしたときに候補を出し直す。
   // (入力を変えないと候補が出ないのは分かりにくい)
-  input.addEventListener('focus', () => runSearch(0));
+  input.addEventListener('focus', () => {
+    updateSupportVisibility();
+    runSearch(0);
+  });
   input.addEventListener('blur', () => {
     resultsEl.innerHTML = '';
+    updateSupportVisibility();
   });
   // 候補のクリックは blur より先に mousedown が走る。既定動作を止めて
   // フォーカスを外させないと、click が発火する前に一覧が消えてしまう。
@@ -2532,9 +2641,11 @@ async function main() {
     const collection = byKind(kind)[0];
     return collection ? [supportRow(title, collection.attribution.split('（')[0])] : [];
   });
+  // **中身だけ用意して、出すのは検索欄にフォーカスしたとき。**
+  // 常時出すと検索欄が伸びて左上の地図を覆う (実測156px)。
   if (supportRows.length > 0) {
     layerSupportRowsEl.replaceChildren(...supportRows);
-    layerSupportEl.hidden = false;
+    hasSupportRows = true;
   }
 
   if (activeSource) {

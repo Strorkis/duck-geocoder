@@ -459,6 +459,62 @@ Range前提の形式だが、**国内の公開データにCOPCは見当たらな
 | [国土数値情報 C28 (空港)](https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-C28-v2_4.html) | **商用可** | 現行年度は記載なし | 可 | ✅ 使える |
 | [国土数値情報 W05 (河川)](https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-W05.html) | **非商用** | 各年度に承認 (複製) 番号 | — | ❌ **使えない**。2009年度で更新停止 |
 
+### 検索の基盤に何が使えるか (調査済み・2026-09-20)
+
+**結論から: 既存のジオコーダ・検索エンジンはどれも使えない。サーバーが要るため。**
+
+| | 中身 | ここで使えるか |
+| --- | --- | --- |
+| [Nominatim](https://wiki.openstreetmap.org/wiki/Nominatim) | PostgreSQL + PostGIS。OSM公式 | **不可**。全球で1TB超・128GB級RAM |
+| Photon (komoot) | Elasticsearch系。**入力補完が得意**。索引はNominatimのデータから作る | **不可** |
+| Pelias | Node.js + Elasticsearch。複数の出所を混ぜられる | **不可** |
+| Groonga (Mroonga / PGroonga) | MySQL・PostgreSQL組み込みの日本語全文検索 | **不可**。DBサーバーが要る |
+
+**このアプリに実行時のサーバーは無い。** 静的ファイルとブラウザのDuckDB-WASMしか
+なく、**土俵が違う。**
+
+#### 当てはまるのは「静的な索引を分割して、要る断片だけ取る」形
+
+[Pagefind](https://pagefind.app/) がその形をしている。索引を語の先頭で分割して
+静的に置き、**打った語に当たる断片だけを取る。** 帯域を第一目標に据えていて、
+検索1回あたり約200KB (MDN全体を索引しても約300KB)。CJKは拡張版が対応し、
+問い合わせ側の分かち書きは**ブラウザ内蔵の `Intl.Segmenter`** を使っている。
+
+**これはこのリポジトリが空間に対してやっていることと同じ。**
+GeoParquetをrow groupに分け、bboxの統計で要るところだけHTTP Rangeで取る —
+**軸が場所か語かの違いしかない。**
+
+**いまは作らない。** 駅名8,503種の規模では `ILIKE` の走査で足りている
+(駅のファイルは1 row groupで、`station_name` 列は71KB)。
+**対象が増えて遅いと分かってから**でよい。
+
+#### DuckDBのFTS拡張は当てにしない
+
+`fts` 拡張は存在するが、(1) **WASMで載るかは要確認** (`duckdb_extensions()` で見る)、
+(2) **索引は自動更新されない**、(3) 既定の `ignore` が `[^a-z]` で
+**日本語はトークンに落ちない**。拡張は自前配信しているので
+(`web/duckdb-extensions.ts` の `EXTENSIONS`)、増やすと配信物も増える。
+
+#### 住所は自前で書かない。**MITのOSSがある**
+
+- **[normalize-japanese-addresses](https://github.com/geolonia/normalize-japanese-addresses)**
+  (MIT)。**v3 (2024-10) で住所マスターを ABR ベースに作り直し**、地番住所まで対応。
+  `file://` でローカルのデータも使える
+- **[Community Geocoder](https://github.com/geolonia/community-geocoder)** (MIT)。
+  設計の起点が**「キーバリューを個々のJSONとして静的にホスティングし、
+  GitHub Pages上にサーバーレスでAPIを置く」**。
+  **このリポジトリと同じ発想の先行例**にあたる
+
+#### ABR (アドレス・ベース・レジストリ)
+
+デジタル庁。住所の表記揺れ (「市谷/市ヶ谷/市ケ谷」) を解くためのマスターデータ。
+**町字データは2025-06に正式版**、それ以外は試験公開で、毎月更新が続いている。
+**いま使っている位置参照情報の後継**にあたる。
+
+置き換えは別の判断 ([roadmap.md](roadmap.md))。位置参照情報が動いているうちは
+急がないが、`normalize-japanese-addresses` v3 が既にABRベースなので、
+**住所の精度を上げたくなったときの入口**になる。
+
 ### 国土数値情報の読み方 (調査済み・2026-09-19)
 
 **既定は公共データ利用規約 (PDL1.0)。承認が要るのは、基本測量成果を背景図・原典に

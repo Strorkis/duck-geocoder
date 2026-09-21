@@ -577,9 +577,13 @@ body,
 }
 
 /* 2段目: 出所と状態。**1行に詰めると出所が幅0まで潰れる**ので段を分けた。 */
+/* 2段目: 出所と状態。**折り返す。** 説明文を省略記号で切ると、読ませたいものが
+   読めなくなる (「国土数値情報 · N02-25 (2026-03-06)」に状態が並ぶと
+   17.5remには収まらない)。段が増えても**データ1つにつき1行**は変わらない。 */
 .layer-sub {
   display: flex;
-  gap: 0.4rem;
+  flex-wrap: wrap;
+  gap: 0 0.4rem;
   padding-left: 1.3rem;
   font-size: 0.7rem;
   line-height: 1.4;
@@ -595,9 +599,6 @@ body,
 .layer-row .layer-source {
   min-width: 0;
   color: #888;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* 収録の無いもの。**隠さない** — 「無い」と分かるのも情報なので、薄く出す。 */
@@ -689,23 +690,30 @@ body,
   color: #14508c;
 }
 
-/* 背景地図の選択。検索欄の下に置くので、検索結果と同じ見た目に揃える。 */
-#search-panel > #map-section {
+/* 検索に使っているデータ。**見るのは検索するとき**なので検索欄の下。
+   検索結果 (#results) と同じ見た目に揃える。 */
+#search-panel > #layer-support {
   margin-top: 0.3rem;
-  padding: 0 0.8rem 0.3rem;
+  padding: 0.3rem 0.8rem 0.5rem;
   background: white;
   border-radius: 0.4rem;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
   font-size: 0.85rem;
+  color: #333;
 }
 
-#search-panel > #map-section > summary {
-  padding: 0.4rem 0;
-  font-weight: 600;
-  cursor: pointer;
+#search-panel > #layer-support[hidden] {
+  display: none;
 }
 
-#search-panel > #map-section select {
+/* 背景地図。データ一覧の最後に置く (QGISでもレイヤーの1つ)。 */
+#basemap-section {
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid #eee;
+}
+
+#basemap-section select {
   width: 100%;
   padding: 0.25rem;
   border: 1px solid #ccc;
@@ -713,23 +721,17 @@ body,
   background: white;
 }
 
-#search-panel > #map-section .field {
-  margin-bottom: 0.4rem;
-}
-
-#search-panel > #map-section label {
-  display: block;
-  margin-bottom: 0.25rem;
-  color: #555;
-}
-
 /* レイヤーの状態 (件数や「ズーム15まで寄ると出ます」)。**行に出す** —
    設定の中に置くと、開かない限り出ない理由が読めない。 */
+/* 折り返したときに出所と混ざらないよう、状態は必ず行を変える。
+   `margin-left: auto` で右へ寄せると、折り返した行の右端に独りで残って読みにくい。 */
 .layer-row .layer-status {
-  flex: none;
-  margin-left: auto;
+  flex: 1 0 100%;
   color: #666;
-  text-align: right;
+}
+
+.layer-row .layer-status:empty {
+  display: none;
 }
 
 .layer-zoom-button {

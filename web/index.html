@@ -32,15 +32,13 @@
           </button>
         </div>
         <ul id="results"></ul>
-        <!-- 背景地図は検索欄の下。地理院地図と同じ位置で、データのレイヤーとは
-             性格が違う (下敷きであって、探しているデータではない)。 -->
-        <details id="map-section">
-          <summary>地図</summary>
-          <div class="field">
-            <label for="basemap">種類</label>
-            <select id="basemap"></select>
-          </div>
-        </details>
+        <!-- 検索と逆ジオコーディングが使っているもの。**見るのは検索するとき**なので
+             検索欄の下に置く。**切れてはいけない** (外すと検索が壊れる) ので、
+             チェックボックスは出さない。 -->
+        <div id="layer-support" hidden>
+          <p class="layer-heading">検索に使用</p>
+          <div id="layer-support-rows"></div>
+        </div>
       </div>
       <div id="map"></div>
       <!-- 初期化が終わったあとの待ち時間を知らせる。初期化のオーバーレイ (#loading) と
@@ -78,11 +76,12 @@
               <p class="layer-heading">この範囲には無い</p>
               <div id="layer-absent-rows"></div>
             </div>
-            <!-- 検索と逆ジオコーディングが使っているもの。**切れてはいけない**
-                 (外すと検索が壊れる) ので、チェックボックスは出さない。 -->
-            <div id="layer-support" hidden>
-              <p class="layer-heading">検索に使用</p>
-              <div id="layer-support-rows"></div>
+            <!-- 背景地図もレイヤーの1つ (QGISもそう扱う)。**地図に重なるものが
+                 1か所に集まる。** selectが1つあるだけなので、たたまず常時出す。
+                 将来サムネイルで選ばせる余地はここに残す (地理院地図がそうしている)。 -->
+            <div id="basemap-section">
+              <p class="layer-heading">背景地図</p>
+              <select id="basemap"></select>
             </div>
           </div>
           <div id="layer-settings" hidden>

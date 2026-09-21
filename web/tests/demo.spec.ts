@@ -513,18 +513,16 @@ test('できることは開かなくても分かる', async ({ page }) => {
   for (const layer of ['建物', '人口密度']) {
     await expect(panel.locator('.layer-row', { hasText: layer }).first()).toBeVisible();
   }
-  // データ以外は節のまま。**置き場所が違う** — 背景地図は検索欄の下、
-  // 使い方と出典は右下 (MapLibreの ⓘ と同じ性格なので同じ側に集めた)。
-  await expect(
-    page.locator('#search-panel summary', { hasText: '地図' }).first(),
-  ).toBeVisible();
+  // 背景地図もレイヤーの1つ。**たたまない** (selectが1つあるだけ)。
+  await expect(panel.locator('#basemap-section')).toContainText('背景地図');
+  // 使い方と出典だけが節のまま。右下 (MapLibreの ⓘ と同じ性格なので同じ側)。
   for (const heading of ['使い方', '出典']) {
     await expect(
       page.locator('#info-panel summary', { hasText: heading }).first(),
     ).toBeVisible();
   }
   // 節の中身は既定でたたんである。
-  for (const id of ['map-section', 'help', 'credits-section']) {
+  for (const id of ['help', 'credits-section']) {
     await expect(page.locator(`#${id}`)).not.toHaveAttribute('open', '');
   }
   // レイヤーの設定も既定では出さない (一覧が先)。
@@ -673,7 +671,6 @@ test('地図を航空写真に切り替えると写真のタイルを取りに�
     if (request.url().includes('cyberjapandata.gsi.go.jp')) requested.push(request.url());
   });
 
-  await openSection(page, 'map-section');
   await page.locator('#basemap').selectOption({ label: '航空写真' });
 
   await expect.poll(() => requested.some((url) => url.includes('/seamlessphoto/'))).toBe(true);
@@ -681,7 +678,6 @@ test('地図を航空写真に切り替えると写真のタイルを取りに�
 
 // 地図と地形は別々に選べる。片方の操作で、自分で選んだもう片方が勝手に変わらないこと。
 test('地形を切っても地図は変わらない', async ({ page }) => {
-  await openSection(page, 'map-section');
   await page.locator('#basemap').selectOption({ label: '航空写真' });
 
   await page.locator('button[class*="maplibregl-ctrl-terrain"]').click();
@@ -1366,7 +1362,9 @@ test('データはレイヤーの一覧に並ぶ', async ({ page }) => {
   expect(await rows.count()).toBeGreaterThan(0);
 
   // 行には出所が添えてある。どこのデータかが一覧のまま読める。
-  await expect(page.locator('.layer-row .layer-source').first()).toBeVisible();
+  // **`#layer-rows` に絞る。** 「検索に使用」の行も同じクラスを持つうえ、
+  // 検索していない間は隠れているので、絞らないと隠れた行を掴む。
+  await expect(page.locator('#layer-rows .layer-row .layer-source').first()).toBeVisible();
 });
 
 /**
@@ -1399,13 +1397,6 @@ test('設定を開いてもパネルは画面に収まる', async ({ page }) => 
  * 検索と逆ジオコーディングが使っているデータは**切れてはいけない**
  * (外すと検索が壊れる)。一覧には出すが、チェックボックスは付けない。
  */
-test('検索に使うデータは一覧に出るが切り替えられない', async ({ page }) => {
-  const support = page.locator('#layer-support');
-  await expect(support).toBeVisible();
-  await expect(support).toContainText('行政区域');
-  expect(await support.locator('input[type="checkbox"]').count()).toBe(0);
-});
-
 /**
  * 収録範囲の外へ行くと「この範囲には無い」へ移る。**隠さない** —
  * 「無い」と分かるのも情報なので、薄く出したままにする。
@@ -1473,4 +1464,119 @@ test('レイヤーの🔍はその場でズームする', async ({ page }) => {
   });
   expect(Math.abs(after.lng - center.lng)).toBeLessThan(0.001);
   expect(Math.abs(after.lat - center.lat)).toBeLessThan(0.001);
+});
+
+/**
+ * 駅名は**人が実際に検索する語**。地名と行政区域だけでは、
+ * 「東京駅」と打っても何も出ない状態だった。
+ */
+test('駅名で検索できる', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+
+  await page.locator('#search-input').fill('東京');
+  const station = page.locator('#results li', { hasText: '駅' }).first();
+  await expect(station).toBeVisible({ timeout: 30_000 });
+  await expect(station).toContainText('東京駅');
+
+  await station.click();
+  // 駅は点ではなく線 (ホームの延長) なので、bboxの中心へ飛ぶ。
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as TestWindow).__map!.getZoom()))
+    .toBeGreaterThan(14);
+});
+
+/** 路線名でも引ける。「山手線」でその路線の駅が出る。 */
+test('路線名でも駅が引ける', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+
+  await page.locator('#search-input').fill('山手線');
+  const first = page.locator('#results li').first();
+  await expect(first).toBeVisible({ timeout: 30_000 });
+  await expect(first).toContainText('山手線');
+});
+
+/**
+ * 説明文は**切らない**。読ませたいものを省略記号で切るのは失敗の仕方として違う
+ * (「国土数値情報 · N02-25 (2026-03-06)」が `...` になっていた)。
+ */
+test('レイヤーの説明が切れていない', async ({ page }) => {
+  const clipped = await page.evaluate(() =>
+    [...document.querySelectorAll('.layer-row .layer-source, .layer-row .layer-status')]
+      .filter((el) => el.scrollWidth > el.clientWidth + 1)
+      .map((el) => el.textContent),
+  );
+  expect(clipped, `見切れている: ${clipped.join(' / ')}`).toEqual([]);
+});
+
+/**
+ * 「検索に使用」は検索欄の下。**見るのは検索するときだけ。**
+ *
+ * 常時出していたら検索欄が200pxまで伸びて左上の地図を覆い、
+ * 「地図をクリックしても判定結果は消えない」が押せずに落ちた (実測156px)。
+ */
+test('検索に使うデータは検索するときだけ出る', async ({ page }) => {
+  const support = page.locator('#search-panel #layer-support');
+  // 起動時は検索欄にフォーカスが当たっているが、**まだ打っていない**ので出さない。
+  await expect(support).toBeHidden();
+
+  await page.locator('#search-input').fill('港区');
+  await expect(support).toBeVisible();
+  await expect(support).toContainText('行政区域');
+  // **切り替えさせない。** 外すと検索が壊れるので、チェックボックスは出さない。
+  expect(await support.locator('input[type="checkbox"]').count()).toBe(0);
+
+  await page.locator('#search-input').blur();
+  await expect(support).toBeHidden();
+});
+
+/** 検索していないとき、左上のパネルが地図を覆わないこと。 */
+test('検索していないときは左上が地図を塞がない', async ({ page }) => {
+  const covered = await page.evaluate(() => {
+    const el = document.elementFromPoint(200, 200);
+    return el?.closest('#search-panel') !== null;
+  });
+  expect(covered, '検索欄が地図の (200,200) を覆っている').toBe(false);
+});
+
+/** 背景地図はレイヤーの1つ。**たたまず**、データ一覧の中に置く。 */
+test('背景地図は開かずに切り替えられる', async ({ page }) => {
+  const basemap = page.locator('#data-panel #basemap-section');
+  await expect(basemap).toBeVisible();
+  await expect(basemap).toContainText('背景地図');
+  // <details> ではないので、開く操作なしで select に触れる。
+  await expect(page.locator('#basemap')).toBeVisible();
+});
+
+/**
+ * **同名の駅を混ぜない。**
+ *
+ * 「本線」は複数の会社が使う一般名で、駅名と路線名だけで束ねると
+ * 住吉駅 (兵庫と福岡) が同じ組になり、平均を取ると**600km離れた中間点**
+ * (海の上) へ飛ぶ。運営会社まで入れて分けてある。
+ */
+test('同名の駅を束ねて海へ飛ばさない', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+
+  await page.locator('#search-input').fill('住吉');
+  const hit = page.locator('#results li', { hasText: '住吉駅' }).first();
+  await expect(hit).toBeVisible({ timeout: 30_000 });
+  await hit.click();
+
+  // flyTo は1.5秒かけて動くので、止まるまで待つ。すぐ読むと出発地点のまま。
+  const near = (lng: number, lat: number, tLng: number, tLat: number) =>
+    Math.abs(lng - tLng) < 0.5 && Math.abs(lat - tLat) < 0.5;
+  await expect
+    .poll(
+      async () => {
+        const c = await page.evaluate(() => {
+          const v = (window as unknown as TestWindow).__map!.getCenter();
+          return { lng: v.lng, lat: v.lat };
+        });
+        // 兵庫 (135.3, 34.7) か福岡 (130.4, 33.6) のどちらかであること。
+        // 束ね方を誤ると、その中間 (約132.8, 34.2 = 瀬戸内海) へ飛ぶ。
+        return near(c.lng, c.lat, 135.27, 34.72) || near(c.lng, c.lat, 130.42, 33.59);
+      },
+      { message: 'どちらの住吉駅でもない地点で止まっている' },
+    )
+    .toBe(true);
 });
