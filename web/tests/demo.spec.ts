@@ -1677,3 +1677,37 @@ test('検索候補は他のパネルより手前に出る', async ({ page }) => 
   });
   expect(covered, `候補が覆われている: ${covered}`).toBeNull();
 });
+
+/**
+ * **線をハイライトしたときに、塗りが出ないこと。**
+ *
+ * ハイライトのソースは行政区域 (ポリゴン) と路線 (線) で使い回している。
+ * MapLibre の fill レイヤーは**線のジオメトリも閉じた輪として塗ってしまう**ので、
+ * 路線を選ぶと線の周りが橙色に塗り潰される。東海道線のように
+ * 品川〜武蔵小杉〜鶴見と品川〜川崎〜鶴見が輪を作る路線では特に目立つ。
+ */
+test('路線のハイライトに塗りが出ない', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+
+  await page.locator('#search-input').fill('東海道線');
+  const first = page.locator('#results li').first();
+  await expect(first).toContainText('路線', { timeout: 30_000 });
+  await first.click();
+  await expect.poll(() => highlightFeatureCount(page), { timeout: 30_000 }).toBe(1);
+
+  // **描き終わってから数える。** flyTo の途中だと、まだ線が画面に入っておらず
+  // 塗りが出ていても 0 になる (実際それで一度見逃した)。
+  // 併せて線そのものは出ていることを確かめ、「何も描かれていないから 0」と
+  // 取り違えないようにする。
+  const drawn = await page.evaluate(async () => {
+    const map = (window as unknown as TestWindow).__map!;
+    if (!map.isMoving() && map.loaded()) await new Promise((r) => setTimeout(r, 500));
+    else await new Promise<void>((r) => map.once('idle', () => r()));
+    return {
+      fill: map.queryRenderedFeatures(undefined, { layers: ['highlight-fill'] }).length,
+      line: map.queryRenderedFeatures(undefined, { layers: ['highlight-outline'] }).length,
+    };
+  });
+  expect(drawn.line).toBeGreaterThan(0);
+  expect(drawn.fill).toBe(0);
+});

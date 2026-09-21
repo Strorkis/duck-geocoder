@@ -1737,6 +1737,11 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
         id: 'highlight-fill',
         type: 'fill',
         source: 'highlight',
+        // **ポリゴンのときだけ塗る。** ソースは行政区域 (ポリゴン) と
+        // 路線 (線) で使い回していて、MapLibre の fill は**線のジオメトリも
+        // 閉じた輪とみなして塗ってしまう**。東海道線のように品川〜武蔵小杉〜鶴見と
+        // 品川〜川崎〜鶴見が輪を作る路線では、線の内側が丸ごと橙色になる。
+        filter: ['==', ['geometry-type'], 'Polygon'],
         paint: { 'fill-color': '#ff6600', 'fill-opacity': 0.35 },
       });
       map.addLayer({
