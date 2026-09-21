@@ -1752,7 +1752,9 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
         id: 'highlight-outline',
         type: 'line',
         source: 'highlight',
-        paint: { 'line-color': '#ff6600', 'line-width': 5 },
+        // **破線にする。** 鉄道レイヤーの線と色だけで見分けさせると、
+        // 色の見え方によっては区別がつかない。形が違えば色に頼らずに済む。
+        paint: { 'line-color': '#ff6600', 'line-width': 5, 'line-dasharray': [1.6, 1.1] },
       });
 
       // 行政区域データ(N03)は市区町村・行政区までしか持たないため、
@@ -2785,11 +2787,12 @@ async function main() {
 
   // 裏方は種別から引く。**一覧に出すが切らせない** (外すと検索が壊れる)。
   const supportKinds: [DatasetKind, string][] = [
-    ['admin', '行政区域'],
-    ['oaza', '地名 (大字・町丁目)'],
-    ['block', '街区'],
-    // 駅と路線も検索の対象。**一覧に出さないと、何で引けるのか分からない。**
-    ['railway_station', '駅・路線'],
+    // **打つ言葉で書く。** データセット名 (「位置参照情報」) では、
+    // 何を打てば当たるのかが分からない。出所は2段目に小さく出る。
+    ['admin', '市区町村名'],
+    ['oaza', '町名・丁目'],
+    ['block', '街区 (〜丁目〜番)'],
+    ['railway_station', '駅名・路線名'],
   ];
   const supportRows = supportKinds.flatMap(([kind, title]) => {
     const collection = byKind(kind)[0];

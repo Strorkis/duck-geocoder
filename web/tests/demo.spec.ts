@@ -1518,8 +1518,9 @@ test('レイヤーの説明が切れていない', async ({ page }) => {
 test('何で検索できるかが読める', async ({ page }) => {
   await openSection(page, 'layer-support');
   const support = page.locator('#info-panel #layer-support');
-  await expect(support).toContainText('行政区域');
-  await expect(support).toContainText('駅・路線');
+  // **打つ言葉で書く。**「位置参照情報」では何を打てばいいか分からない。
+  await expect(support).toContainText('市区町村名');
+  await expect(support).toContainText('駅名・路線名');
   // **切り替えさせない。** 外すと検索が壊れるので、チェックボックスは出さない。
   expect(await support.locator('input[type="checkbox"]').count()).toBe(0);
 });
