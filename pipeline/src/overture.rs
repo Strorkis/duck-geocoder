@@ -292,6 +292,173 @@ WHERE {MUNICIPALITY_FILTER};"
     )
 }
 
+/// 収録する道路の `class`。
+///
+/// Overtureの `class` はOSM由来で、`residential` や `service` まで入れると桁が変わる
+/// (全国で1,000万件規模)。**ドローンのリスクとして見たいのは交通量の多い幹線**なので
+/// ここで切る。おおよそ `motorway`=高速、`trunk`=国道、`primary`=主要地方道・県道。
+pub const ROAD_CLASSES: [&str; 3] = ["motorway", "trunk", "primary"];
+
+fn road_class_list() -> String {
+    ROAD_CLASSES
+        .iter()
+        .map(|c| format!("'{c}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Overtureの道路 (transportation/segment) を切り出すSQLを組み立てる。
+///
+/// **`id` (GERS ID) は落とす。** 36バイトの文字列が全行に付き、実測で首都圏の
+/// ファイルの28%を占めていた。こちらでは地物の同定に使っていない。
+///
+/// **`routes` はリストのまま持つ。** 1つの区間が複数の路線に属することがあり
+/// (実測で首都圏の約半分が2本以上、最大10本)、先頭だけ取ると
+/// 「国道4号かつ6号」の片方が消える。
+pub fn build_roads_extract_sql(release: &str, bbox: BoundingBox, output: &str) -> String {
+    let BoundingBox {
+        xmin,
+        ymin,
+        xmax,
+        ymax,
+    } = bbox;
+    let classes = road_class_list();
+    format!(
+        "INSTALL spatial; LOAD spatial;
+INSTALL httpfs; LOAD httpfs;
+SET s3_region='us-west-2';
+-- **メモリを絞って流す。** 全国の幹線は87万区間あり、既定のままだと
+-- 書き出しまで抱え込んでOOMで殺される (実測: 81MBまで書いたところで落ちた)。
+-- 取り出しは射影と絞り込みだけなので、順序さえ保たなければ流しながら書ける。
+-- 並べ替えはこのあと optimize_geoparquet が空間充填曲線でやり直すので、
+-- ここでの行順には意味が無い。
+SET preserve_insertion_order = false;
+SET memory_limit = '2GB';
+COPY (
+  SELECT
+    names.primary AS road_name,
+    class,
+    -- routes が丸ごとNULLのこともあるので、空リストに寄せてから展開する。
+    list_filter(
+      list_transform(coalesce(routes, []), lambda r: r.name), lambda x: x IS NOT NULL
+    ) AS route_names,
+    list_filter(
+      list_transform(coalesce(routes, []), lambda r: r.network), lambda x: x IS NOT NULL
+    ) AS networks,
+    -- 表示範囲での絞り込みに使う covering 列。
+    bbox,
+    geometry
+  FROM read_parquet(
+    's3://overturemaps-us-west-2/release/{release}/theme=transportation/type=segment/*',
+    hive_partitioning=1
+  )
+  -- covering列で先に絞る。divisionsと同じ理由で、交差判定ではなく
+  -- xmin/yminが範囲内という条件にしてrow groupの読み飛ばしを効かせる。
+  WHERE bbox.xmin BETWEEN {xmin} AND {xmax}
+    AND bbox.ymin BETWEEN {ymin} AND {ymax}
+    AND subtype = 'road'
+    AND class IN ({classes})
+) TO '{output}' (FORMAT PARQUET);"
+    )
+}
+
+/// 日本の道路だけを残す条件。`r` という別名の道路テーブルを前提にする。
+///
+/// **Overtureの道路には国の列が無い。** 日本を囲む矩形で切り出すと、
+/// 朝鮮半島と中国東北部がまるごと入る (実測で21.7万区間、`봉영로` `京抚线` など)。
+/// 経度緯度では切り分けられない — 対馬 (129.2〜129.5) と釜山 (129.0〜129.3) が重なる。
+///
+/// 判定は**市区町村ポリゴンとの交差**で行う。都道府県ポリゴンだと、
+/// Overture側が小さい島を含んでおらず、**しまなみ海道の県道や沖縄の国道58号が
+/// 巻き添えで消える** (実測で2,547区間)。市区町村なら島も市町村に属するので拾える。
+///
+/// それでも市区町村ポリゴンには隙間があり、米原や下仁田のあたりで377区間が落ちる。
+/// **`JP:` で始まる系統を持つものは無条件で残す**ことで拾い直す。
+/// 残る取りこぼしは、系統を持たずかな入りの名前を持つ**2区間**だけ。
+fn japan_road_filter(divisions: &str) -> String {
+    format!(
+        "(
+    EXISTS (
+      SELECT 1 FROM read_parquet('{divisions}') jp
+      WHERE {MUNICIPALITY_FILTER}
+        AND jp.bbox.xmin <= r.bbox.xmax AND jp.bbox.xmax >= r.bbox.xmin
+        AND jp.bbox.ymin <= r.bbox.ymax AND jp.bbox.ymax >= r.bbox.ymin
+        AND ST_Intersects(jp.geometry, r.geometry)
+    )
+    OR len(list_filter(r.networks, lambda n: starts_with(n, 'JP'))) > 0
+  )"
+    )
+}
+
+/// 空間結合を流すときの設定。
+///
+/// 空間関数が確保するメモリは `memory_limit` の外側にあるので、並列度を抑える
+/// ([`build_clip_ocean_sql`] と同じ理由)。行順はこのあと空間充填曲線で組み直す。
+const SPATIAL_JOIN_SETTINGS: &str = "SET threads = 4;
+SET memory_limit = '2GB';
+SET preserve_insertion_order = false;";
+
+/// 道路の収録範囲とジオメトリ種別を、class ごとに求めるSQL。
+///
+/// **書き出すものと同じ絞り込みを掛ける。** 掛けないと、収録範囲が大陸まで
+/// 広がったまま `geo` メタデータに入る。
+pub fn build_roads_stats_sql(input: &str, divisions: &str, class: &str) -> String {
+    let japan = japan_road_filter(divisions);
+    format!(
+        "INSTALL spatial; LOAD spatial;
+{SPATIAL_JOIN_SETTINGS}
+SELECT
+  min(r.bbox.xmin) AS xmin,
+  min(r.bbox.ymin) AS ymin,
+  max(r.bbox.xmax) AS xmax,
+  max(r.bbox.ymax) AS ymax,
+  list_sort(list_distinct(list(ST_GeometryType(r.geometry)::VARCHAR))) AS geometry_types
+FROM read_parquet('{input}') r
+WHERE r.class = '{class}'
+  AND {japan};"
+    )
+}
+
+/// 切り出した道路から、配信用のデータセットを class ごとに組み立てるSQL。
+///
+/// **class で分けて書く。** 全国で87万区間あり、1ファイルにすると
+/// `optimize_geoparquet` が全行をメモリに載せるところで苦しくなる。
+/// 分けても `read_parquet([...])` で1つのビューに束ねられる。
+///
+/// ジオメトリをBLOBとして書く理由は [`build_admin_sql`] と同じ。
+pub fn build_roads_sql(
+    input: &str,
+    divisions: &str,
+    class: &str,
+    output: &str,
+    geo_metadata_json: &str,
+    vintage: &str,
+) -> String {
+    let escaped = geo_metadata_json.replace('\'', "''");
+    let vintage = vintage.replace('\'', "''");
+    let vintage_key = crate::geoparquet::VINTAGE_KEY;
+    let japan = japan_road_filter(divisions);
+    format!(
+        "INSTALL spatial; LOAD spatial;
+{SPATIAL_JOIN_SETTINGS}
+COPY (
+  SELECT
+    r.road_name,
+    r.class,
+    r.route_names,
+    r.networks,
+    r.bbox,
+    ST_AsWKB(r.geometry)::BLOB AS geometry
+  FROM read_parquet('{input}') r
+  WHERE r.class = '{class}'
+    AND {japan}
+) TO '{output}' (FORMAT PARQUET, KV_METADATA {{
+  geo: '{escaped}',
+  '{vintage_key}': '{vintage}'
+}});"
+    )
+}
+
 /// 切り出したdivisionsから、行政区域データセットを組み立てるSQL。
 ///
 /// 列名は国土数値情報(N03)から作るものと揃えてある。出所が変わってもUIを
@@ -494,5 +661,116 @@ mod tests {
     fn admin_sql_escapes_quotes_in_metadata() {
         let sql = build_admin_sql("/tmp/div.parquet", "/tmp/admin.parquet", "it's");
         assert!(sql.contains("geo: 'it''s'"));
+    }
+
+    // **GERS ID は持ち帰らない。** 首都圏の実測でファイルの28%を占めていたが、
+    // こちらでは地物の同定に使っていない。
+    #[test]
+    fn roads_extract_drops_the_gers_id() {
+        let sql = build_roads_extract_sql("2026-07-22.0", JAPAN_BBOX, "/tmp/roads.parquet");
+
+        assert!(sql.contains("theme=transportation/type=segment"));
+        assert!(!sql.contains("    id,"));
+        assert!(sql.contains("subtype = 'road'"));
+    }
+
+    // **メモリを絞らないとOOMで殺される。** 実測で81MBまで書いたところで落ちた。
+    // 行順はこのあと空間充填曲線で組み直すので、保たなくてよい。
+    #[test]
+    fn roads_extract_streams_within_a_memory_limit() {
+        let sql = build_roads_extract_sql("2026-07-22.0", JAPAN_BBOX, "/tmp/roads.parquet");
+
+        assert!(sql.contains("SET preserve_insertion_order = false;"));
+        assert!(sql.contains("SET memory_limit = '2GB';"));
+    }
+
+    // **1区間が複数の路線に属する。** 実測で首都圏の約半分が2本以上 (最大10本) なので、
+    // 先頭だけ取ると「国道4号かつ6号」の片方が消える。
+    #[test]
+    fn roads_extract_keeps_every_route() {
+        let sql = build_roads_extract_sql("2026-07-22.0", JAPAN_BBOX, "/tmp/roads.parquet");
+
+        assert!(sql.contains("list_transform(coalesce(routes, []), lambda r: r.name)"));
+        assert!(sql.contains("list_transform(coalesce(routes, []), lambda r: r.network)"));
+        // routes が丸ごとNULLの行で落ちないこと。
+        assert!(sql.contains("coalesce(routes, [])"));
+    }
+
+    // 幹線だけに絞る。residential まで入れると桁が変わる。
+    #[test]
+    fn roads_extract_limits_the_classes() {
+        let sql = build_roads_extract_sql("2026-07-22.0", JAPAN_BBOX, "/tmp/roads.parquet");
+
+        for class in ROAD_CLASSES {
+            assert!(sql.contains(&format!("'{class}'")), "{class} が無い");
+        }
+        assert!(!sql.contains("'residential'"));
+    }
+
+    // class ごとに分けて書く。1ファイルにすると optimize_geoparquet が
+    // 全行をメモリに載せるところで苦しくなる。
+    #[test]
+    fn roads_sql_writes_one_class_at_a_time() {
+        let sql = build_roads_sql(
+            "/tmp/roads.parquet",
+            "/tmp/div.parquet",
+            "trunk",
+            "/tmp/out.parquet",
+            r#"{"version":"1.1.0"}"#,
+            "Overture 2026-07-22.0",
+        );
+
+        assert!(sql.contains("WHERE r.class = 'trunk'"));
+        assert!(sql.contains("ST_AsWKB(r.geometry)::BLOB AS geometry"));
+        assert!(sql.contains(r#"geo: '{"version":"1.1.0"}'"#));
+        assert!(sql.contains("'duck:vintage': 'Overture 2026-07-22.0'"));
+    }
+
+    // **Overtureの道路には国の列が無い。** 日本を囲む矩形には朝鮮半島と
+    // 中国東北部が入る (実測21.7万区間)。経度緯度では切り分けられないので、
+    // 市区町村ポリゴンとの交差で判定する。
+    #[test]
+    fn roads_sql_keeps_japan_only() {
+        let sql = build_roads_sql(
+            "/tmp/roads.parquet",
+            "/tmp/div.parquet",
+            "trunk",
+            "/tmp/out.parquet",
+            "{}",
+            "v",
+        );
+
+        assert!(sql.contains("ST_Intersects(jp.geometry, r.geometry)"));
+        assert!(sql.contains(MUNICIPALITY_FILTER));
+        // 都道府県ポリゴンでは島が抜ける。市区町村で見ること。
+        assert!(!sql.contains("subtype = 'region'"));
+    }
+
+    // 市区町村ポリゴンには隙間があり、それだけだと米原や下仁田で377区間が落ちる。
+    // `JP:` で始まる系統を持つものは無条件で残して拾い直す。
+    #[test]
+    fn roads_sql_rescues_segments_with_a_japanese_route_network() {
+        let sql = build_roads_sql(
+            "/tmp/roads.parquet",
+            "/tmp/div.parquet",
+            "trunk",
+            "/tmp/out.parquet",
+            "{}",
+            "v",
+        );
+
+        assert!(sql.contains("starts_with(n, 'JP')"));
+        assert!(sql.contains("OR len(list_filter(r.networks,"));
+    }
+
+    // 収録範囲は書き出すものと同じ絞り込みで測る。
+    // 掛け忘れると、範囲が大陸まで広がったまま geo メタデータに入る。
+    #[test]
+    fn roads_stats_use_the_same_filter_as_the_output() {
+        let stats = build_roads_stats_sql("/tmp/roads.parquet", "/tmp/div.parquet", "trunk");
+
+        assert!(stats.contains("ST_Intersects(jp.geometry, r.geometry)"));
+        assert!(stats.contains("starts_with(n, 'JP')"));
+        assert!(stats.contains("WHERE r.class = 'trunk'"));
     }
 }

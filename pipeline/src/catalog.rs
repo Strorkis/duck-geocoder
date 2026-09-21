@@ -86,6 +86,12 @@ pub enum DatasetKind {
     /// [`DatasetKind::Railway`] と分けているのは駅名などの列が増えるため
     /// ([`DatasetKind::PlateauBuildings`] と同じ理由)。
     RailwayStation,
+    /// 道路 (線)。人と車がいるので、墜落は二次事故になる。
+    ///
+    /// 出所はOverture。**国のデータには路線名が無い** (N13の属性8つに含まれず、
+    /// 地理院の道路中心線も名前は注記レイヤにしかない) ので、
+    /// 「国道13号」で引けるのはこちらだけ。詳細は docs/data-sources.md。
+    Road,
 }
 
 /// 列1つ。項目名はSTACのTable拡張に合わせてある。
@@ -304,6 +310,20 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             summary_columns: &["class"],
             mesh_digits: None,
             via: "https://docs.overturemaps.org/guides/buildings/",
+        },
+    ),
+    (
+        "overture_roads",
+        Description {
+            kind: DatasetKind::Road,
+            collection: "overture-roads",
+            title: "道路",
+            description: "Overtureの道路 (線) のうち幹線。1つの区間が複数の路線に属することがあるので、路線名と系統はリストで持つ。",
+            attribution: OVERTURE,
+            // Overtureの道路等級。"motorway"=高速、"trunk"≒国道、"primary"≒主要地方道・県道。
+            summary_columns: &["class"],
+            mesh_digits: None,
+            via: "https://docs.overturemaps.org/guides/transportation/",
         },
     ),
     (
@@ -748,6 +768,7 @@ mod tests {
                     | DatasetKind::PlateauBuildings
                     | DatasetKind::Railway
                     | DatasetKind::RailwayStation
+                    | DatasetKind::Road
             );
             assert_eq!(
                 is_filterable,
