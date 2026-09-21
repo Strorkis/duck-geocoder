@@ -1519,13 +1519,21 @@ test('検索に使うデータは検索するときだけ出る', async ({ page 
   // 起動時は検索欄にフォーカスが当たっているが、**まだ打っていない**ので出さない。
   await expect(support).toBeHidden();
 
+  // カーソルを載せただけでも出る。**何で引けるのか確かめたいのは打つ前。**
+  await page.locator('#search-panel').hover();
+  await expect(support).toBeVisible();
+
   await page.locator('#search-input').fill('港区');
   await expect(support).toBeVisible();
   await expect(support).toContainText('行政区域');
+  // 駅と路線も検索の対象。出さないと何で引けるのか分からない。
+  await expect(support).toContainText('駅・路線');
   // **切り替えさせない。** 外すと検索が壊れるので、チェックボックスは出さない。
   expect(await support.locator('input[type="checkbox"]').count()).toBe(0);
 
+  // フォーカスを外し、**カーソルも検索欄から離す**。どちらか残っていれば出たまま。
   await page.locator('#search-input').blur();
+  await page.mouse.move(640, 600);
   await expect(support).toBeHidden();
 });
 
@@ -1579,4 +1587,38 @@ test('同名の駅を束ねて海へ飛ばさない', async ({ page }) => {
       { message: 'どちらの住吉駅でもない地点で止まっている' },
     )
     .toBe(true);
+});
+
+/**
+ * **「品川駅」と打って0件だった。**
+ *
+ * 原典の `station_name` は「品川」で「駅」が付かないため、素直に連結すると
+ * 「品川駅」がどこにも一致しない。人がふつうに打つ形で引けること。
+ */
+test('「〜駅」と打っても引ける', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+
+  await page.locator('#search-input').fill('品川駅');
+  await expect(page.locator('#results li').first()).toContainText('品川駅', {
+    timeout: 30_000,
+  });
+});
+
+/**
+ * 路線名で引いたら**路線そのものが先頭**に出る。
+ * 駅ばかり並ぶと、路線を見たい人の役に立たない。
+ */
+test('路線名で引くと路線が先頭に出て、全体へ寄る', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+
+  await page.locator('#search-input').fill('山手線');
+  const first = page.locator('#results li').first();
+  await expect(first).toContainText('路線', { timeout: 30_000 });
+  await expect(first).toContainText('山手線');
+
+  await first.click();
+  // 路線は点ではなく範囲。端から端まで入る縮尺まで引く。
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as TestWindow).__map!.getZoom()))
+    .toBeLessThan(14);
 });

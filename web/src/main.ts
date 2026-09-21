@@ -251,7 +251,9 @@ type SearchResult =
   | { kind: 'admin'; label: string; adminId: string }
   | { kind: 'oaza'; label: string; lon: number; lat: number }
   // 駅。**人が実際に検索する語**なので、地名と並べて出す。
-  | { kind: 'station'; label: string; lon: number; lat: number };
+  | { kind: 'station'; label: string; lon: number; lat: number }
+  // 路線。点ではなく**範囲**なので、飛び先は fitBounds になる。
+  | { kind: 'line'; label: string; bbox: Bbox };
 
 /** 範囲 [xmin, ymin, xmax, ymax] (WGS84)。 */
 type Bbox = [number, number, number, number];
@@ -1135,15 +1137,25 @@ async function searchStations(
   conn: duckdb.AsyncDuckDBConnection,
   keyword: string,
 ): Promise<SearchResult[]> {
-  const expr = `station_name || line_name || operator`;
+  // **路線名が会社をまたいで重複していたら、会社名を添える。**
+  // 「本線」は10社が使っていて (552路線名のうち28が複数社で同名)、
+  // 「品川駅 (本線)」では何線か分からない。
+  const ambiguous = `count(DISTINCT operator) OVER (PARTITION BY line_name) > 1`;
+  // **「駅」を挟む。** 原典の `station_name` は「品川」で「駅」が付かないので、
+  // 人がふつうに打つ「品川駅」が1件も当たらなかった。
+  // (「〇〇駅」で終わる駅名も8件あるが、二重になっても照合には影響しない)
+  const expr = `station_name || '駅' || line_name || operator`;
   const result = await conn.query(`
-    SELECT
-      station_name, line_name, operator,
-      avg((bbox.xmin + bbox.xmax) / 2) AS lon,
-      avg((bbox.ymin + bbox.ymax) / 2) AS lat
-    FROM station
-    WHERE ${buildMatchConditions(keyword, expr)}
-    GROUP BY station_name, line_name, operator
+    SELECT * FROM (
+      SELECT
+        station_name, line_name, any_value(operator) AS operator,
+        ${ambiguous} AS ambiguous,
+        avg((bbox.xmin + bbox.xmax) / 2) AS lon,
+        avg((bbox.ymin + bbox.ymax) / 2) AS lat
+      FROM station
+      WHERE ${buildMatchConditions(keyword, expr)}
+      GROUP BY station_name, line_name, operator
+    )
     ORDER BY length(station_name || line_name)
     LIMIT ${MAX_RESULTS};
   `);
@@ -1152,15 +1164,64 @@ async function searchStations(
       station_name: string;
       line_name: string;
       operator: string;
+      ambiguous: boolean;
       lon: number;
       lat: number;
     };
+    // 同じ駅名が並ぶので路線名で見分けられるようにする。
+    // 路線名だけでは足りないとき (「本線」) は会社名も出す。
+    const line = r.ambiguous ? `${r.operator} ${r.line_name}` : r.line_name;
     return {
       kind: 'station' as const,
-      // 同じ駅名が並ぶので路線名で見分けられるようにする。
-      label: `${r.station_name}駅 (${r.line_name})`,
+      label: `${r.station_name}駅 (${line})`,
       lon: r.lon,
       lat: r.lat,
+    };
+  });
+}
+
+/**
+ * 路線を名前で引く。**路線そのものを候補に出す。**
+ *
+ * 「山手線」と打ったときに駅ばかり並ぶと、路線を見たい人の役に立たない。
+ *
+ * 範囲は**その路線の駅から**作る。路線のファイル (5.2MB、ジオメトリだけで4.6MB) を
+ * 読まずに済み、駅は検索のために既に読んでいる。実測で596路線のうち
+ * 駅が1つしかないのは2つだけで、範囲の中央値は14km。
+ */
+async function searchLines(
+  conn: duckdb.AsyncDuckDBConnection,
+  keyword: string,
+): Promise<SearchResult[]> {
+  const ambiguous = `count(DISTINCT operator) OVER (PARTITION BY line_name) > 1`;
+  const result = await conn.query(`
+    SELECT * FROM (
+      SELECT
+        line_name, any_value(operator) AS operator,
+        ${ambiguous} AS ambiguous,
+        min(bbox.xmin) AS west, min(bbox.ymin) AS south,
+        max(bbox.xmax) AS east, max(bbox.ymax) AS north
+      FROM station
+      WHERE ${buildMatchConditions(keyword, 'line_name || operator')}
+      GROUP BY line_name, operator
+    )
+    ORDER BY length(line_name)
+    LIMIT ${MAX_RESULTS};
+  `);
+  return result.toArray().map((row) => {
+    const r = row.toJSON() as unknown as {
+      line_name: string;
+      operator: string;
+      ambiguous: boolean;
+      west: number;
+      south: number;
+      east: number;
+      north: number;
+    };
+    return {
+      kind: 'line' as const,
+      label: r.ambiguous ? `${r.operator} ${r.line_name}` : r.line_name,
+      bbox: [r.west, r.south, r.east, r.north] as Bbox,
     };
   });
 }
@@ -1869,6 +1930,21 @@ async function main() {
   };
 
   const showResult = async (result: SearchResult) => {
+    // 路線は点ではなく**範囲**。端から端まで入るように寄せる。
+    if (result.kind === 'line') {
+      await Promise.all([setSourceData('highlight', null), setSourceData('selected-point', null)]);
+      const [west, south, east, north] = result.bbox;
+      map.fitBounds(
+        [
+          [west, south],
+          [east, north],
+        ],
+        // パネルが左下と右下にあるので、下側を多めに空ける。
+        { padding: { top: 60, bottom: 120, left: 60, right: 60 }, duration: 1500 },
+      );
+      return;
+    }
+
     // 地名(代表点しか無い)と駅はその地点へ飛ぶ。ポリゴンは消す。
     if (result.kind === 'oaza' || result.kind === 'station') {
       await Promise.all([
@@ -1929,7 +2005,9 @@ async function main() {
       const li = document.createElement('li');
       const badge = document.createElement('span');
       badge.className = 'badge';
-      badge.textContent = { admin: '行政区域', oaza: '地名', station: '駅' }[row.kind];
+      badge.textContent = { admin: '行政区域', oaza: '地名', station: '駅', line: '路線' }[
+        row.kind
+      ];
       li.append(badge, row.label);
       li.addEventListener('click', () => {
         resultsEl.innerHTML = '';
@@ -1954,15 +2032,18 @@ async function main() {
       busy('検索中…', async () => {
         // 駅は配信されていないこともある。無ければ地名と行政区域だけで引く。
         await Promise.all([ensureOaza(), ensureStations?.()]);
-        const [places, stations] = await Promise.all([
+        const [places, stations, lines] = await Promise.all([
           searchAddress(conn, keyword),
           ensureStations ? searchStations(conn, keyword) : Promise.resolve([]),
+          ensureStations ? searchLines(conn, keyword) : Promise.resolve([]),
         ]);
-        // 地名を先に出す。**駅名で引いたときは駅が先**に来てほしいので、
-        // 語がそのまま駅名に一致したものだけ前に出す。
-        const exact = stations.filter((s) => s.label.startsWith(`${keyword}駅`));
-        const rest = stations.filter((s) => !exact.includes(s));
-        return [...exact, ...places, ...rest].slice(0, MAX_RESULTS);
+        // **打った語がそのものを指しているものを先に出す。**
+        // 「山手線」で駅ばかり並ぶと、路線を見たい人の役に立たない。
+        // 「東京」なら東京駅が先に来てほしい。
+        const exactLines = lines.filter((l) => l.label.includes(keyword));
+        const exactStations = stations.filter((s) => s.label.startsWith(`${keyword}駅`));
+        const rest = stations.filter((s) => !exactStations.includes(s));
+        return [...exactLines, ...exactStations, ...places, ...rest].slice(0, MAX_RESULTS);
       })
         .then(renderResults)
         .catch((e: unknown) => {
@@ -1979,12 +2060,13 @@ async function main() {
    * クリックが届かなくなる (実測156px)。かといってフォーカスだけを条件にすると、
    * **起動時に検索欄へ自動でフォーカスが当たる**ので結局出っぱなしになる。
    */
+  // カーソルを検索欄の上に載せている間も出す。**何で引けるのかを確かめたいのは
+  // 打つ前**で、打ち始めるまで出ないと「たまたま見えた」状態になる。
+  let hoveringSearch = false;
+
   const updateSupportVisibility = () => {
-    layerSupportEl.hidden = !(
-      hasSupportRows &&
-      document.activeElement === input &&
-      input.value.trim().length > 0
-    );
+    const typing = document.activeElement === input && input.value.trim().length > 0;
+    layerSupportEl.hidden = !(hasSupportRows && (typing || hoveringSearch));
   };
 
   input.addEventListener('input', () => {
@@ -1999,6 +2081,17 @@ async function main() {
   });
   input.addEventListener('blur', () => {
     resultsEl.innerHTML = '';
+    updateSupportVisibility();
+  });
+
+  // 検索欄 (とその一覧) にカーソルが載っている間も出す。
+  const searchPanel = document.querySelector<HTMLDivElement>('#search-panel')!;
+  searchPanel.addEventListener('mouseenter', () => {
+    hoveringSearch = true;
+    updateSupportVisibility();
+  });
+  searchPanel.addEventListener('mouseleave', () => {
+    hoveringSearch = false;
     updateSupportVisibility();
   });
   // 候補のクリックは blur より先に mousedown が走る。既定動作を止めて
@@ -2636,6 +2729,8 @@ async function main() {
     ['admin', '行政区域'],
     ['oaza', '地名 (大字・町丁目)'],
     ['block', '街区'],
+    // 駅と路線も検索の対象。**一覧に出さないと、何で引けるのか分からない。**
+    ['railway_station', '駅・路線'],
   ];
   const supportRows = supportKinds.flatMap(([kind, title]) => {
     const collection = byKind(kind)[0];
