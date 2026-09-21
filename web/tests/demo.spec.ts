@@ -1711,3 +1711,125 @@ test('路線のハイライトに塗りが出ない', async ({ page }) => {
   expect(drawn.line).toBeGreaterThan(0);
   expect(drawn.fill).toBe(0);
 });
+
+const ROAD_DATASET = 'overture_roads_trunk';
+
+async function hasRoads(page: Page): Promise<boolean> {
+  return (await datasetUrl(page, ROAD_DATASET)) !== null;
+}
+
+/** 道路を表示し、描かれるまで待つ。 */
+async function showRoads(page: Page, zoom = 13) {
+  await page.evaluate((z) => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7671, 35.6812], zoom: z }); // 東京駅
+  }, zoom);
+  await showLayer(page, 'road');
+  await expect.poll(() => sourceFeatureCount(page, 'road'), { timeout: 60_000 }).toBeGreaterThan(0);
+}
+
+/**
+ * **主役は「ここに何があるか」。** 道路は一覧に並び、切り替えで出せる。
+ * 既定で出さないのは、幹線だけで65.6万区間あって他のデータを覆うため。
+ */
+test('道路は切り替えで出せる', async ({ page }) => {
+  test.skip(!(await hasRoads(page)), '道路のデータが無い');
+
+  await expect(page.locator('[data-layer="road"]')).toBeVisible();
+  // チェックするまで読みにも行かない。
+  expect(await sourceFeatureCount(page, 'road')).toBe(0);
+
+  await showRoads(page);
+});
+
+/** 件数は行に出る。「この範囲に何区間あるか」が読めること。 */
+test('道路の件数が一覧に出る', async ({ page }) => {
+  test.skip(!(await hasRoads(page)), '道路のデータが無い');
+
+  await showRoads(page);
+  await expect(page.locator('[data-layer="road"]')).toContainText('区間', { timeout: 30_000 });
+});
+
+/**
+ * **等級で絞れる。** ファイルが class ごとに分かれているので、
+ * 外した等級はそもそも読みに行かない。
+ */
+test('道路は種別で絞れる', async ({ page }) => {
+  test.skip(!(await hasRoads(page)), '道路のデータが無い');
+
+  await showRoads(page);
+  const before = await sourceFeatureCount(page, 'road');
+
+  await openLayerSettings(page, 'road');
+  await page.locator('#road-none').click();
+  await expect.poll(() => sourceFeatureCount(page, 'road'), { timeout: 30_000 }).toBe(0);
+
+  await page.locator('#road-all').click();
+  await expect.poll(() => sourceFeatureCount(page, 'road'), { timeout: 60_000 }).toBe(before);
+});
+
+/**
+ * **「国道13号」で引ける。** 国のデータ (N13・地理院の道路中心線) は
+ * 路線名を持たないので、名前で引けるのはOvertureだけ
+ * (docs/data-sources.md の「道路」を参照)。
+ */
+test('国道の名前で引くと路線全体へ寄る', async ({ page }) => {
+  test.skip(!(await hasRoads(page)), '道路のデータが無い');
+
+  await page.locator('#search-input').fill('国道13号');
+  const first = page.locator('#results li').first();
+  await expect(first).toContainText('国道13号', { timeout: 60_000 });
+  // 何で引いたかが分かること。
+  await expect(first.locator('.badge')).toHaveText('道路');
+
+  await first.click();
+  // 福島〜秋田にまたがるので、選ぶと大きく引く。
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as TestWindow).__map!.getZoom()), {
+      timeout: 60_000,
+    })
+    .toBeLessThan(10);
+});
+
+/** 選んだ道路は線としてハイライトされる。鉄道の路線と同じ見せ方。 */
+test('道路を選ぶと線がハイライトされる', async ({ page }) => {
+  test.skip(!(await hasRoads(page)), '道路のデータが無い');
+
+  expect(await highlightFeatureCount(page)).toBe(0);
+
+  await page.locator('#search-input').fill('国道13号');
+  const first = page.locator('#results li').first();
+  await expect(first).toContainText('国道13号', { timeout: 60_000 });
+  await first.click();
+
+  await expect.poll(() => highlightFeatureCount(page), { timeout: 60_000 }).toBe(1);
+
+  const type = await page.evaluate(async () => {
+    const map = (window as unknown as TestWindow).__map!;
+    const data = await (map.getSource('highlight') as GeoJSONSource).getData();
+    if (data.type === 'Feature') return data.geometry.type;
+    if (data.type === 'FeatureCollection') return data.features[0]?.geometry.type;
+    return data.type;
+  });
+  expect(type).toBe('MultiLineString');
+});
+
+/**
+ * **道路が候補を埋めないこと。**
+ *
+ * 「東京」には109の路線が当たる。上限を掛けずに前へ出したときは
+ * 候補10件をすべて道路が占め、東京駅も東京都も消えた。
+ * 打った語そのものを指す道路 (「国道13号」) は先頭のままにしたいので、
+ * 上限を掛けるのは**それ以外**。
+ */
+test('道路の候補が駅や地名を押し出さない', async ({ page }) => {
+  test.skip(!(await hasRoads(page)), '道路のデータが無い');
+
+  await page.locator('#search-input').fill('東京');
+  await expect(page.locator('#results li').first()).toBeVisible({ timeout: 60_000 });
+
+  const badges = await page.locator('#results li .badge').allTextContents();
+  expect(badges.filter((b) => b === '道路').length).toBeLessThanOrEqual(3);
+  // 駅と行政区域が残っていること。
+  expect(badges).toContain('駅');
+});

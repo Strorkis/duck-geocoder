@@ -1244,6 +1244,15 @@ function buildMatchConditions(keyword: string, concatExpr: string): string {
 /** 候補として表示する件数の上限 (行政区域と地名の合計)。 */
 const MAX_RESULTS = 10;
 
+/**
+ * 打った語そのものではない道路を、候補に出す上限。
+ *
+ * **道路は同じ語を含む路線が桁違いに多い。**「東京」には109路線が当たり、
+ * 上限を掛けずに前へ出したときは候補10件をすべて道路が埋めて、
+ * 東京駅も東京都も消えた。
+ */
+const ROUTE_SUGGESTIONS = 3;
+
 async function searchAddress(
   conn: duckdb.AsyncDuckDBConnection,
   keyword: string,
@@ -2401,13 +2410,23 @@ async function main() {
         // 「山手線」で駅ばかり並ぶと、路線を見たい人の役に立たない。
         // 「東京」なら東京駅が先に来てほしい。
         const exactLines = lines.filter((l) => l.label.includes(keyword));
-        const exactRoutes = routes.filter((r) => r.label.includes(keyword));
         const exactStations = stations.filter((s) => s.label.startsWith(`${keyword}駅`));
         const rest = stations.filter((s) => !exactStations.includes(s));
-        return [...exactLines, ...exactRoutes, ...exactStations, ...places, ...rest].slice(
-          0,
-          MAX_RESULTS,
-        );
+        // **道路は数が多いので、打った語そのもの以外は後ろに回して上限を掛ける。**
+        // 「東京」には109路線が当たり、候補10件を道路が埋めて
+        // 東京駅も東京都も消えた。「国道13号」のように語そのものを指すものは先頭。
+        const exactRoutes = routes.filter((r) => r.label === keyword);
+        const otherRoutes = routes
+          .filter((r) => r.label !== keyword)
+          .slice(0, ROUTE_SUGGESTIONS);
+        return [
+          ...exactRoutes,
+          ...exactLines,
+          ...exactStations,
+          ...places,
+          ...otherRoutes,
+          ...rest,
+        ].slice(0, MAX_RESULTS);
       })
         .then(renderResults)
         .catch((e: unknown) => {
