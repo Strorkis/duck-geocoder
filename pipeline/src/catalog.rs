@@ -50,6 +50,11 @@ pub struct DatasetEntry {
     /// 出所を見ただけでは版が分からず、古いものを新しいと思って使う事故が起きる。
     /// 配布元が名乗っている形 (`N02-25 (2026-03-06)` など) をそのまま持ち回る。
     pub vintage: Option<String>,
+    /// **原典にあるLOD** (`"1,2,3"`)。GeoParquetの `duck:source_lod` から読む。
+    ///
+    /// PLATEAUの建物はLOD0しか読んでいないので、**配信しているものと原典の差**を
+    /// 画面で示すために持つ。都市ごとに違うのでファイル単位。
+    pub source_lod: Option<String>,
     /// **この出所の配布元。** 出所全体で1つ。ファイル側に `via` が無くてもこれはある。
     pub collection_via: &'static str,
 }
@@ -587,6 +592,7 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
     };
     let via = key_value(crate::geoparquet::VIA_KEY);
     let vintage = key_value(crate::geoparquet::VINTAGE_KEY);
+    let source_lod = key_value(crate::geoparquet::SOURCE_LOD_KEY);
 
     let columns = file_metadata
         .schema_descr()
@@ -625,6 +631,7 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         mesh_digits: described.mesh_digits,
         via,
         vintage,
+        source_lod,
         collection_via: described.via,
     })
 }

@@ -295,6 +295,8 @@ fn write(
             // 配布元は出所全体で1つ (国土数値情報の鉄道データ)。カタログ側が持つ。
             via: None,
             vintage,
+            // 鉄道にLODの概念は無い。
+            source_lod: None,
         },
     )
     .with_context(|| format!("書き出しに失敗しました: {}", output.display()))

@@ -91,7 +91,11 @@ interface StacCollection {
 interface StacItem {
   id: string;
   bbox?: number[];
-  properties: { 'table:row_count'?: number };
+  properties: {
+    'table:row_count'?: number;
+    /** 原典にあるLOD ("1,2,3")。**配信しているものより細かいものが原典にある**ときだけ付く。 */
+    'duck:source_lod'?: string;
+  };
   assets: { data: { href: string } };
 }
 
@@ -237,11 +241,35 @@ function toCollection(document: StacCollection): Collection {
 }
 
 /** Itemを配信パスと収録範囲の組にする。 */
-function itemFiles(items: StacItem[]): { file: string; bbox: Bbox | null }[] {
+function itemFiles(items: StacItem[]): ItemFile[] {
   return items.map((item) => ({
     file: item.assets.data.href,
     bbox: item.bbox?.length === 4 ? (item.bbox as Bbox) : null,
+    sourceLod: parseSourceLod(item.properties['duck:source_lod']),
   }));
+}
+
+/** ファイル1つ分。収録範囲と、原典がどこまで細かいか。 */
+interface ItemFile {
+  file: string;
+  bbox: Bbox | null;
+  /** 原典にあるLOD (昇順)。無ければ空。 */
+  sourceLod: number[];
+}
+
+/**
+ * "1,2,3" を [1,2,3] にする。
+ *
+ * **読めない値は捨てる。** 配信側の形が変わっても、LODの表示が消えるだけで
+ * 建物そのものは出る。
+ */
+function parseSourceLod(value: string | undefined): number[] {
+  if (!value) return [];
+  return value
+    .split(',')
+    .map((part) => Number(part.trim()))
+    .filter((lod) => Number.isFinite(lod))
+    .sort((a, b) => a - b);
 }
 
 /**
@@ -345,7 +373,7 @@ interface BuildingSource {
    * 収録範囲の枠 (`bbox`) と絞り込みの選択肢はCollectionだけで作れるので、
    * 寄って実際に引くまでItemを取りに行かずに済む。
    */
-  files: { file: string; bbox: Bbox | null }[];
+  files: ItemFile[];
   /** 収録範囲 (ファイル全部の和)。Collectionが持っているので最初から分かる。 */
   bbox: Bbox | null;
   /** 高さの列があるか。あれば高さで絞れるし、立体の高さにも使える。 */
@@ -374,7 +402,7 @@ interface RailwaySource {
   /** 路線か駅か。描き分けと、駅名を引くかどうかに使う。 */
   kind: 'railway' | 'railway_station';
   bbox: Bbox | null;
-  files: { file: string; bbox: Bbox | null }[];
+  files: ItemFile[];
   ensure: () => Promise<void>;
 }
 
@@ -385,7 +413,7 @@ interface RailwaySource {
 interface RoadSource {
   id: string;
   bbox: Bbox | null;
-  files: { file: string; bbox: Bbox | null }[];
+  files: ItemFile[];
   ensure: () => Promise<void>;
 }
 
@@ -441,7 +469,7 @@ interface MeshSource {
   /** 収録範囲。 */
   bbox: Bbox | null;
   /** このデータセットを構成するファイル。`ensure()` を呼ぶまで空。 */
-  files: { file: string; bbox: Bbox | null }[];
+  files: ItemFile[];
   ensure: () => Promise<void>;
 }
 
@@ -545,16 +573,49 @@ function igrcBand(density: number) {
  *
  * 人口メッシュ (都道府県ごとに1ファイル) も同じ仕組みで絞る。
  */
+/**
+ * **このパイプラインが読んでいるLOD。**
+ *
+ * PLATEAUの建物は `bldg:lod0RoofEdge` (屋根の外周線) だけを読み、高さの数値で
+ * 押し出している。原典にはもっと細かいものが入っているので、その差を示す。
+ */
+const SHOWN_LOD = 0;
+
+/**
+ * 「表示はLOD0 / 原典はLOD3まで」を作る。無ければ空文字。
+ *
+ * **表示範囲に入っているファイルから最大を取る。** 都市ごとに違うので、
+ * 1つずつ並べると行が伸びる。原典が表示と同じ細かさしか無ければ何も言わない
+ * (言っても情報が無い)。
+ */
+function sourceLodNote(
+  source: { files: ItemFile[] },
+  bounds: ViewBounds,
+): string {
+  const lods = source.files
+    .filter(({ bbox }) => !bbox || bboxOverlaps(bbox, bounds))
+    .flatMap(({ sourceLod }) => sourceLod);
+  if (lods.length === 0) return '';
+  const max = Math.max(...lods);
+  if (max <= SHOWN_LOD) return '';
+  return ` · 表示はLOD${SHOWN_LOD} / 原典はLOD${max}まで`;
+}
+
+/** 収録範囲が表示範囲と重なるか。 */
+function bboxOverlaps([west, south, east, north]: Bbox, bounds: ViewBounds): boolean {
+  return (
+    west <= bounds.east && east >= bounds.west && south <= bounds.north && north >= bounds.south
+  );
+}
+
 function filesInView(
-  source: { files: { file: string; bbox: Bbox | null }[] },
+  source: { files: ItemFile[] },
   bounds: ViewBounds,
 ): string[] {
-  const overlapping = source.files.filter(({ bbox }) => {
+  const overlapping = source.files.filter(
     // 収録範囲が分からないファイルは落とさない (判断材料が無いので読む)。
-    if (!bbox) return true;
-    const [west, south, east, north] = bbox;
-    return west <= bounds.east && east >= bounds.west && south <= bounds.north && north >= bounds.south;
-  });
+    ({ bbox }) => !bbox || bboxOverlaps(bbox, bounds),
+  );
   return overlapping.map(({ file }) => file);
 }
 
@@ -2506,24 +2567,19 @@ async function main() {
     // 取得を始める前に件数表示を空にする。引いていたときの「拡大すると建物が出ます」が
     // 残っていると、すでに寄っている利用者に拡大しろと言い続けることになる。
     buildingCountEl.textContent = '';
+    const b = map.getBounds();
+    const c = map.getCenter();
+    const bounds: ViewBounds = {
+      west: b.getWest(),
+      south: b.getSouth(),
+      east: b.getEast(),
+      north: b.getNorth(),
+      centerLon: c.lng,
+      centerLat: c.lat,
+    };
     const rows = await busy('建物を読み込み中…', async () => {
       await source.ensure();
-      const b = map.getBounds();
-      const c = map.getCenter();
-      return fetchBuildingsInView(
-        conn,
-        source,
-        {
-          west: b.getWest(),
-          south: b.getSouth(),
-          east: b.getEast(),
-          north: b.getNorth(),
-          centerLon: c.lng,
-          centerLat: c.lat,
-        },
-        filter,
-        BUILDINGS_LIMIT,
-      );
+      return fetchBuildingsInView(conn, source, bounds, filter, BUILDINGS_LIMIT);
     });
     if (token !== buildingsToken) return;
 
@@ -2535,10 +2591,11 @@ async function main() {
         geometry: row.geojson,
       })),
     });
-    buildingCountEl.textContent =
+    const count =
       rows.length >= BUILDINGS_LIMIT
         ? `${BUILDINGS_LIMIT}件以上 (表示上限)`
         : `${rows.length}件`;
+    buildingCountEl.textContent = count + sourceLodNote(source, bounds);
   };
 
   const requestRefresh = () => {

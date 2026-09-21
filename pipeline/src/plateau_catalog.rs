@@ -16,6 +16,7 @@
 //! **HEADには404を返す**ので、長さはGETのRangeから取る (`remote_zip::HttpRange`)。
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// カタログAPI。都市の一覧とzipのURLが入っている (約9MB)。
 pub const CATALOG_URL: &str = "https://api.plateauview.mlit.go.jp/datacatalog/plateau-datasets";
@@ -34,6 +35,11 @@ pub struct City {
     /// 収録している地物の種別 (`bldg` / `dem` / `fld` など)。
     #[serde(default)]
     pub feature_types: Vec<String>,
+    /// 地物の種別 → 原典にあるLODの一覧 (昇順・重複なし)。
+    ///
+    /// `latest_datasets` から組み立てるので、JSONから直接は読まない。
+    #[serde(skip)]
+    lods: BTreeMap<String, Vec<u8>>,
 }
 
 impl City {
@@ -41,23 +47,92 @@ impl City {
     pub fn has_buildings(&self) -> bool {
         self.feature_types.iter().any(|t| t == "bldg")
     }
+
+    /// この地物が**原典でLOD幾つまであるか**。昇順・重複なし。
+    ///
+    /// このパイプラインが読むのはCityGMLのLOD0 (屋根の外周線) だけなので、
+    /// 原典にそれ以上が入っていることを配信物に書き残すために使う。
+    ///
+    /// **政令指定都市は区ごとにデータがあり、区によって最大LODが違う**
+    /// (横浜市はLOD1〜4)。CityGMLのzipは市単位でしか落とせないので、
+    /// ここが返すのは**市としての集合**で、区の差は表現できない。
+    pub fn lods(&self, feature_type: &str) -> &[u8] {
+        self.lods.get(feature_type).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// `latest_datasets` の要素。
+///
+/// CityGMLのzipとは別に、3D Tiles / MVT に変換したものが**LODごとに**並んでいる
+/// (港区の建築物なら `13103_bldg_lod1` `13103_bldg_lod2` など5件)。
+/// 欲しいのは「どのLODがあるか」だけなので、3項目しか読まない。
+#[derive(Debug, Deserialize)]
+struct Dataset {
+    city_code: String,
+    /// 地物の種別 (`bldg` / `tran` など)。
+    type_en: String,
+    /// `"1"` 〜 `"4"`。**数値ではなく文字列**で入っている。
+    /// 3D Tiles 以外では省かれることがあるので `Option`。
+    lod: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Catalog {
     #[serde(default)]
     latest_citygml: Vec<City>,
+    #[serde(default)]
+    latest_datasets: Vec<Dataset>,
 }
 
 /// カタログのJSONから都市の一覧を取り出す。
 ///
 /// 取得とパースを分けてあるのは、固定のJSONで試せるようにするため。
+///
+/// `latest_datasets` からLODの一覧を組み立てて各都市に付ける。
+/// **同じJSONを1回読むだけ**なので、取得の回数は増えない。
 pub fn parse_catalog(json: &str) -> Result<Vec<City>> {
     let catalog: Catalog = serde_json::from_str(json).context("カタログを読めません")?;
     if catalog.latest_citygml.is_empty() {
         bail!("カタログに latest_citygml がありません (APIの形が変わった可能性)");
     }
-    Ok(catalog.latest_citygml)
+
+    // 都市コード → 地物 → LOD。同じLODが複数件あるので (テクスチャ有無で分かれる)
+    // BTreeSet で重複を落とす。
+    let mut by_city: HashMap<&str, BTreeMap<String, BTreeSet<u8>>> = HashMap::new();
+    for dataset in &catalog.latest_datasets {
+        // LOD が読めないものは飛ばす。**落とさない** — 3D Tiles 以外では
+        // 省かれる項目で、CityGMLの変換とは関係が無い。
+        let Some(lod) = dataset.lod.as_deref().and_then(|l| l.parse::<u8>().ok()) else {
+            continue;
+        };
+        by_city
+            .entry(dataset.city_code.as_str())
+            .or_default()
+            .entry(dataset.type_en.clone())
+            .or_default()
+            .insert(lod);
+    }
+
+    let mut cities = catalog.latest_citygml;
+    for city in &mut cities {
+        if let Some(types) = by_city.get(city.city_code.as_str()) {
+            city.lods = types
+                .iter()
+                .map(|(ty, lods)| (ty.clone(), lods.iter().copied().collect()))
+                .collect();
+        }
+    }
+    Ok(cities)
+}
+
+/// LODの一覧を配信物に書ける形にする。無ければ `None`。
+///
+/// `"1,2,3"` の形。読む側 (UI) が最大値を取れるよう、**昇順のまま**並べる。
+pub fn format_lods(lods: &[u8]) -> Option<String> {
+    if lods.is_empty() {
+        return None;
+    }
+    Some(lods.iter().map(u8::to_string).collect::<Vec<_>>().join(","))
 }
 
 /// 都市コードで引く。
@@ -87,6 +162,15 @@ mod tests {
 
     const SAMPLE: &str = r#"{
       "datasets": [],
+      "latest_datasets": [
+        { "id": "13103_bldg_lod1", "city_code": "13103", "type_en": "bldg", "lod": "1" },
+        { "id": "13103_bldg_lod2", "city_code": "13103", "type_en": "bldg", "lod": "2" },
+        { "id": "13103_bldg_lod2_no_texture", "city_code": "13103", "type_en": "bldg", "lod": "2" },
+        { "id": "13103_bldg_lod3", "city_code": "13103", "type_en": "bldg", "lod": "3" },
+        { "id": "13103_tran_lod1", "city_code": "13103", "type_en": "tran", "lod": "1" },
+        { "id": "13103_luse", "city_code": "13103", "type_en": "luse", "lod": null },
+        { "id": "01100_fld", "city_code": "01100", "type_en": "fld", "lod": "1" }
+      ],
       "latest_citygml": [
         { "city_code": "13103", "city": "港区", "pref": "東京都",
           "url": "https://api.plateauview.mlit.go.jp/datacatalog/citygml/13103-latest/citygml.zip",
@@ -112,6 +196,40 @@ mod tests {
         let cities = parse_catalog(SAMPLE).unwrap();
         assert!(find_city(&cities, "13103").unwrap().has_buildings());
         assert!(!find_city(&cities, "01100").unwrap().has_buildings());
+    }
+
+    /// **原典がLOD幾つまであるか**を配信物に書き残すために読む。
+    /// このパイプラインが読むのはLOD0だけなので、差があることを示す手掛かりになる。
+    #[test]
+    fn reads_the_lods_available_at_the_source() {
+        let cities = parse_catalog(SAMPLE).unwrap();
+        let minato = find_city(&cities, "13103").unwrap();
+
+        // 同じLODがテクスチャ有無で2件あるので、重複は落とす。
+        assert_eq!(minato.lods("bldg"), [1, 2, 3]);
+        assert_eq!(minato.lods("tran"), [1]);
+    }
+
+    // LODを持たない地物 (3D Tiles以外) で落ちないこと。CityGMLの変換とは関係が無い。
+    #[test]
+    fn skips_datasets_without_a_lod() {
+        let cities = parse_catalog(SAMPLE).unwrap();
+        assert!(find_city(&cities, "13103").unwrap().lods("luse").is_empty());
+    }
+
+    // データセットが1件も無い地物・都市で空を返すこと。
+    #[test]
+    fn returns_nothing_when_the_source_has_no_datasets() {
+        let cities = parse_catalog(SAMPLE).unwrap();
+        assert!(find_city(&cities, "13103").unwrap().lods("rwy").is_empty());
+        assert!(find_city(&cities, "01100").unwrap().lods("bldg").is_empty());
+    }
+
+    #[test]
+    fn formats_lods_for_the_delivered_file() {
+        assert_eq!(format_lods(&[1, 2, 3]).as_deref(), Some("1,2,3"));
+        // 無いときは項目ごと出さない。
+        assert_eq!(format_lods(&[]), None);
     }
 
     #[test]

@@ -238,6 +238,13 @@ pub const VIA_KEY: &str = "duck:via";
 /// **こちらで解釈して年に直したりしない。**
 pub const VINTAGE_KEY: &str = "duck:vintage";
 
+/// **原典にどのLODが入っているか**を書くキー。`"1,2,3"` の形 (昇順)。
+///
+/// PLATEAUの建物はLOD0 (屋根の外周線) しか読んでいないが、原典にはもっと入っている
+/// (港区はLOD3まである)。**見ている人がその差を知る手段が無い**ので、
+/// 変換したときにしか分からないこの事実をファイルに残す。
+pub const SOURCE_LOD_KEY: &str = "duck:source_lod";
+
 /// 配布元の素性。変換したときにしか分からないので、GeoParquetのKVメタデータに残す。
 ///
 /// **ファイルごとに違いうる。** PLATEAUは都市ごとにzipが分かれていて更新年度も
@@ -248,6 +255,8 @@ pub struct Provenance<'a> {
     pub via: Option<&'a str>,
     /// いつ時点のデータか。
     pub vintage: Option<&'a str>,
+    /// 原典にあるLOD (`"1,2,3"`)。**配信しているものと原典が違う**ときに書く。
+    pub source_lod: Option<&'a str>,
 }
 
 /// 非ジオメトリ列とジオメトリ列 (`geometry_columns` で作ったもの) を合わせて
@@ -305,6 +314,12 @@ pub fn write(
     if let Some(vintage) = provenance.vintage {
         writer
             .append_key_value_metadata(KeyValue::new(VINTAGE_KEY.to_string(), vintage.to_string()));
+    }
+    if let Some(source_lod) = provenance.source_lod {
+        writer.append_key_value_metadata(KeyValue::new(
+            SOURCE_LOD_KEY.to_string(),
+            source_lod.to_string(),
+        ));
     }
     writer.close().context("ファイルを閉じられません")?;
     Ok(())
@@ -442,6 +457,7 @@ mod tests {
             Provenance {
                 via: Some("https://example.invalid/source.zip"),
                 vintage: Some("TEST-01 (2026-01-01)"),
+                source_lod: Some("1,2,3"),
             },
         )
         .unwrap();

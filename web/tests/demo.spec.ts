@@ -1833,3 +1833,32 @@ test('道路の候補が駅や地名を押し出さない', async ({ page }) => 
   // 駅と行政区域が残っていること。
   expect(badges).toContain('駅');
 });
+
+/**
+ * **配信しているものと原典の差を示す。**
+ *
+ * PLATEAUの建物は `bldg:lod0RoofEdge` (屋根の外周線) だけを読み、高さの数値で
+ * 押し出しているので、どの建物も箱になる。原典にはもっと入っていて
+ * (港区はLOD3まである)、**見ている人はそれを知る手段が無かった。**
+ */
+test('建物の件数に原典のLODが添えられる', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  await showPlateauBuildings(page);
+  const count = page.locator('#building-count');
+  await expect(count).toContainText('表示はLOD0', { timeout: 30_000 });
+  // 港区の原典はLOD3まである。**件数と一緒の行に出す** (行を増やさない)。
+  await expect(count).toContainText('原典はLOD3まで');
+  await expect(count).toContainText('件');
+});
+
+/** LODの概念が無い出所には出さない。Overtureの建物には原典のLODが無い。 */
+test('OvertureにはLODを出さない', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  await showPlateauBuildings(page);
+  await expect(page.locator('#building-count')).toContainText('LOD', { timeout: 30_000 });
+
+  await page.locator('#building-source').selectOption({ label: 'Overture' });
+  await expect(page.locator('#building-count')).not.toContainText('LOD', { timeout: 30_000 });
+});

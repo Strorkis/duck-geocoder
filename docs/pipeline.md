@@ -373,6 +373,49 @@ CityGMLのパースは自前で書かず、PLATEAU公式コンバータの
 使うのは `bldg:lod0RoofEdge` (屋根の外周線) だけ。全建物にある2Dのフットプリントで、
 地図表示にはこれと `measuredHeight` があれば足りる。
 
+### 原典がLOD幾つまであるかを書き残す (2026-09-21)
+
+**読んでいるのはLOD0だけだが、原典にはもっと入っている。** 港区の1メッシュ
+(2,348棟) を数えると、`lod0RoofEdge` と `lod1Solid` は全棟にあり、
+`lod2Solid` が **305棟 (13%)** にあった。配信カタログによれば港区は**LOD3まで**ある。
+
+**見ている人にその差を知る手段が無い**ので、`duck:source_lod` (`"1,2,3"`) を
+GeoParquetのKVに書き、STACのItem経由でUIまで運ぶ。画面では
+「1,543件 · 表示はLOD0 / 原典はLOD3まで」と出る。
+
+出どころは配信カタログAPIの `latest_datasets`。`latest_citygml` と**同じJSON**に
+入っているので、取得の回数は増えない。
+
+```jsonc
+{ "id": "13103_bldg_lod2", "city_code": "13103", "type_en": "bldg", "lod": "2" }
+```
+
+全国ではこうなっている。
+
+| | LOD1 | LOD2 | LOD3 | LOD4 |
+| --- | ---: | ---: | ---: | ---: |
+| 建築物 | 306都市 | **247都市** | 18都市 | 2都市 |
+| 交通(道路) | 300都市 | 59都市 | 39都市 | — |
+
+**限界: 政令指定都市は区ごとにLODが違う。** 横浜市はLOD1〜4、川崎市はLOD1〜3で、
+区によって最大が変わる (17市が該当)。CityGMLのzipは市単位でしか落とせないので、
+**書けるのは市としての集合**で、区の差は表現できない。
+
+#### LOD2以上のジオメトリを配信しない理由
+
+**近似になるため。** 先行例 (`indigo-lab/plateau-lod2-mvt`、
+`shiwaku/plateau-lod2-mlt-pipeline`) は `bldg:RoofSurface` 1枚を1フィーチャにし、
+高さ属性を付けて `fill-extrusion` で立ち上げる。MapLibreだけで済み、千代田区で5.9MB。
+ただし**傾斜した屋根が平らな板に潰れる** (港区の1メッシュで1,848枚中613枚が傾斜)。
+壁も再現されず、屋根の板を地面から立ち上げた側面が壁に見えるだけになる。
+
+**本物の立体を出すなら描画を自前で書くことになる。** データ側は問題なく、
+DuckDBは `POLYGON Z` / `MULTIPOLYGON Z` を扱え、Zは `ST_AsGeoJSON` まで残る
+(`POLYHEDRALSURFACE` / `TIN` はDuckDB非対応だが、必要ない)。
+詰まるのは描画側で、**MapLibre v6に `model` レイヤーは無く** (`fill-extrusion` のみ)、
+deck.glのポリゴン系は2次元で三角形分割するため垂直面が潰れる。
+deck.glの `SimpleMeshLayer` かMapLibreの `CustomLayerInterface` が要る。
+
 **数値属性には「不明」を表す番兵値が混ざる。** `measuredHeight = -9999` が4.4%、
 `storeysAboveGround = 9999` が14.8%。そのまま通すと絞り込みが壊れ、
 row groupの統計まで汚れるのでNULLに落としている。

@@ -88,9 +88,9 @@ fn from_cities(list: &str, out_dir: PathBuf) -> Result<()> {
 
 fn from_local(input: PathBuf, output: PathBuf) -> Result<()> {
     let rows = plateau::parse_zip(&input)?;
-    // 手元のzipからだと配布元のURLが分からない。
+    // 手元のzipからだと配布元のURLも、原典にどのLODがあるかも分からない。
     // **推測で埋めない** (同じファイル名でも出所が違いうる)。
-    finish(rows, output, None)
+    finish(rows, output, None, None)
 }
 
 fn from_city(city_code: &str, output: PathBuf) -> Result<()> {
@@ -127,13 +127,24 @@ fn convert_city(city: &plateau_catalog::City, output: &Path) -> Result<()> {
         100.0 * bytes as f64 / city.file_size as f64,
     );
     // 配布元のzipのURLをファイルに残す。実物が欲しい人が辿れるようにするため。
-    finish(rows, output.to_path_buf(), Some(&city.url))
+    // 併せて、**原典にどのLODがあるか**も残す。ここが読むのはLOD0だけなので、
+    // その差を画面で示せるようにする。
+    let lods = plateau_catalog::format_lods(city.lods("bldg"));
+    finish(rows, output.to_path_buf(), Some(&city.url), lods.as_deref())
 }
 
-fn finish(mut rows: Vec<plateau::Row>, output: PathBuf, via: Option<&str>) -> Result<()> {
+fn finish(
+    mut rows: Vec<plateau::Row>,
+    output: PathBuf,
+    via: Option<&str>,
+    source_lod: Option<&str>,
+) -> Result<()> {
     println!("{} 棟を読み込みました", rows.len());
+    if let Some(lods) = source_lod {
+        println!("原典のLOD: {lods} (このパイプラインが読むのはLOD0のみ)");
+    }
     plateau::to_wgs84(&mut rows)?;
-    plateau::write_geoparquet(rows, &output, via)?;
+    plateau::write_geoparquet(rows, &output, via, source_lod)?;
     println!("{} に書き出しました", output.display());
     Ok(())
 }

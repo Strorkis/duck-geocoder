@@ -131,6 +131,12 @@ fn item(entry: &DatasetEntry) -> Value {
     if !entry.geometry_types.is_empty() {
         properties["duck:geometry_types"] = json!(entry.geometry_types);
     }
+    // **原典にどのLODがあるか。** 配信しているものより細かいものが原典にあると
+    // 分かるようにする (PLATEAUの建物はLOD0しか読んでいないが、原典はLOD3まである)。
+    // **都市ごとに違う**のでItemに出す (`via` と同じ判断)。
+    if let Some(source_lod) = &entry.source_lod {
+        properties["duck:source_lod"] = json!(source_lod);
+    }
 
     let mut links = vec![
         json!({ "rel": "root", "href": "catalog.json", "type": JSON_MEDIA_TYPE }),
@@ -355,6 +361,7 @@ mod tests {
             mesh_digits: Some(11),
             via: None,
             vintage: None,
+            source_lod: None,
             collection_via: "https://example.invalid/download",
         }
     }
@@ -554,6 +561,33 @@ mod tests {
         );
         // 分からないものは書かない。**推測で埋めない。**
         assert!(via_hrefs(&features[1]).is_empty());
+    }
+
+    /// **原典にどのLODがあるか**をItemに出す。
+    ///
+    /// 配信しているのはLOD0だけなので、画面で「原典はLOD3まで」と言うための手掛かり。
+    /// 都市ごとに違うので、Collectionにまとめず1件ずつ持つ。
+    #[test]
+    fn item_says_which_lods_the_source_has() {
+        let mut with_lod = entry("a", "a.parquet", None);
+        with_lod.source_lod = Some("1,2,3".to_string());
+        let plain = entry("b", "b.parquet", None);
+
+        let documents = build(&[with_lod, plain]).unwrap();
+        let features = find(&documents, "estat-mesh-pop-items.json")["features"]
+            .as_array()
+            .unwrap()
+            .clone();
+
+        assert_eq!(features[0]["properties"]["duck:source_lod"], "1,2,3");
+        // LODの概念が無いデータセットには出さない。
+        assert!(features[1]["properties"].get("duck:source_lod").is_none());
+        // Collectionには出さない (都市ごとに違うため)。
+        assert!(
+            find(&documents, "estat-mesh-pop.json")
+                .get("duck:source_lod")
+                .is_none()
+        );
     }
 
     #[test]
