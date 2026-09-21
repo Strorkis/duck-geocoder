@@ -20,7 +20,10 @@ body,
   position: absolute;
   top: 1rem;
   left: 1rem;
-  z-index: 1;
+  /* データのパネル (左下) より手前。候補は1件2段あるので10件並ぶと下まで届き、
+     同じ重なり順だと後から置いたデータのパネルに隠れる。
+     候補は打っている間だけのものなので、手前に出す。 */
+  z-index: 3;
   /* 検索欄を20remのまま保ちたいので、隣に置くボタンの分だけ広げてある。 */
   width: 23rem;
   max-width: calc(100vw - 2rem);
@@ -690,22 +693,6 @@ body,
   color: #14508c;
 }
 
-/* 検索に使っているデータ。**見るのは検索するとき**なので検索欄の下。
-   検索結果 (#results) と同じ見た目に揃える。 */
-#search-panel > #layer-support {
-  margin-top: 0.3rem;
-  padding: 0.3rem 0.8rem 0.5rem;
-  background: white;
-  border-radius: 0.4rem;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
-  font-size: 0.85rem;
-  color: #333;
-}
-
-#search-panel > #layer-support[hidden] {
-  display: none;
-}
-
 /* 背景地図。データ一覧の最後に置く (QGISでもレイヤーの1つ)。 */
 #basemap-section {
   margin-top: 0.4rem;
@@ -756,4 +743,14 @@ body,
   color: #777;
   font-size: 0.7rem;
   line-height: 1.3;
+}
+
+/* 「検索できるもの」。**出典とは別の節**にする (出典は表示義務、
+   こちらは「何を打てば当たるか」の案内)。右下の情報パネルに置く。 */
+#info-panel #layer-support-rows {
+  padding-bottom: 0.3rem;
+}
+
+#info-panel .layer-row.support {
+  padding-left: 0;
 }

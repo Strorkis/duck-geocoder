@@ -1740,12 +1740,19 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
         paint: { 'fill-color': '#ff6600', 'fill-opacity': 0.35 },
       });
       map.addLayer({
+        id: 'highlight-casing',
+        type: 'line',
+        source: 'highlight',
+        // **白で縁取ってから橙を載せる。** 路線を選ぶと線そのものがここに入るが、
+        // 鉄道レイヤーを出していると同じような太さの色線が並び、橙だけでは
+        // どれが選んだ路線か分からない。白の縁があると下地の色から浮く。
+        paint: { 'line-color': '#ffffff', 'line-width': 9 },
+      });
+      map.addLayer({
         id: 'highlight-outline',
         type: 'line',
         source: 'highlight',
-        // 路線を選んだときは線そのものがここに入る。鉄道レイヤーの線
-        // (ズーム16で3.5px) より太くしないと、重なったときに埋もれる。
-        paint: { 'line-color': '#ff6600', 'line-width': 5, 'line-opacity': 0.85 },
+        paint: { 'line-color': '#ff6600', 'line-width': 5 },
       });
 
       // 行政区域データ(N03)は市区町村・行政区までしか持たないため、
@@ -1813,8 +1820,6 @@ async function main() {
   const layerAbsentEl = document.querySelector<HTMLDivElement>('#layer-absent')!;
   const layerAbsentRowsEl = document.querySelector<HTMLDivElement>('#layer-absent-rows')!;
   const layerSupportEl = document.querySelector<HTMLDivElement>('#layer-support')!;
-  // 検索に使うデータの行を用意できたか。出すのはフォーカスしたとき。
-  let hasSupportRows = false;
   const layerSupportRowsEl = document.querySelector<HTMLDivElement>('#layer-support-rows')!;
   const layerSettingsEl = document.querySelector<HTMLDivElement>('#layer-settings')!;
   const layerSettingsTitleEl = document.querySelector<HTMLParagraphElement>(
@@ -2141,39 +2146,12 @@ async function main() {
    * クリックが届かなくなる (実測156px)。かといってフォーカスだけを条件にすると、
    * **起動時に検索欄へ自動でフォーカスが当たる**ので結局出っぱなしになる。
    */
-  // カーソルを検索欄の上に載せている間も出す。**何で引けるのかを確かめたいのは
-  // 打つ前**で、打ち始めるまで出ないと「たまたま見えた」状態になる。
-  let hoveringSearch = false;
-
-  const updateSupportVisibility = () => {
-    const typing = document.activeElement === input && input.value.trim().length > 0;
-    layerSupportEl.hidden = !(hasSupportRows && (typing || hoveringSearch));
-  };
-
-  input.addEventListener('input', () => {
-    updateSupportVisibility();
-    runSearch(200);
-  });
+  input.addEventListener('input', () => runSearch(200));
   // 候補を選ぶと一覧を閉じるので、再びフォーカスしたときに候補を出し直す。
   // (入力を変えないと候補が出ないのは分かりにくい)
-  input.addEventListener('focus', () => {
-    updateSupportVisibility();
-    runSearch(0);
-  });
+  input.addEventListener('focus', () => runSearch(0));
   input.addEventListener('blur', () => {
     resultsEl.innerHTML = '';
-    updateSupportVisibility();
-  });
-
-  // 検索欄 (とその一覧) にカーソルが載っている間も出す。
-  const searchPanel = document.querySelector<HTMLDivElement>('#search-panel')!;
-  searchPanel.addEventListener('mouseenter', () => {
-    hoveringSearch = true;
-    updateSupportVisibility();
-  });
-  searchPanel.addEventListener('mouseleave', () => {
-    hoveringSearch = false;
-    updateSupportVisibility();
   });
   // 候補のクリックは blur より先に mousedown が走る。既定動作を止めて
   // フォーカスを外させないと、click が発火する前に一覧が消えてしまう。
@@ -2817,11 +2795,9 @@ async function main() {
     const collection = byKind(kind)[0];
     return collection ? [supportRow(title, collection.attribution.split('（')[0])] : [];
   });
-  // **中身だけ用意して、出すのは検索欄にフォーカスしたとき。**
-  // 常時出すと検索欄が伸びて左上の地図を覆う (実測156px)。
   if (supportRows.length > 0) {
     layerSupportRowsEl.replaceChildren(...supportRows);
-    hasSupportRows = true;
+    layerSupportEl.hidden = false;
   }
 
   if (activeSource) {

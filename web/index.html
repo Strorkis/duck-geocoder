@@ -32,13 +32,6 @@
           </button>
         </div>
         <ul id="results"></ul>
-        <!-- 検索と逆ジオコーディングが使っているもの。**見るのは検索するとき**なので
-             検索欄の下に置く。**切れてはいけない** (外すと検索が壊れる) ので、
-             チェックボックスは出さない。 -->
-        <div id="layer-support" hidden>
-          <p class="layer-heading">検索に使用</p>
-          <div id="layer-support-rows"></div>
-        </div>
       </div>
       <div id="map"></div>
       <!-- 初期化が終わったあとの待ち時間を知らせる。初期化のオーバーレイ (#loading) と
@@ -168,6 +161,14 @@
       </div>
       <!-- 使い方と出典。**出典と同じ性格のもの**なので、MapLibreの ⓘ と同じ右下に置く。 -->
       <div id="info-panel">
+        <!-- 何で検索できるか。**出典とは別物**なので節を分ける
+             (出典は表示義務、こちらは「何を打てば当たるか」の案内)。
+             検索欄の下に置いていたが、候補が1件2段になったぶん縦に伸びて
+             左下のデータと重なるので、こちらへ移した。 -->
+        <details id="layer-support" hidden>
+          <summary>検索できるもの</summary>
+          <div id="layer-support-rows"></div>
+        </details>
         <details id="help">
           <summary>使い方</summary>
           <ul>

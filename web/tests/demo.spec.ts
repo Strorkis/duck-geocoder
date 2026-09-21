@@ -1509,32 +1509,19 @@ test('レイヤーの説明が切れていない', async ({ page }) => {
 });
 
 /**
- * 「検索に使用」は検索欄の下。**見るのは検索するときだけ。**
+ * **何で検索できるかが分かること。** 出典とは別の節にしてある
+ * (出典は表示義務、こちらは「何を打てば当たるか」の案内)。
  *
- * 常時出していたら検索欄が200pxまで伸びて左上の地図を覆い、
- * 「地図をクリックしても判定結果は消えない」が押せずに落ちた (実測156px)。
+ * 検索欄の下に置いていたが、候補が1件2段になって縦に伸び、
+ * 左下のデータと重なるので右下へ移した。
  */
-test('検索に使うデータは検索するときだけ出る', async ({ page }) => {
-  const support = page.locator('#search-panel #layer-support');
-  // 起動時は検索欄にフォーカスが当たっているが、**まだ打っていない**ので出さない。
-  await expect(support).toBeHidden();
-
-  // カーソルを載せただけでも出る。**何で引けるのか確かめたいのは打つ前。**
-  await page.locator('#search-panel').hover();
-  await expect(support).toBeVisible();
-
-  await page.locator('#search-input').fill('港区');
-  await expect(support).toBeVisible();
+test('何で検索できるかが読める', async ({ page }) => {
+  await openSection(page, 'layer-support');
+  const support = page.locator('#info-panel #layer-support');
   await expect(support).toContainText('行政区域');
-  // 駅と路線も検索の対象。出さないと何で引けるのか分からない。
   await expect(support).toContainText('駅・路線');
   // **切り替えさせない。** 外すと検索が壊れるので、チェックボックスは出さない。
   expect(await support.locator('input[type="checkbox"]').count()).toBe(0);
-
-  // フォーカスを外し、**カーソルも検索欄から離す**。どちらか残っていれば出たまま。
-  await page.locator('#search-input').blur();
-  await page.mouse.move(640, 600);
-  await expect(support).toBeHidden();
 });
 
 /** 検索していないとき、左上のパネルが地図を覆わないこと。 */
@@ -1664,4 +1651,28 @@ test('駅の候補に会社名と路線名が出る', async ({ page }) => {
   await expect(first.locator('.result-detail')).toBeVisible();
   // 会社名が入っていること (「本線」だけでは判別できない)。
   await expect(first.locator('.result-detail')).toContainText('鉄');
+});
+
+/**
+ * **検索候補が他のパネルに隠れないこと。**
+ *
+ * 候補は1件2段 (駅なら「会社名 路線名」) あるので、10件並ぶと画面の下まで届く。
+ * 左下のデータのパネルと同じ重なり順だと、後から置いた側に隠れて選べなくなる。
+ */
+test('検索候補は他のパネルより手前に出る', async ({ page }) => {
+  await page.locator('#search-input').fill('東京');
+  const results = page.locator('#results li');
+  await expect(results.first()).toBeVisible({ timeout: 30_000 });
+
+  // いちばん下の候補の中心が、実際にその候補で取れること
+  // (データのパネルに覆われていれば、そちらが返る)。
+  const covered = await page.evaluate(() => {
+    const items = [...document.querySelectorAll('#results li')];
+    const last = items[items.length - 1];
+    if (!last) return 'no-results';
+    const box = last.getBoundingClientRect();
+    const at = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    return at?.closest('#results') ? null : (at?.closest('[id]')?.id ?? 'unknown');
+  });
+  expect(covered, `候補が覆われている: ${covered}`).toBeNull();
 });
