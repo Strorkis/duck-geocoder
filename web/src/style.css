@@ -747,3 +747,13 @@ body,
 .layer-zoom-button[hidden] {
   display: none;
 }
+
+/* 検索結果の2段目 (駅なら「会社名 路線名」)。1行に詰めると
+   「東京駅 (東日本旅客鉄道 東北新幹線)」のように長くなって読みにくい。 */
+#results .result-detail {
+  display: block;
+  margin-left: 3.6rem;
+  color: #777;
+  font-size: 0.7rem;
+  line-height: 1.3;
+}

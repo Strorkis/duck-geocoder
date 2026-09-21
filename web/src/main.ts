@@ -251,9 +251,10 @@ type SearchResult =
   | { kind: 'admin'; label: string; adminId: string }
   | { kind: 'oaza'; label: string; lon: number; lat: number }
   // 駅。**人が実際に検索する語**なので、地名と並べて出す。
-  | { kind: 'station'; label: string; lon: number; lat: number }
+  | { kind: 'station'; label: string; detail: string; lon: number; lat: number }
   // 路線。点ではなく**範囲**なので、飛び先は fitBounds になる。
-  | { kind: 'line'; label: string; bbox: Bbox };
+  // 線そのものは選んだときに読んでハイライトする (`lineName` / `operator` で引く)。
+  | { kind: 'line'; label: string; detail: string; bbox: Bbox; lineName: string; operator: string };
 
 /** 範囲 [xmin, ymin, xmax, ymax] (WGS84)。 */
 type Bbox = [number, number, number, number];
@@ -534,6 +535,8 @@ async function initDuckDb(collections: Collection[]): Promise<{
   ensureOaza: () => Promise<void>;
   /** 駅を引く前に呼ぶ。駅が配信されていなければ undefined。 */
   ensureStations: (() => Promise<void>) | undefined;
+  /** 路線の線を引く前に呼ぶ。ハイライトのときだけ使う。 */
+  ensureSections: (() => Promise<void>) | undefined;
 }> {
   const bundle = await duckdb.selectBundle({
     mvp: {
@@ -671,6 +674,23 @@ async function initDuckDb(collections: Collection[]): Promise<{
       })
     : undefined;
 
+  /**
+   * 路線の線そのもの。**選んだ路線をハイライトするときだけ読む。**
+   *
+   * 検索と一覧は駅だけで足りる (駅は0.8MB、路線は5.2MBでジオメトリが4.6MB)。
+   * 路線を選んだときに初めて、**その路線の範囲で絞って**読む。
+   */
+  const sectionCollection = byKind('railway')[0];
+  const ensureSections = sectionCollection
+    ? once(async () => {
+        const files = (await sectionCollection.items()).map((item) => item.assets.data.href);
+        await register(files);
+        await ensureSpatial();
+        const list = files.map((file) => `'${file}'`).join(', ');
+        await conn.query(`CREATE VIEW section AS SELECT * FROM read_parquet([${list}]);`);
+      })
+    : undefined;
+
   // 建物は任意。無ければ建物レイヤーを出さないだけで、他の機能は動く。
   // 並び順がそのまま選択肢の順になり、先頭が既定になる。
   // 属性が揃っているPLATEAUを先に置く。
@@ -798,6 +818,7 @@ async function initDuckDb(collections: Collection[]): Promise<{
     ensureSpatial,
     ensureOaza,
     ensureStations,
+    ensureSections,
   };
 }
 
@@ -1137,10 +1158,6 @@ async function searchStations(
   conn: duckdb.AsyncDuckDBConnection,
   keyword: string,
 ): Promise<SearchResult[]> {
-  // **路線名が会社をまたいで重複していたら、会社名を添える。**
-  // 「本線」は10社が使っていて (552路線名のうち28が複数社で同名)、
-  // 「品川駅 (本線)」では何線か分からない。
-  const ambiguous = `count(DISTINCT operator) OVER (PARTITION BY line_name) > 1`;
   // **「駅」を挟む。** 原典の `station_name` は「品川」で「駅」が付かないので、
   // 人がふつうに打つ「品川駅」が1件も当たらなかった。
   // (「〇〇駅」で終わる駅名も8件あるが、二重になっても照合には影響しない)
@@ -1149,7 +1166,6 @@ async function searchStations(
     SELECT * FROM (
       SELECT
         station_name, line_name, any_value(operator) AS operator,
-        ${ambiguous} AS ambiguous,
         avg((bbox.xmin + bbox.xmax) / 2) AS lon,
         avg((bbox.ymin + bbox.ymax) / 2) AS lat
       FROM station
@@ -1164,16 +1180,16 @@ async function searchStations(
       station_name: string;
       line_name: string;
       operator: string;
-      ambiguous: boolean;
       lon: number;
       lat: number;
     };
-    // 同じ駅名が並ぶので路線名で見分けられるようにする。
-    // 路線名だけでは足りないとき (「本線」) は会社名も出す。
-    const line = r.ambiguous ? `${r.operator} ${r.line_name}` : r.line_name;
     return {
       kind: 'station' as const,
-      label: `${r.station_name}駅 (${line})`,
+      label: `${r.station_name}駅`,
+      // **会社名は必ず出す。**「品川駅 (本線)」では何線か分からない。
+      // 重複しているときだけ出す形にしたが、絞り込んだ結果の中でしか
+      // 重複を数えられず、品川駅のように1件だけ返る場合に付かなかった。
+      detail: `${r.operator} ${r.line_name}`,
       lon: r.lon,
       lat: r.lat,
     };
@@ -1193,18 +1209,14 @@ async function searchLines(
   conn: duckdb.AsyncDuckDBConnection,
   keyword: string,
 ): Promise<SearchResult[]> {
-  const ambiguous = `count(DISTINCT operator) OVER (PARTITION BY line_name) > 1`;
   const result = await conn.query(`
-    SELECT * FROM (
-      SELECT
-        line_name, any_value(operator) AS operator,
-        ${ambiguous} AS ambiguous,
-        min(bbox.xmin) AS west, min(bbox.ymin) AS south,
-        max(bbox.xmax) AS east, max(bbox.ymax) AS north
-      FROM station
-      WHERE ${buildMatchConditions(keyword, 'line_name || operator')}
-      GROUP BY line_name, operator
-    )
+    SELECT
+      line_name, operator,
+      min(bbox.xmin) AS west, min(bbox.ymin) AS south,
+      max(bbox.xmax) AS east, max(bbox.ymax) AS north
+    FROM station
+    WHERE ${buildMatchConditions(keyword, 'line_name || operator')}
+    GROUP BY line_name, operator
     ORDER BY length(line_name)
     LIMIT ${MAX_RESULTS};
   `);
@@ -1212,7 +1224,6 @@ async function searchLines(
     const r = row.toJSON() as unknown as {
       line_name: string;
       operator: string;
-      ambiguous: boolean;
       west: number;
       south: number;
       east: number;
@@ -1220,10 +1231,40 @@ async function searchLines(
     };
     return {
       kind: 'line' as const,
-      label: r.ambiguous ? `${r.operator} ${r.line_name}` : r.line_name,
+      label: r.line_name,
+      // **会社名は必ず出す。**「本線」は10社が使っている。
+      detail: r.operator,
       bbox: [r.west, r.south, r.east, r.north] as Bbox,
+      lineName: r.line_name,
+      operator: r.operator,
     };
   });
+}
+
+/**
+ * 選んだ路線の線を読む。**ハイライトのためだけに、そのときだけ読む。**
+ *
+ * 範囲 (`bbox`) で絞るのは、row group の統計で読み飛ばさせるため。
+ * 路線のファイルは5.2MB (ジオメトリ4.6MB) あるが、
+ * 実測では山手線が65区間で8KB、東海道線でも493区間で140KB。
+ */
+async function fetchLineGeometry(
+  conn: duckdb.AsyncDuckDBConnection,
+  lineName: string,
+  operator: string,
+  [west, south, east, north]: Bbox,
+): Promise<GeoJSON.Geometry[]> {
+  const quote = (value: string) => `'${value.replace(/'/g, "''")}'`;
+  const result = await conn.query(`
+    SELECT ST_AsGeoJSON(geometry) AS geojson
+    FROM section
+    WHERE line_name = ${quote(lineName)} AND operator = ${quote(operator)}
+      AND bbox.xmin <= ${east} AND bbox.xmax >= ${west}
+      AND bbox.ymin <= ${north} AND bbox.ymax >= ${south};
+  `);
+  return result
+    .toArray()
+    .map((row) => JSON.parse((row.toJSON() as unknown as { geojson: string }).geojson) as GeoJSON.Geometry);
 }
 
 /**
@@ -1702,7 +1743,9 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
         id: 'highlight-outline',
         type: 'line',
         source: 'highlight',
-        paint: { 'line-color': '#ff6600', 'line-width': 2 },
+        // 路線を選んだときは線そのものがここに入る。鉄道レイヤーの線
+        // (ズーム16で3.5px) より太くしないと、重なったときに埋もれる。
+        paint: { 'line-color': '#ff6600', 'line-width': 5, 'line-opacity': 0.85 },
       });
 
       // 行政区域データ(N03)は市区町村・行政区までしか持たないため、
@@ -1797,6 +1840,7 @@ async function main() {
   let ensureSpatial: () => Promise<void>;
   let ensureOaza: () => Promise<void>;
   let ensureStations: (() => Promise<void>) | undefined;
+  let ensureSections: (() => Promise<void>) | undefined;
   let collections: Collection[] = [];
   try {
     collections = await fetchCollections();
@@ -1810,7 +1854,7 @@ async function main() {
     railwaySources = db.railwaySources;
     railwayInstitutionTypes = db.railwayInstitutionTypes;
     railwayVintage = db.railwayVintage;
-    ({ ensureSpatial, ensureOaza, ensureStations } = db);
+    ({ ensureSpatial, ensureOaza, ensureStations, ensureSections } = db);
     map = createdMap;
     renderCredits(creditsEl, collections);
   } catch (e) {
@@ -1931,8 +1975,37 @@ async function main() {
 
   const showResult = async (result: SearchResult) => {
     // 路線は点ではなく**範囲**。端から端まで入るように寄せる。
+    //
+    // **線そのものをハイライトする。** 範囲へ動かすだけだと、鉄道レイヤーを
+    // 出しているときに「どれが選んだ路線か」が分からない。
     if (result.kind === 'line') {
-      await Promise.all([setSourceData('highlight', null), setSourceData('selected-point', null)]);
+      await setSourceData('selected-point', null);
+      if (ensureSections) {
+        await busy('路線を読み込み中…', async () => {
+          await ensureSections();
+          const parts = await fetchLineGeometry(
+            conn,
+            result.lineName,
+            result.operator,
+            result.bbox,
+          );
+          await setSourceData(
+            'highlight',
+            parts.length > 0
+              ? {
+                  type: 'MultiLineString',
+                  coordinates: parts.flatMap((part) =>
+                    part.type === 'LineString'
+                      ? [part.coordinates]
+                      : part.type === 'MultiLineString'
+                        ? part.coordinates
+                        : [],
+                  ),
+                }
+              : null,
+          );
+        });
+      }
       const [west, south, east, north] = result.bbox;
       map.fitBounds(
         [
@@ -2009,6 +2082,14 @@ async function main() {
         row.kind
       ];
       li.append(badge, row.label);
+      // **会社名と路線名は2段目に置く。**1行に詰めると
+      //「東京駅 (東日本旅客鉄道 東北新幹線)」のように長くなって読みにくい。
+      if ('detail' in row && row.detail) {
+        const detail = document.createElement('span');
+        detail.className = 'result-detail';
+        detail.textContent = row.detail;
+        li.append(detail);
+      }
       li.addEventListener('click', () => {
         resultsEl.innerHTML = '';
         input.value = row.label;

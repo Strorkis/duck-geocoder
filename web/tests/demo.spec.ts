@@ -1622,3 +1622,46 @@ test('路線名で引くと路線が先頭に出て、全体へ寄る', async ({
     .poll(() => page.evaluate(() => (window as unknown as TestWindow).__map!.getZoom()))
     .toBeLessThan(14);
 });
+
+/**
+ * 路線を選んだら**線そのものをハイライトする。**
+ *
+ * 範囲へ動かすだけだと、鉄道レイヤーを出しているときに
+ * 「どれが選んだ路線か」が分からない。原典に線のジオメトリはある
+ * (実測で山手線は65区間・8KB) ので、選んだときだけ読む。
+ */
+test('路線を選ぶと線がハイライトされる', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+
+  expect(await highlightFeatureCount(page)).toBe(0);
+
+  await page.locator('#search-input').fill('山手線');
+  const first = page.locator('#results li').first();
+  await expect(first).toContainText('路線', { timeout: 30_000 });
+  await first.click();
+
+  await expect.poll(() => highlightFeatureCount(page), { timeout: 30_000 }).toBe(1);
+
+  // 線であること (行政区域のポリゴンと同じソースを使い回している)。
+  // ハイライトは1件を Feature として入れている (行政区域のポリゴンと同じ作り)。
+  const type = await page.evaluate(async () => {
+    const map = (window as unknown as TestWindow).__map!;
+    const data = await (map.getSource('highlight') as GeoJSONSource).getData();
+    if (data.type === 'Feature') return data.geometry.type;
+    if (data.type === 'FeatureCollection') return data.features[0]?.geometry.type;
+    return data.type;
+  });
+  expect(type).toBe('MultiLineString');
+});
+
+/** 駅の候補には**会社名と路線名**が付く。「品川駅 (本線)」では何線か分からない。 */
+test('駅の候補に会社名と路線名が出る', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+
+  await page.locator('#search-input').fill('品川駅');
+  const first = page.locator('#results li').first();
+  await expect(first).toContainText('品川駅', { timeout: 30_000 });
+  await expect(first.locator('.result-detail')).toBeVisible();
+  // 会社名が入っていること (「本線」だけでは判別できない)。
+  await expect(first.locator('.result-detail')).toContainText('鉄');
+});
