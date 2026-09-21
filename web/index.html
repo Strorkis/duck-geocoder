@@ -141,6 +141,24 @@
             <p id="mesh-summary" class="note"></p>
           </div>
         </div>
+        <div id="road-section" hidden>
+          <div id="road-controls">
+            <!-- 等級で絞る。選択肢はカタログの語彙から作るので、
+                 出所が増えてもここに書き足さなくてよい。
+                 等級ごとにファイルが分かれているので、外した等級は読みに行かない。 -->
+            <div class="field">
+              <label>
+                種別
+                <span class="bulk">
+                  <button id="road-all" type="button">全部</button>
+                  <button id="road-none" type="button">解除</button>
+                </span>
+              </label>
+              <div id="road-classes"></div>
+            </div>
+            <p id="road-summary" class="note"></p>
+          </div>
+        </div>
         <div id="railway-section" hidden>
           <div id="railway-controls">
             <!-- 事業者種別で絞る。選択肢はカタログの語彙から作るので、

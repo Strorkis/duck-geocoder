@@ -92,6 +92,12 @@ pub enum DatasetKind {
     /// 地理院の道路中心線も名前は注記レイヤにしかない) ので、
     /// 「国道13号」で引けるのはこちらだけ。詳細は docs/data-sources.md。
     Road,
+    /// 道路の路線 (「国道13号」など)。ジオメトリを持たない。
+    ///
+    /// [`DatasetKind::Road`] の要約で、**出所は同じ**。路線名で引いたときに
+    /// 全区間のbbox列 (配信物の13%) を読まずに済ませるためのもの
+    /// ([`DatasetKind::AdminNames`] と同じ役目)。
+    RoadRoute,
 }
 
 /// 列1つ。項目名はSTACのTable拡張に合わせてある。
@@ -310,6 +316,19 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             summary_columns: &["class"],
             mesh_digits: None,
             via: "https://docs.overturemaps.org/guides/buildings/",
+        },
+    ),
+    (
+        "overture_road_routes",
+        Description {
+            kind: DatasetKind::RoadRoute,
+            collection: "overture-road-routes",
+            title: "道路の路線",
+            description: "Overtureの道路から路線名だけを抜き出したもの。「国道13号」のような路線名検索に使う。",
+            attribution: OVERTURE,
+            summary_columns: &[],
+            mesh_digits: None,
+            via: "https://docs.overturemaps.org/guides/transportation/",
         },
     ),
     (
@@ -555,7 +574,7 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
     // 収録範囲も読めず配信用の最適化もかけられないのでエラーにする。
     let (geometry_types, bbox) = match (geo_json, described.kind) {
         (Some(geo_json), _) => read_geo_metadata(geo_json)?,
-        (None, DatasetKind::AdminNames) => (Vec::new(), None),
+        (None, DatasetKind::AdminNames | DatasetKind::RoadRoute) => (Vec::new(), None),
         (None, _) => bail!("GeoParquetの `geo` メタデータがありません: {file}"),
     };
 

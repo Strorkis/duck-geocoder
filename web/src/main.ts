@@ -51,7 +51,9 @@ type DatasetKind =
   | 'plateau_buildings'
   | 'population_mesh'
   | 'railway'
-  | 'railway_station';
+  | 'railway_station'
+  | 'road'
+  | 'road_route';
 
 /** STAC Collection。`duck:` の付いたものはSTACに無い独自項目。 */
 interface StacCollection {
@@ -254,7 +256,8 @@ type SearchResult =
   | { kind: 'station'; label: string; detail: string; lon: number; lat: number }
   // 路線。点ではなく**範囲**なので、飛び先は fitBounds になる。
   // 線そのものは選んだときに読んでハイライトする (`lineName` / `operator` で引く)。
-  | { kind: 'line'; label: string; detail: string; bbox: Bbox; lineName: string; operator: string };
+  | { kind: 'line'; label: string; detail: string; bbox: Bbox; lineName: string; operator: string }
+  | { kind: 'route'; label: string; detail: string; bbox: Bbox; routeName: string };
 
 /** 範囲 [xmin, ymin, xmax, ymax] (WGS84)。 */
 type Bbox = [number, number, number, number];
@@ -373,6 +376,44 @@ interface RailwaySource {
   bbox: Bbox | null;
   files: { file: string; bbox: Bbox | null }[];
   ensure: () => Promise<void>;
+}
+
+/**
+ * 道路 (Overture)。**国のデータには路線名が無い**ので、名前で引けるのはこれだけ
+ * (詳細は docs/data-sources.md)。`class` ごとにファイルが分かれている。
+ */
+interface RoadSource {
+  id: string;
+  bbox: Bbox | null;
+  files: { file: string; bbox: Bbox | null }[];
+  ensure: () => Promise<void>;
+}
+
+/**
+ * 道路の等級ごとの色と呼び名。**語彙はカタログから来る**ので、ここには
+ * 見せ方だけを持つ (鉄道の事業者種別と同じ)。
+ *
+ * Overtureの `class` はOSM由来で、日本の制度とは1対1で対応しない。
+ * 「おおよそ」と分かる書き方にしてある。
+ */
+const ROAD_STYLES: Record<string, { label: string; color: string; width: number }> = {
+  motorway: { label: '高速道路', color: '#2f7d32', width: 3 },
+  trunk: { label: '国道', color: '#c2410c', width: 2.4 },
+  primary: { label: '都道府県道', color: '#8a6d3b', width: 1.8 },
+};
+
+/** 道路1件分の表示用データ。 */
+interface RoadFeature {
+  geojson: GeoJSON.Geometry;
+  /** Overtureの `names.primary`。無いこともある。 */
+  roadName: string | null;
+  /** 道路等級。色と太さはこれで決める。 */
+  roadClass: string;
+  /**
+   * 属する路線の名前。**1つの区間が複数の路線に属する**
+   * (実測で首都圏の約半分が2本以上、最大10本) のでリストで持つ。
+   */
+  routeNames: string[];
 }
 
 /**
@@ -529,6 +570,14 @@ async function initDuckDb(collections: Collection[]): Promise<{
   railwayInstitutionTypes: string[];
   /** 鉄道がいつ時点のものか。ホバーで出す。 */
   railwayVintage: string | undefined;
+  /** 道路 (Overture)。無ければ道路の節を出さない。 */
+  roadSource: RoadSource | undefined;
+  /** 道路等級の語彙。絞り込みの選択肢をここから作る。 */
+  roadClasses: string[];
+  /** 道路がいつ時点のものか。ホバーで出す。 */
+  roadVintage: string | undefined;
+  /** 路線の索引と区間のビューを作る。検索のときだけ呼ぶ。 */
+  ensureRoutes: (() => Promise<void>) | undefined;
   /** 空間関数を使う前に呼ぶ。 */
   ensureSpatial: () => Promise<void>;
   /** 地名 (isj_oaza) を引く前に呼ぶ。 */
@@ -777,6 +826,45 @@ async function initDuckDb(collections: Collection[]): Promise<{
     },
   );
 
+  // 道路。無ければ道路の節を出さないだけで、他の機能は動く。
+  const roadCollection = byKind('road')[0];
+  const roadSource: RoadSource | undefined = roadCollection
+    ? {
+        id: roadCollection.id,
+        bbox: roadCollection.bbox,
+        files: [],
+        ensure: once(async () => {
+          const items = await roadCollection.items();
+          roadSource!.files = itemFiles(items);
+          await register(roadSource!.files.map(({ file }) => file));
+          await ensureSpatial();
+        }),
+      }
+    : undefined;
+  const roadVintage = roadCollection?.vintage;
+
+  // 路線の索引と、区間そのもの。**検索とハイライトのときだけ**読む。
+  const routeCollection = byKind('road_route')[0];
+  const ensureRoutes =
+    routeCollection && roadCollection
+      ? once(async () => {
+          const routeFile = (await routeCollection.items())[0]?.assets.data.href;
+          if (!routeFile) return;
+          await register([routeFile]);
+          await conn.query(
+            `CREATE VIEW road_route AS SELECT * FROM read_parquet('${routeFile}');`,
+          );
+          // ハイライトは区間の方から引くので、同じ経路で用意しておく。
+          const files = (await roadCollection.items()).map((item) => item.assets.data.href);
+          await register(files);
+          const list = files.map((file) => `'${file}'`).join(', ');
+          await conn.query(`CREATE VIEW road AS SELECT * FROM read_parquet([${list}]);`);
+          await ensureSpatial();
+        })
+      : undefined;
+  // 等級の語彙もカタログから。鉄道の事業者種別と同じ扱い。
+  const roadClasses = (roadCollection?.summaries['class'] ?? []) as string[];
+
   // 絞り込みの選択肢はカタログの語彙から作る。**事業者種別の列名をここに書かない**のは
   // 建物の用途と同じ理由で、語彙を出すかどうかをパイプライン側の一箇所で決めるため。
   const railwayVintage = railwaySources[0]
@@ -815,6 +903,10 @@ async function initDuckDb(collections: Collection[]): Promise<{
     railwaySources,
     railwayInstitutionTypes,
     railwayVintage,
+    roadSource,
+    roadClasses,
+    roadVintage,
+    ensureRoutes,
     ensureSpatial,
     ensureOaza,
     ensureStations,
@@ -991,6 +1083,58 @@ async function fetchRailwayInView(
       institutionType: r.institution_type,
       railwayClass: r.railway_class,
       stationName: r.station_name,
+    };
+  });
+}
+
+/**
+ * 表示範囲に入る道路を取り出す。鉄道と同じく bbox 列で先に絞り、
+ * 画面中心に近い順に上限まで取る。
+ *
+ * `class` はファイルが分かれているので、**選ばれていない等級のファイルは
+ * そもそも読みに行かない** (これが class で分けている理由)。
+ */
+async function fetchRoadsInView(
+  conn: duckdb.AsyncDuckDBConnection,
+  source: RoadSource,
+  bounds: ViewBounds,
+  classes: string[],
+  limit: number,
+): Promise<RoadFeature[]> {
+  if (classes.length === 0) return [];
+  // ファイル名に class が入っているので、読むファイルの段階で絞れる。
+  const files = filesInView(source, bounds).filter((file) =>
+    classes.some((cls) => file.endsWith(`_${cls}.parquet`)),
+  );
+  if (files.length === 0) return [];
+  const list = files.map((file) => `'${file}'`).join(', ');
+  const lonScale = Math.cos((bounds.centerLat * Math.PI) / 180);
+
+  const result = await conn.query(`
+    SELECT
+      ST_AsGeoJSON(geometry) AS geojson,
+      road_name, class, route_names
+    FROM read_parquet([${list}])
+    WHERE bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}
+      AND bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}
+    ORDER BY
+      pow(((bbox.xmin + bbox.xmax) / 2 - ${bounds.centerLon}) * ${lonScale}, 2)
+      + pow((bbox.ymin + bbox.ymax) / 2 - ${bounds.centerLat}, 2)
+    LIMIT ${limit};
+  `);
+  return result.toArray().map((row) => {
+    const r = row.toJSON() as unknown as {
+      geojson: string;
+      road_name: string | null;
+      class: string;
+      route_names: unknown;
+    };
+    return {
+      geojson: JSON.parse(r.geojson) as GeoJSON.Geometry,
+      roadName: r.road_name,
+      roadClass: r.class,
+      // リスト列はArrowのVectorで返るので、素の配列に均す。
+      routeNames: Array.from((r.route_names ?? []) as ArrayLike<unknown>, String),
     };
   });
 }
@@ -1239,6 +1383,84 @@ async function searchLines(
       operator: r.operator,
     };
   });
+}
+
+/**
+ * 道路の路線を引く。「国道13号」「山形県道16号」など。
+ *
+ * **路線の索引 (211KB) から引く。** 区間そのもの (70MB) を走査すると、
+ * bbox列だけで約9MB読むことになる。索引は同じOvertureの道路から作った要約なので、
+ * 検索で出たものと地図に出るものは同じデータ。
+ */
+/**
+ * 区間の並びを1つのMultiLineStringにまとめる。ハイライト用。
+ *
+ * 1件も無ければ `null` を返す。空のMultiLineStringを入れると、
+ * MapLibreが空のソースと区別できない。
+ */
+function toMultiLineString(parts: GeoJSON.Geometry[]): GeoJSON.Geometry | null {
+  const coordinates = parts.flatMap((part) =>
+    part.type === 'LineString'
+      ? [part.coordinates]
+      : part.type === 'MultiLineString'
+        ? part.coordinates
+        : [],
+  );
+  return coordinates.length > 0 ? { type: 'MultiLineString', coordinates } : null;
+}
+
+async function searchRoutes(
+  conn: duckdb.AsyncDuckDBConnection,
+  keyword: string,
+): Promise<SearchResult[]> {
+  const result = await conn.query(`
+    SELECT route_name, class, segments, bbox
+    FROM road_route
+    WHERE ${buildMatchConditions(keyword, 'route_name')}
+    ORDER BY length(route_name)
+    LIMIT ${MAX_RESULTS};
+  `);
+  return result.toArray().map((row) => {
+    const r = row.toJSON() as unknown as {
+      route_name: string;
+      class: string;
+      segments: number;
+      bbox: { xmin: number; ymin: number; xmax: number; ymax: number };
+    };
+    return {
+      kind: 'route' as const,
+      label: r.route_name,
+      detail: `${ROAD_STYLES[r.class]?.label ?? r.class} · ${Number(r.segments).toLocaleString()} 区間`,
+      bbox: [r.bbox.xmin, r.bbox.ymin, r.bbox.xmax, r.bbox.ymax] as Bbox,
+      routeName: r.route_name,
+    };
+  });
+}
+
+/**
+ * 選んだ路線の道路を読む。**ハイライトのためだけに、そのときだけ読む。**
+ *
+ * 範囲で絞るのは鉄道と同じ理由 (row groupの統計で読み飛ばさせる)。
+ * **`list_contains` で当てる。** 1区間が複数の路線に属するのでリストになっている。
+ */
+async function fetchRouteGeometry(
+  conn: duckdb.AsyncDuckDBConnection,
+  routeName: string,
+  [west, south, east, north]: Bbox,
+): Promise<GeoJSON.Geometry[]> {
+  const quoted = `'${routeName.replace(/'/g, "''")}'`;
+  const result = await conn.query(`
+    SELECT ST_AsGeoJSON(geometry) AS geojson
+    FROM road
+    WHERE list_contains(route_names, ${quoted})
+      AND bbox.xmin <= ${east} AND bbox.xmax >= ${west}
+      AND bbox.ymin <= ${north} AND bbox.ymax >= ${south};
+  `);
+  return result
+    .toArray()
+    .map(
+      (row) => JSON.parse((row.toJSON() as unknown as { geojson: string }).geojson) as GeoJSON.Geometry,
+    );
 }
 
 /**
@@ -1615,6 +1837,25 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
         },
       });
 
+      // 道路は人口メッシュの上、鉄道の下。**鉄道より下に敷く**のは、
+      // 交差点で鉄道の方が見えてほしいため (踏切と立体交差の区別は付かないが、
+      // 線路の連続性が切れる方が読みにくい)。
+      map.addSource('road', {
+        type: 'geojson',
+        data: EMPTY_FEATURE_COLLECTION,
+      });
+      map.addLayer({
+        id: 'road-line',
+        type: 'line',
+        source: 'road',
+        // 色と太さは引くときに決めてしまう (`ROAD_STYLES`)。鉄道と同じ作り。
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': ['get', 'width'],
+          'line-opacity': 0.9,
+        },
+      });
+
       // 鉄道は人口メッシュの上、建物の下。メッシュの色が透けて読める濃さにする。
       map.addSource('railway', {
         type: 'geojson',
@@ -1817,6 +2058,12 @@ async function main() {
   const railwayNoneButton = document.querySelector<HTMLButtonElement>('#railway-none')!;
   const railwaySummaryEl = document.querySelector<HTMLParagraphElement>('#railway-summary')!;
   let railwayTypeInputs: HTMLInputElement[] = [];
+  const roadSectionEl = document.querySelector<HTMLDivElement>('#road-section')!;
+  const roadClassesEl = document.querySelector<HTMLDivElement>('#road-classes')!;
+  const roadAllButton = document.querySelector<HTMLButtonElement>('#road-all')!;
+  const roadNoneButton = document.querySelector<HTMLButtonElement>('#road-none')!;
+  const roadSummaryEl = document.querySelector<HTMLParagraphElement>('#road-summary')!;
+  let roadClassInputs: HTMLInputElement[] = [];
 
   const meshSectionEl = document.querySelector<HTMLDivElement>('#mesh-section')!;
 
@@ -1849,6 +2096,10 @@ async function main() {
   let railwaySources: RailwaySource[] = [];
   let railwayInstitutionTypes: string[] = [];
   let railwayVintage: string | undefined;
+  let roadSource: RoadSource | undefined;
+  let roadClasses: string[] = [];
+  let roadVintage: string | undefined;
+  let ensureRoutes: (() => Promise<void>) | undefined;
   let ensureSpatial: () => Promise<void>;
   let ensureOaza: () => Promise<void>;
   let ensureStations: (() => Promise<void>) | undefined;
@@ -1866,6 +2117,10 @@ async function main() {
     railwaySources = db.railwaySources;
     railwayInstitutionTypes = db.railwayInstitutionTypes;
     railwayVintage = db.railwayVintage;
+    roadSource = db.roadSource;
+    roadClasses = db.roadClasses;
+    roadVintage = db.roadVintage;
+    ensureRoutes = db.ensureRoutes;
     ({ ensureSpatial, ensureOaza, ensureStations, ensureSections } = db);
     map = createdMap;
     renderCredits(creditsEl, collections);
@@ -1985,6 +2240,18 @@ async function main() {
     input.focus();
   };
 
+  /** 路線の端から端まで入るように寄せる。鉄道と道路で同じ。 */
+  const fitToBbox = ([west, south, east, north]: Bbox) => {
+    map.fitBounds(
+      [
+        [west, south],
+        [east, north],
+      ],
+      // パネルが左下と右下にあるので、下側を多めに空ける。
+      { padding: { top: 60, bottom: 120, left: 60, right: 60 }, duration: 1500 },
+    );
+  };
+
   const showResult = async (result: SearchResult) => {
     // 路線は点ではなく**範囲**。端から端まで入るように寄せる。
     //
@@ -2001,32 +2268,25 @@ async function main() {
             result.operator,
             result.bbox,
           );
-          await setSourceData(
-            'highlight',
-            parts.length > 0
-              ? {
-                  type: 'MultiLineString',
-                  coordinates: parts.flatMap((part) =>
-                    part.type === 'LineString'
-                      ? [part.coordinates]
-                      : part.type === 'MultiLineString'
-                        ? part.coordinates
-                        : [],
-                  ),
-                }
-              : null,
-          );
+          await setSourceData('highlight', toMultiLineString(parts));
         });
       }
-      const [west, south, east, north] = result.bbox;
-      map.fitBounds(
-        [
-          [west, south],
-          [east, north],
-        ],
-        // パネルが左下と右下にあるので、下側を多めに空ける。
-        { padding: { top: 60, bottom: 120, left: 60, right: 60 }, duration: 1500 },
-      );
+      fitToBbox(result.bbox);
+      return;
+    }
+
+    // 道路の路線も同じ扱い。**出所は違うが見せ方は変わらない** ので、
+    // ハイライトも寄せ方も鉄道と揃える。
+    if (result.kind === 'route') {
+      await setSourceData('selected-point', null);
+      if (ensureRoutes) {
+        await busy('道路を読み込み中…', async () => {
+          await ensureRoutes();
+          const parts = await fetchRouteGeometry(conn, result.routeName, result.bbox);
+          await setSourceData('highlight', toMultiLineString(parts));
+        });
+      }
+      fitToBbox(result.bbox);
       return;
     }
 
@@ -2090,7 +2350,13 @@ async function main() {
       const li = document.createElement('li');
       const badge = document.createElement('span');
       badge.className = 'badge';
-      badge.textContent = { admin: '行政区域', oaza: '地名', station: '駅', line: '路線' }[
+      badge.textContent = {
+        admin: '行政区域',
+        oaza: '地名',
+        station: '駅',
+        line: '路線',
+        route: '道路',
+      }[
         row.kind
       ];
       li.append(badge, row.label);
@@ -2124,19 +2390,24 @@ async function main() {
       // 初回は ensureOaza の読み込みを待つので、ここだけ数秒かかることがある。
       busy('検索中…', async () => {
         // 駅は配信されていないこともある。無ければ地名と行政区域だけで引く。
-        await Promise.all([ensureOaza(), ensureStations?.()]);
-        const [places, stations, lines] = await Promise.all([
+        await Promise.all([ensureOaza(), ensureStations?.(), ensureRoutes?.()]);
+        const [places, stations, lines, routes] = await Promise.all([
           searchAddress(conn, keyword),
           ensureStations ? searchStations(conn, keyword) : Promise.resolve([]),
           ensureStations ? searchLines(conn, keyword) : Promise.resolve([]),
+          ensureRoutes ? searchRoutes(conn, keyword) : Promise.resolve([]),
         ]);
         // **打った語がそのものを指しているものを先に出す。**
         // 「山手線」で駅ばかり並ぶと、路線を見たい人の役に立たない。
         // 「東京」なら東京駅が先に来てほしい。
         const exactLines = lines.filter((l) => l.label.includes(keyword));
+        const exactRoutes = routes.filter((r) => r.label.includes(keyword));
         const exactStations = stations.filter((s) => s.label.startsWith(`${keyword}駅`));
         const rest = stations.filter((s) => !exactStations.includes(s));
-        return [...exactLines, ...exactStations, ...places, ...rest].slice(0, MAX_RESULTS);
+        return [...exactLines, ...exactRoutes, ...exactStations, ...places, ...rest].slice(
+          0,
+          MAX_RESULTS,
+        );
       })
         .then(renderResults)
         .catch((e: unknown) => {
@@ -2504,6 +2775,102 @@ async function main() {
       (capped ? ' (上限に達しました。拡大すると全部出ます)' : '');
   };
 
+  /**
+   * 道路を引き直す。
+   *
+   * **鉄道より寄らせる。** 幹線だけで65.6万区間あり、鉄道 (3万区間) の20倍ある。
+   * 同じズームで出すと引いた画面が線で埋まって何も読めない。
+   */
+  const ROAD_MIN_ZOOM = 12;
+  /** 1回に描く上限。 */
+  const ROAD_LIMIT = 6000;
+  let roadToken = 0;
+  let roadShown = false;
+
+  const refreshRoads = async () => {
+    const source = map.getSource('road') as GeoJSONSource | undefined;
+    if (!source || !roadSource) return;
+
+    const clear = async (message: string) => {
+      if (roadShown) {
+        await source.setData(EMPTY_FEATURE_COLLECTION);
+        roadShown = false;
+      }
+      roadSummaryEl.textContent = message;
+    };
+
+    if (!isLayerVisible('road')) {
+      await clear('');
+      return;
+    }
+    if (map.getZoom() < ROAD_MIN_ZOOM) {
+      await clear(`ズーム${ROAD_MIN_ZOOM}まで寄ると出ます`);
+      return;
+    }
+
+    const selectedClasses = [...roadClassInputs]
+      .filter((input) => input.checked)
+      .map((input) => input.value);
+
+    const token = ++roadToken;
+    const features = await busy('道路を読み込み中…', async () => {
+      await roadSource.ensure();
+      const b = map.getBounds();
+      const c = map.getCenter();
+      return fetchRoadsInView(
+        conn,
+        roadSource,
+        {
+          west: b.getWest(),
+          south: b.getSouth(),
+          east: b.getEast(),
+          north: b.getNorth(),
+          centerLon: c.lng,
+          centerLat: c.lat,
+        },
+        selectedClasses,
+        ROAD_LIMIT,
+      );
+    });
+    if (token !== roadToken) return;
+
+    roadShown = true;
+    await source.setData({
+      type: 'FeatureCollection',
+      features: features.map((feature) => {
+        const style = ROAD_STYLES[feature.roadClass];
+        return {
+          type: 'Feature',
+          properties: {
+            color: style?.color ?? '#777777',
+            width: style?.width ?? 1.5,
+            roadName: feature.roadName,
+            roadClass: style?.label ?? feature.roadClass,
+            // ホバーで出すので、ここで読める形にしておく。
+            routeNames: feature.routeNames.join(' / '),
+          },
+          geometry: feature.geojson,
+        };
+      }),
+    });
+
+    if (features.length === 0) {
+      roadSummaryEl.textContent = 'この範囲に道路がありません';
+      return;
+    }
+    const capped = features.length >= ROAD_LIMIT;
+    roadSummaryEl.textContent =
+      `${features.length.toLocaleString()} 区間` +
+      (capped ? ' (上限に達しました。拡大すると全部出ます)' : '');
+  };
+
+  const requestRoadRefresh = () => {
+    refreshRoads().catch((e: unknown) => {
+      console.error('[road] failed', e);
+      showFailure('道路の読み込みに失敗しました');
+    });
+  };
+
   const requestRailwayRefresh = () => {
     refreshRailway().catch((e: unknown) => {
       console.error('[railway] failed', e);
@@ -2538,6 +2905,38 @@ async function main() {
     railwayNoneButton.addEventListener('click', () => setAll(false));
 
     map.on('moveend', requestRailwayRefresh);
+  }
+
+  if (roadSource) {
+    // 鉄道と同じ作り。**等級はカタログの語彙から**来るので、順番だけ
+    // ROAD_STYLES に沿わせる (高速 → 国道 → 都道府県道)。
+    const ordered = Object.keys(ROAD_STYLES).filter((cls) => roadClasses.includes(cls));
+    const rest = roadClasses.filter((cls) => !(cls in ROAD_STYLES));
+    for (const cls of [...ordered, ...rest]) {
+      const style = ROAD_STYLES[cls];
+      const label = document.createElement('label');
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = cls;
+      input.checked = true;
+      const swatch = document.createElement('span');
+      swatch.className = 'swatch';
+      swatch.style.background = style?.color ?? '#777777';
+      label.append(input, swatch, document.createTextNode(style?.label ?? cls));
+      roadClassesEl.append(label);
+    }
+    roadClassInputs = [...roadClassesEl.querySelectorAll<HTMLInputElement>('input')];
+    for (const input of roadClassInputs) {
+      input.addEventListener('change', requestRoadRefresh);
+    }
+    const setAllRoads = (checked: boolean) => {
+      for (const input of roadClassInputs) input.checked = checked;
+      requestRoadRefresh();
+    };
+    roadAllButton.addEventListener('click', () => setAllRoads(true));
+    roadNoneButton.addEventListener('click', () => setAllRoads(false));
+
+    map.on('moveend', requestRoadRefresh);
   }
 
   if (meshSources.length > 0) {
@@ -2624,6 +3023,21 @@ async function main() {
       minZoom: RAILWAY_MIN_ZOOM,
       settings: railwaySectionEl,
       refresh: requestRailwayRefresh,
+    });
+  }
+  if (roadSource) {
+    layers.push({
+      id: 'road',
+      title: '道路',
+      // **国のデータではない。** N13にもRdCLにも路線名が無いので、
+      // 「国道13号」で引けるのはOvertureだけ (docs/data-sources.md)。
+      source: 'Overture',
+      vintage: roadVintage,
+      bbox: roadSource.bbox,
+      visible: false,
+      minZoom: ROAD_MIN_ZOOM,
+      settings: roadSectionEl,
+      refresh: requestRoadRefresh,
     });
   }
 
@@ -2777,6 +3191,7 @@ async function main() {
     ['buildings', buildingCountEl],
     ['mesh', meshSummaryEl],
     ['railway', railwaySummaryEl],
+    ['road', roadSummaryEl],
   ];
   for (const [id, el] of statusSources) {
     if (layers.some((layer) => layer.id === id)) mirrorStatus(id, el);
@@ -2798,6 +3213,7 @@ async function main() {
     ['oaza', '町名・丁目'],
     ['block', '街区 (〜丁目〜番)'],
     ['railway_station', '駅名・路線名'],
+    ['road_route', '道路名 (国道13号など)'],
   ];
   const supportRows = supportKinds.flatMap(([kind, title]) => {
     const collection = byKind(kind)[0];
@@ -3053,6 +3469,38 @@ async function main() {
         hoverPopup.remove();
       });
     }
+  }
+
+  if (roadSource) {
+    map.on('mousemove', 'road-line', (e) => {
+      const feature = e.features?.[0];
+      if (!feature) return;
+      hoveringBuilding = true;
+      updateCursor();
+
+      const props = feature.properties;
+      const routes = (props.routeNames as string) || '';
+      const name = props.roadName as string | null;
+      hoverPopup
+        .setLngLat(e.lngLat)
+        .setDOMContent(
+          hoverContent([
+            // 名前が無い区間もある。その場合は路線名を見出しに繰り上げる。
+            ['', name || routes || '(名前なし)'],
+            // **路線は複数あることがある。** 見出しに使ったものと同じなら繰り返さない。
+            ['路線', routes && routes !== name ? routes : null],
+            ['種別', props.roadClass as string],
+            ['時点', roadVintage ?? null],
+          ]),
+        )
+        .addTo(map);
+    });
+
+    map.on('mouseleave', 'road-line', () => {
+      hoveringBuilding = false;
+      updateCursor();
+      hoverPopup.remove();
+    });
   }
 
   // 逆ジオコーディング: クリックした地点がどの行政区域かを引き、

@@ -1,21 +1,23 @@
 use anyhow::{Context, Result, bail};
 use duck_geocoder::geoparquet::{CoveringBbox, geo_metadata_json, geoparquet_geometry_type};
 use duck_geocoder::overture::{
-    DEFAULT_RELEASE, ROAD_CLASSES, build_roads_sql, build_roads_stats_sql,
+    DEFAULT_RELEASE, ROAD_CLASSES, build_road_routes_sql, build_roads_sql, build_roads_stats_sql,
 };
 use std::path::PathBuf;
 use std::process::Command;
 
 /// `extract_overture roads` で落としたファイルから、道路データセットを作る。
 ///
-/// **`class` ごとに1ファイルに分ける。** 全国の幹線は87万区間あり、まとめると
-/// `optimize_geoparquet` が全行をメモリに載せるところで落ちる。
-/// 分けても配信側は `read_parquet([...])` で1つのビューに束ねられるので、
+/// **`class` ごとに1ファイルに分ける。** 高速・国道・県道は見たい場面が違うので、
+/// 分けておけば「高速だけ表示」で残りを読まずに済む。
+/// 配信側は `read_parquet([...])` で1つのビューに束ねられるので、
 /// 画面上は1レイヤーのまま扱える。
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let (input, divisions, out_dir) = match args.as_slice() {
-        [_, input, divisions, out_dir] => (input.clone(), divisions.clone(), PathBuf::from(out_dir)),
+        [_, input, divisions, out_dir] => {
+            (input.clone(), divisions.clone(), PathBuf::from(out_dir))
+        }
         _ => bail!(
             "usage: overture_roads_to_geoparquet <roads.parquet> <出力ディレクトリ>\n\
              例:\n  \
@@ -25,10 +27,9 @@ fn main() -> Result<()> {
     };
     std::fs::create_dir_all(&out_dir)?;
 
-    let vintage = format!(
-        "Overture {}",
-        std::env::var("OVERTURE_RELEASE").unwrap_or_else(|_| DEFAULT_RELEASE.to_string())
-    );
+    // 出所名 (Overture) はカタログ側が持っているので、ここは版だけ。
+    // 両方に入れるとレイヤー一覧が「Overture · Overture 2026-07-22.0」になる。
+    let vintage = std::env::var("OVERTURE_RELEASE").unwrap_or_else(|_| DEFAULT_RELEASE.to_string());
 
     for class in ROAD_CLASSES {
         let output = out_dir.join(format!("overture_roads_{class}.parquet"));
@@ -64,10 +65,23 @@ fn main() -> Result<()> {
             [stats.xmin, stats.ymin, stats.xmax, stats.ymax],
         )?;
 
-        run_duckdb(&build_roads_sql(&input, &divisions, class, output_str, &geo, &vintage))?;
+        run_duckdb(&build_roads_sql(
+            &input, &divisions, class, output_str, &geo, &vintage,
+        ))?;
         println!("書き出しました: {}", output.display());
     }
-    println!("配信用の最適化には optimize_geoparquet を通すこと。");
+
+    // 路線の索引。**書き出したあとのファイルから作る**ので、
+    // 国外を落とす絞り込みを二重に書かずに済む。
+    let routes = out_dir.join("overture_road_routes.parquet");
+    let glob = out_dir.join("overture_roads_*.parquet");
+    run_duckdb(&build_road_routes_sql(
+        glob.to_str().context("出力パスがUTF-8ではありません")?,
+        routes.to_str().context("出力パスがUTF-8ではありません")?,
+    ))?;
+    println!("書き出しました: {}", routes.display());
+
+    println!("配信用の最適化には optimize_geoparquet を通すこと (路線の索引は除く)。");
     Ok(())
 }
 

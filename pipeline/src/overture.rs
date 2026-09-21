@@ -339,11 +339,14 @@ COPY (
     names.primary AS road_name,
     class,
     -- routes が丸ごとNULLのこともあるので、空リストに寄せてから展開する。
-    list_filter(
-      list_transform(coalesce(routes, []), lambda r: r.name), lambda x: x IS NOT NULL
+    -- **先に routes を絞ってから2つのリストを作る。** 名前と系統を別々に絞ると、
+    -- 名前だけ欠けた路線があったときに長さがずれ、添字で対応づけると違う組になる
+    -- (実測で6.3万区間がずれていた)。
+    list_transform(
+      list_filter(coalesce(routes, []), lambda r: r.name IS NOT NULL), lambda r: r.name
     ) AS route_names,
-    list_filter(
-      list_transform(coalesce(routes, []), lambda r: r.network), lambda x: x IS NOT NULL
+    list_transform(
+      list_filter(coalesce(routes, []), lambda r: r.name IS NOT NULL), lambda r: r.network
     ) AS networks,
     -- 表示範囲での絞り込みに使う covering 列。
     bbox,
@@ -421,9 +424,13 @@ WHERE r.class = '{class}'
 
 /// 切り出した道路から、配信用のデータセットを class ごとに組み立てるSQL。
 ///
-/// **class で分けて書く。** 全国で87万区間あり、1ファイルにすると
-/// `optimize_geoparquet` が全行をメモリに載せるところで苦しくなる。
-/// 分けても `read_parquet([...])` で1つのビューに束ねられる。
+/// **class で分けて書く。** 高速・国道・県道は見たい場面が違うので、
+/// ファイルから分けておけば「高速だけ表示」で残りを読まずに済む。
+/// 分けても配信側は `read_parquet([...])` で1つのビューに束ねられる。
+///
+/// 当初はメモリのためと考えていたが、`optimize_geoparquet` の実測は
+/// 最大の primary (33万行) で237MBだった。まとめても470MB程度で収まる見込みで、
+/// **分ける理由はメモリではない。**
 ///
 /// ジオメトリをBLOBとして書く理由は [`build_admin_sql`] と同じ。
 pub fn build_roads_sql(
@@ -446,7 +453,6 @@ COPY (
     r.road_name,
     r.class,
     r.route_names,
-    r.networks,
     r.bbox,
     ST_AsWKB(r.geometry)::BLOB AS geometry
   FROM read_parquet('{input}') r
@@ -456,6 +462,43 @@ COPY (
   geo: '{escaped}',
   '{vintage_key}': '{vintage}'
 }});"
+    )
+}
+
+/// 配信済みの道路ファイルから、路線の索引を作るSQL。
+///
+/// **同じ出所の要約**であって、別のデータではない (鉄道の駅と区間の関係と同じ)。
+/// 路線ごとの範囲を持たせておくと、「国道13号」で引いたときに
+/// 全区間のbbox列 (配信物の13%、約9MB) を読まずに済む。
+///
+/// ジオメトリを持たないので、これはGeoParquetではなく素のParquetになる
+/// (`crate::admin_names` と同じ)。
+///
+/// **同じ名前の別路線は分けられない。** 石川バイパスは福島と沖縄にあり、
+/// 束ねると範囲が日本全体に広がる。実測で散らばり3度超は58路線 (1.0%) で、
+/// うち何本かはアジアハイウェイ1号線や国道58号のように**本当に長い**。
+/// 鉄道の「本線」と同じで、原典に区別する手掛かりが無い。
+pub fn build_road_routes_sql(input_glob: &str, output: &str) -> String {
+    format!(
+        "COPY (
+  SELECT
+    route_name,
+    -- 等級は代表値。1つの路線が高速と国道をまたぐことは稀。
+    mode(class) AS class,
+    count(*) AS segments,
+    {{
+      xmin: min(bbox.xmin),
+      ymin: min(bbox.ymin),
+      xmax: max(bbox.xmax),
+      ymax: max(bbox.ymax)
+    }} AS bbox
+  FROM (
+    SELECT unnest(route_names) AS route_name, class, bbox
+    FROM read_parquet('{input_glob}')
+  )
+  GROUP BY route_name
+  ORDER BY route_name
+) TO '{output}' (FORMAT PARQUET);"
     )
 }
 
@@ -690,8 +733,14 @@ mod tests {
     fn roads_extract_keeps_every_route() {
         let sql = build_roads_extract_sql("2026-07-22.0", JAPAN_BBOX, "/tmp/roads.parquet");
 
-        assert!(sql.contains("list_transform(coalesce(routes, []), lambda r: r.name)"));
-        assert!(sql.contains("list_transform(coalesce(routes, []), lambda r: r.network)"));
+        assert!(sql.contains(
+            "lambda r: r.name
+    ) AS route_names"
+        ));
+        assert!(sql.contains(
+            "lambda r: r.network
+    ) AS networks"
+        ));
         // routes が丸ごとNULLの行で落ちないこと。
         assert!(sql.contains("coalesce(routes, [])"));
     }
@@ -717,13 +766,13 @@ mod tests {
             "trunk",
             "/tmp/out.parquet",
             r#"{"version":"1.1.0"}"#,
-            "Overture 2026-07-22.0",
+            "2026-07-22.0",
         );
 
         assert!(sql.contains("WHERE r.class = 'trunk'"));
         assert!(sql.contains("ST_AsWKB(r.geometry)::BLOB AS geometry"));
         assert!(sql.contains(r#"geo: '{"version":"1.1.0"}'"#));
-        assert!(sql.contains("'duck:vintage': 'Overture 2026-07-22.0'"));
+        assert!(sql.contains("'duck:vintage': '2026-07-22.0'"));
     }
 
     // **Overtureの道路には国の列が無い。** 日本を囲む矩形には朝鮮半島と
@@ -761,6 +810,51 @@ mod tests {
 
         assert!(sql.contains("starts_with(n, 'JP')"));
         assert!(sql.contains("OR len(list_filter(r.networks,"));
+    }
+
+    // **配信物に networks は載せない。** UIで使っておらず、
+    // route_names と添字で対応づけたくなる罠だけが残る。
+    #[test]
+    fn roads_sql_does_not_ship_the_network_list() {
+        let sql = build_roads_sql(
+            "/tmp/roads.parquet",
+            "/tmp/div.parquet",
+            "trunk",
+            "/tmp/out.parquet",
+            "{}",
+            "v",
+        );
+
+        // 書き出す列の並びに networks が無いこと (絞り込みの中の参照は別)。
+        assert!(sql.contains(
+            "    r.route_names,
+"
+        ));
+        assert!(!sql.contains(
+            "    r.networks,
+"
+        ));
+    }
+
+    // 2つのリストは同じ routes から作るので、長さが揃っていなければならない。
+    #[test]
+    fn roads_extract_keeps_the_two_lists_aligned() {
+        let sql = build_roads_extract_sql("2026-07-22.0", JAPAN_BBOX, "/tmp/roads.parquet");
+
+        // 先に routes を絞ってから2つのリストを作ること。
+        assert!(sql.contains("list_filter(coalesce(routes, []), lambda r: r.name IS NOT NULL)"));
+        // 名前と系統を別々に絞ると長さがずれる。
+        assert!(!sql.contains("lambda x: x IS NOT NULL"));
+    }
+
+    // 路線の索引はジオメトリを持たない。持たせると小さくならない。
+    #[test]
+    fn road_routes_index_has_no_geometry() {
+        let sql = build_road_routes_sql("/tmp/roads_*.parquet", "/tmp/routes.parquet");
+
+        assert!(sql.contains("unnest(route_names) AS route_name"));
+        assert!(sql.contains("GROUP BY route_name"));
+        assert!(!sql.contains("geometry"));
     }
 
     // 収録範囲は書き出すものと同じ絞り込みで測る。
