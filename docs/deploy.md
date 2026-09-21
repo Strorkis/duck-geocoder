@@ -112,6 +112,41 @@ E2Eが落ちればその間ずっと壊れたままになる。
 3. **`--delete` を付けない。** 古いファイルを残しておけば、戻すのは
    古い catalog.json を上げ直すだけで済む
 
+### アップロードのコマンド
+
+rclone を使う。**リモート名は `rclone config` で付けた名前**で、バケットは
+`duck-geocoder`。以下は `R2` に入れて使う。
+
+```sh
+R2=<リモート名>:duck-geocoder
+```
+
+**`--delete` (`rclone sync`) を使わない。** 上の理由で、古いファイルは戻す手段として
+残しておく。`rclone copy` は消さないので、既定でこの方針になる。
+
+**追加・更新するファイルを名指しする。**`data/output` を丸ごと指定すると、
+rclone が更新時刻で比較して**129MBを上げ直しにいくことがある**
+(ブラウザから入れたファイルには更新時刻が入っていない)。
+差分だけ上げたいときは `--size-only` を付ける。
+
+```sh
+# 1. catalog.json 以外を先に上げる
+rclone copy data/output/ksj "$R2/ksj" -P
+rclone copy data/output "$R2" --include 'ksj-*.json' -P
+
+# 2. catalog.json を最後に上げる
+rclone copy data/output/catalog.json "$R2" -P
+
+# 3. 続けて push する (壊れうる時間をここに収める)
+git push
+```
+
+上げたものを確かめる。
+
+```sh
+rclone ls "$R2" | sort -k2
+```
+
 `http://localhost:4173` は `vite preview` の既定ポート。CIの `pnpm test:dist` が
 ここからR2を読むので、含めておく (含めないとブラウザがCORSで弾き、E2Eが全件落ちる)。
 
