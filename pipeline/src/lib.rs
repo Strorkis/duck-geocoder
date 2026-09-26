@@ -13,9 +13,11 @@ pub mod mesh_pop;
 pub mod n02;
 pub mod n03;
 pub mod overture;
+pub mod peak_memory;
 pub mod plateau;
 pub mod plateau_catalog;
 pub mod remote_zip;
+pub mod repack;
 pub mod spatial_pack;
 pub mod stac;
 
