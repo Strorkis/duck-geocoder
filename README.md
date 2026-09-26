@@ -1,12 +1,11 @@
 # duck-geocoder
 
-**日本のオープンデータが STAC + GeoParquet で配られたらどうなるか、を試す実験。**
+**置いてあるデータを動かさずに、必要な分だけ取って、その場で使えるようにする実験。**
 
 **デモ: https://strorkis.github.io/duck-geocoder/**
 
-形式もライセンスも配布元もばらばらな日本の地理空間データを、GeoParquetに揃えて
-[STAC](https://stacspec.org/) のカタログに載せ、**ブラウザから直接クエリして
-その場で見られる**ようにしている。サーバーは持たない
+形式もライセンスも配布元もばらばらな地理空間データを、共通の形に揃えてカタログに載せ、
+**ブラウザから直接クエリしてその場で見られる**ようにしている。サーバーは持たない
 (静的ホスティング + オブジェクトストレージ)。
 
 全国の行政区域に対する逆ジオコーディングが **1.5MB の転送**で動く (ファイルは98MB)。
@@ -15,6 +14,10 @@
 
 **正典のカタログを作ろうとしているのではない。** ここにあるのは変換した複製で、
 **原典は配布元**。出典とライセンスは配布元のものに従う。
+
+いまの実装は GeoParquet + [STAC](https://stacspec.org/) + DuckDB-WASM + MapLibre、
+対象は日本。**どれも主題ではなく、いまの選択**
+([docs/roadmap.md](docs/roadmap.md) の「このリポジトリは何か」)。
 
 - **[pipeline/](pipeline)** — 元データをWGS84のGeoParquetに変換するRust CLI
 - **[web/](web)** — DuckDB-WASM + MapLibreで検索・表示するWebアプリ
@@ -29,6 +32,7 @@
 | --- | --- |
 | [docs/roadmap.md](docs/roadmap.md) | 何を目指していて、何が積み残っているか |
 | [docs/data-sources.md](docs/data-sources.md) | データ源の調査。権利面と属性の実測 |
+| [docs/survey-application.md](docs/survey-application.md) | 測量法の複製承認申請の下準備 |
 | [docs/pipeline.md](docs/pipeline.md) | データの入手から、配信できるGeoParquetを作るまで |
 | [docs/deploy.md](docs/deploy.md) | 開発・テスト・デプロイ |
 | [docs/duckdb-wasm-range-requests.md](docs/duckdb-wasm-range-requests.md) | ブラウザに部分取得させるまでの調査記録 |
