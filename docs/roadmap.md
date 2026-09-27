@@ -22,7 +22,7 @@
 
 | | いまの選択 | なぜ主題ではないか |
 | --- | --- | --- |
-| 形式 | GeoParquet | **他のCNG (cloud-native geospatial) 技術も使う予定** |
+| 形式 | GeoParquet | **他のCNG (cloud-native geospatial) 技術も使う予定**。[COGPを測った](pipeline.md) (2026-09-27) |
 | カタログ | STAC | **Portolanを使うならSTACはその一部**になる |
 | 問い合わせ | DuckDB-WASM | **道具。** 別の技術が出れば移る |
 | 表示 | MapLibre | 同上 |
