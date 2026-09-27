@@ -134,8 +134,8 @@ rclone が更新時刻で比較して**129MBを上げ直しにいくことがあ
 Collection・ItemCollection・parquetがまとまって載る。
 
 ```sh
-# 1. catalog.json 以外を先に上げる (出所のディレクトリごと)
-rclone copy data/output/ksj "$R2/ksj" -P
+# 1. catalog.json 以外を先に上げる
+rclone copy data/output "$R2" --size-only --exclude 'catalog.json' -P
 
 # 2. catalog.json を最後に上げる
 rclone copy data/output/catalog.json "$R2" -P
@@ -144,14 +144,42 @@ rclone copy data/output/catalog.json "$R2" -P
 git push
 ```
 
-**平置きだった頃の古いJSONはルートに残る。** `rclone copy` は消さないので、
-`catalog.json` を差し替えれば参照されなくなるだけ。**しばらく残して**、
-公開後の確認が済んでから消す (戻す手段になる)。
+**`rclone` はループで回さない。** 設定を暗号化していると**起動ごとに
+パスワードを聞かれる**ので、出所ごとに5回回すと5回打つことになる。
+`data/output` を1回で渡せば済む (`--size-only` が無いと129MBを上げ直しに行く)。
+
+聞かれるのを無くすなら `--password-command` がある。
+**平文でどこにも置かずに済む** (鍵はOSのキーリングが持つ) が、
+`secret-tool` の導入と登録が要る。
 
 ```sh
-rclone delete "$R2" --include '*-items.json'   # 確認が済んでから
+rclone --password-command "secret-tool lookup rclone config" copy …
+```
+
+### 平置きだった頃の古いJSONを消す
+
+`rclone copy` は消さないので、ルートに残る。`catalog.json` を差し替えれば
+参照されなくなるだけなので、**急いで消さない。戻す手段になる。**
+
+**消してよいのは「実サイトが新しいバンドルを配り始めてから」。**
+CIのsuccessだけでは足りない。**古いバンドルは古い平置きJSONに依存している**ので、
+Pagesの配信が切り替わる前に消すと公開中のサイトが壊れる。
+
+| | 消してよいか |
+| --- | --- |
+| CI が success | ❌ まだ。本番ビルドが通っただけ |
+| Deploy が success | ❌ まだ。配信の切り替わりを確かめる |
+| **実サイトが新バンドルを配っている** | ⭕ ここから |
+
+利用者のブラウザにキャッシュされた古いバンドルは消した瞬間に壊れるので、
+**急がないなら数日置く。**
+
+```sh
 rclone delete "$R2" --include '*.json' --exclude 'catalog.json' --max-depth 1
 ```
+
+**`--max-depth 1` を忘れない。** これが無いと**ディレクトリの中の
+新しいJSONも消える。**
 
 上げたものを確かめる。
 
