@@ -320,6 +320,24 @@ fn collection(id: &str, entries: &[&DatasetEntry], dir: &str) -> Result<Value> {
     if let Some(digits) = first.mesh_digits {
         body["duck:mesh_digits"] = json!(digits);
     }
+    // **粗い段があるか。** あればUIが引いた表示で `lod = 0` を引く。
+    // メッシュと同じく、**揃っているときだけ**出す — 一部のファイルにしか段が
+    // 無いのに出すと、段の無いファイルを引いて空になる。
+    let tolerances: std::collections::BTreeSet<String> = entries
+        .iter()
+        .filter_map(|entry| entry.coarse_lod_tolerance_m.map(|m| m.to_string()))
+        .collect();
+    if tolerances.len() == 1
+        && entries
+            .iter()
+            .all(|entry| entry.coarse_lod_tolerance_m.is_some())
+    {
+        body["duck:coarse_lod_tolerance_m"] = json!(first.coarse_lod_tolerance_m);
+    }
+    // **何で絞ったか。** 「60m以上だけ」と画面で断るために出す。
+    if let Some(height) = first.min_height_m {
+        body["duck:min_height_m"] = json!(height);
+    }
     // **いつ時点のデータか。** ファイルごとに違いうる (PLATEAUは都市ごとに
     // 更新年度が揃っていない) ので、**揃っているときだけ**Collectionに出す。
     // 揃っていないものを代表値で1つに丸めると、古い都市を新しいと誤解させる。
@@ -438,6 +456,8 @@ mod tests {
             via: None,
             vintage: None,
             source_lod: None,
+            coarse_lod_tolerance_m: None,
+            min_height_m: None,
             collection_via: "https://example.invalid/download",
         }
     }
@@ -555,6 +575,45 @@ mod tests {
             .as_str()
             .unwrap();
         assert_eq!(root, "catalog.json");
+    }
+
+    /// 粗い段は**全ファイルに揃っているときだけ**Collectionに出す。
+    ///
+    /// 一部にしか段が無いのに名乗ると、UIが `lod = 0` を引いて
+    /// **段の無いファイルだけ空になる** (歯抜けの地図になって原因が分かりにくい)。
+    #[test]
+    fn announces_the_coarse_level_only_when_every_file_has_one() {
+        let with_level = |file: &str, tolerance: Option<f64>| {
+            let mut entry = entry("mesh_pop_13", file, Some([139.0, 35.0, 140.0, 36.0]));
+            entry.coarse_lod_tolerance_m = tolerance;
+            entry
+        };
+        let key = "duck:coarse_lod_tolerance_m";
+
+        // 揃っている。
+        let documents = build(&vec![
+            with_level("estat/a.parquet", Some(100.0)),
+            with_level("estat/b.parquet", Some(100.0)),
+        ])
+        .unwrap();
+        assert_eq!(find(&documents, "estat/estat-mesh-pop.json")[key], 100.0);
+
+        // 片方に無い。**出さない。**
+        let documents = build(&vec![
+            with_level("estat/a.parquet", Some(100.0)),
+            with_level("estat/b.parquet", None),
+        ])
+        .unwrap();
+        assert!(find(&documents, "estat/estat-mesh-pop.json")[key].is_null());
+
+        // 誤差が揃っていない。片方を代表値にすると、粗い方で細かいズームまで
+        // 使ってしまう。**出さない。**
+        let documents = build(&vec![
+            with_level("estat/a.parquet", Some(100.0)),
+            with_level("estat/b.parquet", Some(500.0)),
+        ])
+        .unwrap();
+        assert!(find(&documents, "estat/estat-mesh-pop.json")[key].is_null());
     }
 
     /// 1つのCollectionのファイルが複数のディレクトリに散っていたら気付けるようにする。

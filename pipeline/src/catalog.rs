@@ -55,6 +55,17 @@ pub struct DatasetEntry {
     /// PLATEAUの建物はLOD0しか読んでいないので、**配信しているものと原典の差**を
     /// 画面で示すために持つ。都市ごとに違うのでファイル単位。
     pub source_lod: Option<String>,
+    /// **粗い段の簡略化の許容誤差 (メートル)。** GeoParquetの `duck:lod` から読む。
+    ///
+    /// これがあると、UIは引いた表示で `lod = 0` を引ける。無ければ段が無いので
+    /// 今までどおり全行が原寸 ([`crate::lod`])。どのズームまで粗い段で足りるかは
+    /// この誤差から導けるので、ズーム閾値を表示側に書かずに済む。
+    pub coarse_lod_tolerance_m: Option<f64>,
+    /// **この高さ以上だけを収録していること** (メートル)。`duck:min_height_m` から読む。
+    ///
+    /// 全国の高い建物だけを集めたファイルが名乗る。UIが「60m以上だけ」と
+    /// 断って出せるようにするためにある。
+    pub min_height_m: Option<u32>,
     /// **この出所の配布元。** 出所全体で1つ。ファイル側に `via` が無くてもこれはある。
     pub collection_via: &'static str,
 }
@@ -350,6 +361,20 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             via: "https://docs.overturemaps.org/guides/transportation/",
         },
     ),
+    // **`plateau_bldg` より前に置くこと。** 前方一致で引くので、後ろだと吸われる。
+    (
+        "plateau_bldg_tall",
+        Description {
+            kind: DatasetKind::PlateauBuildings,
+            collection: "plateau-buildings-tall",
+            title: "高い建物 (PLATEAU・全国)",
+            description: "PLATEAUの建物のうち、高さ60m以上を全国からまとめたもの (面)。引いた表示で「そこに建物データがあるか」を見せるために持つ。建物に簡略化は効かない (ズーム12でフットプリントは1px未満) ので、高さで選んでいる。実物のLOD0フットプリントで近似は入っていない。",
+            attribution: MLIT_PLATEAU,
+            summary_columns: &["usage"],
+            mesh_digits: None,
+            via: "https://www.geospatial.jp/ckan/dataset/plateau",
+        },
+    ),
     (
         "plateau_bldg",
         Description {
@@ -593,6 +618,12 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
     let via = key_value(crate::geoparquet::VIA_KEY);
     let vintage = key_value(crate::geoparquet::VINTAGE_KEY);
     let source_lod = key_value(crate::geoparquet::SOURCE_LOD_KEY);
+    // 段と高さの下限も**ファイル自身が名乗る**。DESCRIPTIONSに書くと、
+    // 作った中身と宣言が食い違っても気付けない。
+    let coarse_lod_tolerance_m = key_value(crate::lod::LOD_KEY)
+        .as_deref()
+        .and_then(crate::lod::coarse_resolution_m);
+    let min_height_m = key_value(crate::lod::MIN_HEIGHT_KEY).and_then(|v| v.parse().ok());
 
     let columns = file_metadata
         .schema_descr()
@@ -632,6 +663,8 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         via,
         vintage,
         source_lod,
+        coarse_lod_tolerance_m,
+        min_height_m,
         collection_via: described.via,
     })
 }

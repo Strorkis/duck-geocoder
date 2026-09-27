@@ -48,6 +48,28 @@ pub const COARSE_TOLERANCE_M: f64 = 100.0;
 /// 段を持つファイルが名乗るメタデータのキー。
 pub const LOD_KEY: &str = "duck:lod";
 
+/// 高さの下限を名乗るメタデータのキー。高い建物だけのファイルが持つ。
+pub const MIN_HEIGHT_KEY: &str = "duck:min_height_m";
+
+/// `duck:lod` から**粗い段の解像度 (メートル)** を読む。段が無ければ `None`。
+///
+/// カタログがこれを読んでCollectionに載せ、UIが「どのズームまで粗い段で足りるか」を
+/// 自分で決める。**ズーム閾値を表示側に書かない**ための道筋。
+pub fn coarse_resolution_m(lod_json: &str) -> Option<f64> {
+    let parsed: serde_json::Value = serde_json::from_str(lod_json).ok()?;
+    parsed
+        .get("levels")?
+        .as_array()?
+        .iter()
+        .find(|level| {
+            level.get("lod").and_then(serde_json::Value::as_u64) == Some(COARSE_LOD.into())
+        })?
+        .get("resolution_m")?
+        .as_f64()
+        // 0は「簡略化していない」の意味なので、段として数えない。
+        .filter(|resolution| *resolution > 0.0)
+}
+
 /// 粗い段 (最初の段)。
 pub const COARSE_LOD: u8 = 0;
 /// 原寸 (最後の段)。
@@ -196,6 +218,34 @@ COPY (
 /// 306都市 (2,914万行) を1ファイルにすると約32GBを要求する。加えて引いた表示で
 /// 306ファイルのフッターを引くと1回で600往復を超え、R2のClass Bが効く。
 /// **これは解像度の段ではなく、全国の障害物を見るための別のデータ。**
+pub fn build_tall_buildings_stats_sql(input_glob: &str, min_height_m: u32) -> String {
+    format!(
+        "INSTALL spatial; LOAD spatial;
+SET memory_limit = '2GB';
+SELECT
+  min(bbox.xmin) AS xmin,
+  min(bbox.ymin) AS ymin,
+  max(bbox.xmax) AS xmax,
+  max(bbox.ymax) AS ymax,
+  -- ST_GeometryType は列挙型を返すので、そのままだとJSONにできない。
+  list_sort(list_distinct(list(ST_GeometryType(geometry)::VARCHAR))) AS geometry_types
+FROM read_parquet('{input_glob}', filename = true)
+WHERE height >= {min_height_m}
+  AND {CITY_FILES_ONLY};"
+    )
+}
+
+/// 都市ごとのファイルだけを読む条件。
+///
+/// **出力を入力に含めてはいけない。** 出力は `plateau_bldg_tall.parquet` で、
+/// 素直な glob (`plateau_bldg_*.parquet`) に**自分が引っかかる**。2回流すと
+/// 前回の出力を読み込んで件数が倍になる (実測で7,234棟が14,468棟になった)。
+///
+/// 都市ごとのファイルは `plateau_bldg_<5桁の都市コード>.parquet` なので、
+/// 末尾が数字のものだけを採る。
+const CITY_FILES_ONLY: &str = "regexp_matches(filename, '_[0-9]{5}\\.parquet$')";
+
+/// [`build_tall_buildings_stats_sql`] の結果から作る、高い建物だけのファイル。
 pub fn build_tall_buildings_sql(
     input_glob: &str,
     output: &str,
@@ -218,9 +268,13 @@ COPY (
     storeys,
     bbox,
     ST_AsWKB(geometry)::BLOB AS geometry
-  FROM read_parquet('{input_glob}')
+  FROM read_parquet('{input_glob}', filename = true)
   WHERE height >= {min_height_m}
-) TO '{output}' (FORMAT PARQUET, KV_METADATA {{ geo: '{escaped}' }});"
+    AND {CITY_FILES_ONLY}
+) TO '{output}' (FORMAT PARQUET, KV_METADATA {{
+  geo: '{escaped}',
+  '{MIN_HEIGHT_KEY}': '{min_height_m}'
+}});"
     )
 }
 
@@ -311,6 +365,42 @@ mod tests {
         assert!(
             !sql.contains("ST_Simplify"),
             "近似を入れてはいけない: {sql}"
+        );
+        // **何で絞ったかをファイルに書く。** UIが「60m以上だけ」と断れるように。
+        assert!(sql.contains(MIN_HEIGHT_KEY), "{sql}");
+    }
+
+    /// **自分の出力を読み込まないこと。** 出力は `plateau_bldg_tall.parquet` で
+    /// 素直なglobに引っかかるので、2回流すと件数が倍になる (実測で14,468棟)。
+    #[test]
+    fn never_reads_its_own_output() {
+        for sql in [
+            build_tall_buildings_sql("plateau_bldg_*.parquet", "tall.parquet", 60, "{}"),
+            build_tall_buildings_stats_sql("plateau_bldg_*.parquet", 60),
+        ] {
+            assert!(sql.contains(CITY_FILES_ONLY), "{sql}");
+            // 条件を使うには filename 列が要る。
+            assert!(sql.contains("filename = true"), "{sql}");
+        }
+    }
+
+    /// 書いたメタデータをそのまま読み戻せること。
+    /// **カタログはここを通ってUIに伝わる**ので、往復が合わないと段が無いことになる。
+    #[test]
+    fn reads_back_the_coarse_resolution() {
+        let written = lod_metadata_json(COARSE_TOLERANCE_M);
+        assert_eq!(coarse_resolution_m(&written), Some(COARSE_TOLERANCE_M));
+    }
+
+    /// 段を名乗らないファイルは `None`。原寸しか無いのに粗い段を引くと空になる。
+    #[test]
+    fn reports_no_coarse_level_when_there_is_none() {
+        assert_eq!(coarse_resolution_m("{}"), None);
+        assert_eq!(coarse_resolution_m("壊れたJSON"), None);
+        // 解像度0は「簡略化していない」なので段として数えない。
+        assert_eq!(
+            coarse_resolution_m(r#"{"levels":[{"lod":0,"resolution_m":0.0}]}"#),
+            None
         );
     }
 }
