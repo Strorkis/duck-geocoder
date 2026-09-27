@@ -9,7 +9,7 @@ const ADMIN_DATASET = 'overture_admin_jp';
 /** 建物データセット。無くても他の機能は動くので、無ければスキップする。 */
 const BUILDINGS_DATASET = 'overture_buildings_minato';
 /** PLATEAUの建物。高さ・用途を持つので、絞り込みはこちらでしか出ない。 */
-const PLATEAU_DATASET = 'plateau_bldg_minato';
+const PLATEAU_DATASET = 'plateau_bldg_13103';
 
 interface StacLink {
   rel: string;

@@ -15,7 +15,7 @@ use geo_types::{LineString, MultiPolygon, Polygon};
 use nusamai_citygml::codelist::CodeResolver;
 use nusamai_citygml::{CityGmlElement, CityGmlReader, GeometryType, ParseError, SubTreeReader};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
 use std::io::{BufRead, Read, Seek};
 use std::path::Path;
@@ -213,25 +213,180 @@ pub fn parse_archive(source: impl Read + Seek, label: &str) -> Result<Vec<Row>> 
     }
 
     let mut rows = Vec::new();
+    let mut stats = ParseStats::default();
+    // 読み直して助かったものと、それでも読めなかったもの。どちらも最後に報告する。
+    let mut recovered = Vec::new();
+    let mut skipped: Vec<(String, String)> = Vec::new();
+
     for name in &building_names {
         let bytes = read_entry(&mut archive, name)?;
-        let context = nusamai_citygml::ParseContext::new(Codelists::source_uri(name)?, &resolver);
+        match parse_gml(&bytes, name, &resolver) {
+            Ok((parsed, counted)) => {
+                rows.extend(parsed);
+                stats.add(&counted);
+            }
+            // **1本のGMLで都市全体を捨てない。** 原典がスキーマに反していることが
+            // あるので、読んでいない属性を落として読み直し、それでも駄目なら
+            // そのGMLだけ飛ばす。
+            Err(first) => match strip_elements(&bytes, IGNORED_ELEMENTS)
+                .and_then(|stripped| parse_gml(&stripped, name, &resolver))
+            {
+                Ok((parsed, counted)) => {
+                    rows.extend(parsed);
+                    stats.add(&counted);
+                    recovered.push(name.clone());
+                }
+                Err(_) => skipped.push((name.clone(), format!("{first:#}"))),
+            },
+        }
+    }
 
-        let mut xml_reader = quick_xml::NsReader::from_reader(std::io::Cursor::new(bytes));
-        let mut citygml_reader = CityGmlReader::new(context);
-        let mut st = citygml_reader
-            .start_root(&mut xml_reader)
-            .map_err(|e| anyhow::anyhow!("{e:?}"))
-            .with_context(|| format!("ルート要素を読めません: {name}"))?;
-        collect_buildings(&mut st, &mut rows)
-            .map_err(|e| anyhow::anyhow!("{e:?}"))
-            .with_context(|| format!("建物を読めません: {name}"))?;
+    if !recovered.is_empty() {
+        eprintln!(
+            "  読めない属性を外して読み直したGML {}本 (原典がスキーマに反している)",
+            recovered.len()
+        );
+    }
+    for (name, reason) in &skipped {
+        eprintln!("  GMLを飛ばしました: {name} — {reason}");
+    }
+    // **一部だけ落ちたときも言う。** 0件で終わったときしか報告しないと、
+    // 「9割落としているが少しは読めている」都市に気付けない。
+    if stats.dropped_without_lod0 > 0 {
+        eprintln!(
+            "  LOD0の外周線が無くて落とした建物 {}件 / {}件 (持っていたもの: {})",
+            stats.dropped_without_lod0,
+            stats.buildings,
+            stats
+                .observed_without_lod0
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
 
     if rows.is_empty() {
-        bail!("建物が1件も読めませんでした: {label}");
+        // **何が起きて0件になったかを言う。**「1件も読めませんでした」だけでは
+        // 収録が無いのか、こちらが落としているのかが分からない。
+        let observed = if stats.observed_without_lod0.is_empty() {
+            "ジオメトリ無し".to_string()
+        } else {
+            stats
+                .observed_without_lod0
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        bail!(
+            "建物が1件も読めませんでした: {label} \
+             (GML {}本 / cityObjectMember {}件 / Building {}件 / \
+             LOD0の外周線が無くて落とした {}件 / 飛ばしたGML {}本 / \
+             落とした建物が持っていたもの: {observed})",
+            building_names.len(),
+            stats.members,
+            stats.buildings,
+            stats.dropped_without_lod0,
+            skipped.len()
+        );
     }
     Ok(rows)
+}
+
+/// GML1本を読む。**行とカウントをまとめて返す** — 途中で失敗したものを
+/// 読み直すときに、半分だけ入った行が残らないようにするため。
+fn parse_gml(bytes: &[u8], name: &str, resolver: &Codelists) -> Result<(Vec<Row>, ParseStats)> {
+    let context = nusamai_citygml::ParseContext::new(Codelists::source_uri(name)?, resolver);
+    let mut xml_reader = quick_xml::NsReader::from_reader(std::io::Cursor::new(bytes));
+    let mut citygml_reader = CityGmlReader::new(context);
+    let mut st = citygml_reader
+        .start_root(&mut xml_reader)
+        .map_err(|e| anyhow::anyhow!("{e:?}"))
+        .with_context(|| format!("ルート要素を読めません: {name}"))?;
+
+    let mut rows = Vec::new();
+    let mut stats = ParseStats::default();
+    collect_buildings(&mut st, &mut rows, &mut stats)
+        .map_err(|e| anyhow::anyhow!("{e:?}"))
+        .with_context(|| format!("建物を読めません: {name}"))?;
+    Ok((rows, stats))
+}
+
+/// **読んでいないのにパースを止める属性。**
+///
+/// 伊勢市 (24203) の `51364572_bldg_6997_op.gml` は
+/// `uro:bldgDataQualityAttribute` を2回持つ。上流の nusamai-plateau が
+/// `Option<DataQualityAttribute>` で宣言しているため2回目で弾かれ、
+/// **GML1本のせいで都市全体が変換できなくなる**。
+///
+/// この属性はこちらが使っていない (読むのはジオメトリ・高さ・用途・階数・名前・ID
+/// だけ) ので、落としてから読み直す。上流のrevは既に最新なので上げても直らない。
+const IGNORED_ELEMENTS: &[&str] = &[
+    "uro:bldgDataQualityAttribute",
+    "uro:buildingDataQualityAttribute",
+];
+
+/// 読んだ数の内訳。**0件になった理由を言えるようにするためだけに持つ。**
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct ParseStats {
+    /// `core:cityObjectMember` の数。
+    members: usize,
+    /// そのうち建物だったもの。
+    buildings: usize,
+    /// 建物だが**LOD0の外周線が無くて落としたもの**。
+    dropped_without_lod0: usize,
+    /// 落とした建物が**代わりに何を持っていたか** (`LOD1/Solid` など)。
+    ///
+    /// これが無いと「LOD0が無い」から先に進めない。周南市 (35215) は
+    /// 90,292棟すべてがLOD0を持たず、ここを見て原因が分かった。
+    observed_without_lod0: BTreeSet<String>,
+}
+
+impl ParseStats {
+    fn add(&mut self, other: &Self) {
+        self.members += other.members;
+        self.buildings += other.buildings;
+        self.dropped_without_lod0 += other.dropped_without_lod0;
+        self.observed_without_lod0
+            .extend(other.observed_without_lod0.iter().cloned());
+    }
+}
+
+/// XMLから、指定した名前の要素を部分木ごと落としたコピーを作る。
+///
+/// **失敗したGMLを読み直すときだけ使う。** 正常系はこれを通らないので、
+/// 全国2,900万棟の変換速度には影響しない。
+///
+/// 名前は接頭辞込みで突き合わせる (`uro:bldgDataQualityAttribute`)。
+/// PLATEAUのCityGMLは接頭辞を宣言して使うので、これで足りる。
+fn strip_elements(xml: &[u8], names: &[&str]) -> Result<Vec<u8>> {
+    use quick_xml::events::Event;
+
+    let target = |name: &[u8]| names.iter().any(|n| n.as_bytes() == name);
+    let mut reader = quick_xml::Reader::from_reader(xml);
+    let mut writer = quick_xml::Writer::new(Vec::with_capacity(xml.len()));
+    let mut buf = Vec::new();
+    let mut scratch = Vec::new();
+
+    loop {
+        buf.clear();
+        match reader.read_event_into(&mut buf)? {
+            Event::Eof => break,
+            // 開始タグが対象なら、終了タグまで読み捨てる。
+            Event::Start(start) if target(start.name().as_ref()) => {
+                let end = start.to_end().into_owned();
+                scratch.clear();
+                reader.read_to_end_into(end.name(), &mut scratch)?;
+            }
+            // 空要素 (`<uro:... />`) は中身が無いので捨てるだけ。
+            Event::Empty(empty) if target(empty.name().as_ref()) => {}
+            event => {
+                writer.write_event(event)?;
+            }
+        }
+    }
+    Ok(writer.into_inner())
 }
 
 fn read_entry<R: Read + Seek>(archive: &mut zip::ZipArchive<R>, name: &str) -> Result<Vec<u8>> {
@@ -247,18 +402,31 @@ fn read_entry<R: Read + Seek>(archive: &mut zip::ZipArchive<R>, name: &str) -> R
 fn collect_buildings<R: BufRead>(
     st: &mut SubTreeReader<R>,
     rows: &mut Vec<Row>,
+    stats: &mut ParseStats,
 ) -> Result<(), ParseError> {
     st.parse_children(|st| match st.current_path() {
         b"core:cityObjectMember" => {
+            stats.members += 1;
             let mut obj: nusamai_plateau::models::TopLevelCityObject = Default::default();
             obj.parse(st)?;
             // ジオメトリは頂点バッファを共有する形でまとめて返る。
             let geometries = st.collect_geometries(None);
 
-            if let nusamai_plateau::models::TopLevelCityObject::Building(building) = obj
-                && let Some(row) = build_row(&building, &geometries)
-            {
-                rows.push(row);
+            if let nusamai_plateau::models::TopLevelCityObject::Building(building) = obj {
+                stats.buildings += 1;
+                match build_row(&building, &geometries) {
+                    Some(row) => rows.push(row),
+                    // **黙って落とさない。** ここが全件になると0件で終わるので、
+                    // 数えておかないと理由が分からなくなる。
+                    None => {
+                        stats.dropped_without_lod0 += 1;
+                        for g in &building.geometries {
+                            stats
+                                .observed_without_lod0
+                                .insert(format!("LOD{}/{:?}", g.lod, g.ty));
+                        }
+                    }
+                }
             }
             Ok(())
         }
@@ -275,40 +443,22 @@ fn collect_buildings<R: BufRead>(
     })
 }
 
-/// 建物1棟を行に変換する。LOD0の外周線が無いものは捨てる (Noneを返す)。
+/// 面を「水平」と見なすZの幅 (メートル)。押し出した柱の底面は本来完全に平らだが、
+/// 座標の丸めが入るので少しだけ許す。
+const FLAT_TOLERANCE_M: f64 = 0.01;
+
+/// 建物1棟を行に変換する。フットプリントが取れないものは捨てる (Noneを返す)。
 fn build_row(
     building: &nusamai_plateau::models::Building,
     geometries: &nusamai_citygml::GeometryStore,
 ) -> Option<Row> {
-    // LOD0のSurfaceが屋根の外周線。
-    let reference = building
-        .geometries
-        .iter()
-        .find(|g| g.lod == 0 && g.ty == GeometryType::Surface)?;
-
-    // CityGMLの座標は「緯度 経度 標高」の順。GeoParquetは経度・緯度なので入れ替える。
-    // Z(標高)はlod0RoofEdgeでは常に0なので捨てる。
-    let ring = |indices: &mut dyn Iterator<Item = u32>| -> LineString<f64> {
-        indices
-            .map(|i| {
-                let [lat, lon, _z] = geometries.vertices[i as usize];
-                (lon, lat)
-            })
-            .collect()
-    };
-
-    let polygons: Vec<Polygon<f64>> = geometries
-        .multipolygon
-        .iter_range(reference.pos as usize..(reference.pos + reference.len) as usize)
-        .map(|poly| {
-            let exterior = ring(&mut poly.exterior().iter_closed());
-            let interiors = poly
-                .interiors()
-                .map(|hole| ring(&mut hole.iter_closed()))
-                .collect();
-            Polygon::new(exterior, interiors)
-        })
-        .collect();
+    // **LOD0を優先し、無ければLOD1の底面から取る。**
+    //
+    // 順番はLOD0が先。どちらから作っても結果は同じだが (港区51,170棟で
+    // **WKBがバイト単位まで一致**することを確かめた)、LOD0は面を選ぶための
+    // Zの走査が要らないぶん安い。
+    let polygons = footprint_from_lod0(building, geometries)
+        .or_else(|| footprint_from_lod1_base(building, geometries))?;
 
     if polygons.is_empty() {
         return None;
@@ -334,6 +484,134 @@ fn build_row(
             .map(|c| c.value().to_string()),
         geometry: MultiPolygon(polygons),
     })
+}
+
+/// `bldg:lod0RoofEdge` (屋根の外周線) からフットプリントを取る。**これが本筋。**
+fn footprint_from_lod0(
+    building: &nusamai_plateau::models::Building,
+    geometries: &nusamai_citygml::GeometryStore,
+) -> Option<Vec<Polygon<f64>>> {
+    let reference = building
+        .geometries
+        .iter()
+        .find(|g| g.lod == 0 && g.ty == GeometryType::Surface)?;
+
+    // CityGMLの座標は「緯度 経度 標高」の順。GeoParquetは経度・緯度なので入れ替える。
+    // Z(標高)はlod0RoofEdgeでは常に0なので捨てる。
+    let ring = |indices: &mut dyn Iterator<Item = u32>| -> LineString<f64> {
+        indices
+            .map(|i| {
+                let [lat, lon, _z] = geometries.vertices[i as usize];
+                (lon, lat)
+            })
+            .collect()
+    };
+
+    Some(
+        geometries
+            .multipolygon
+            .iter_range(reference.pos as usize..(reference.pos + reference.len) as usize)
+            .map(|poly| {
+                let exterior = ring(&mut poly.exterior().iter_closed());
+                let interiors = poly
+                    .interiors()
+                    .map(|hole| ring(&mut hole.iter_closed()))
+                    .collect();
+                Polygon::new(exterior, interiors)
+            })
+            .collect(),
+    )
+}
+
+/// `bldg:lod1Solid` の**底面**からフットプリントを取る。
+///
+/// **LOD0が無い都市があるため。** 周南市 (35215) は90,292棟すべてが
+/// `LOD1/Solid` しか持たず、LOD0だけを見ていると1棟も読めない。
+///
+/// **これは近似ではない。** PLATEAUのLOD1はフットプリントを鉛直に押し出した柱なので、
+/// 一番下の水平面は**フットプリントそのもの**。壁は鉛直なのでZの幅で落とせる。
+/// 屋根 (上の水平面) ではなく底面を採るために、最も低い高さのものだけを残す。
+fn footprint_from_lod1_base(
+    building: &nusamai_plateau::models::Building,
+    geometries: &nusamai_citygml::GeometryStore,
+) -> Option<Vec<Polygon<f64>>> {
+    let reference = building
+        .geometries
+        .iter()
+        .find(|g| g.lod == 1 && g.ty == GeometryType::Solid)?;
+    let range = reference.pos as usize..(reference.pos + reference.len) as usize;
+
+    // 水平な面のZの範囲。壁 (Zの幅がある) は None を返す。
+    let flat_z = |indices: &mut dyn Iterator<Item = u32>| -> Option<f64> {
+        let (mut zmin, mut zmax) = (f64::MAX, f64::MIN);
+        for i in indices {
+            let z = geometries.vertices[i as usize][2];
+            zmin = zmin.min(z);
+            zmax = zmax.max(z);
+        }
+        (zmin <= zmax && zmax - zmin <= FLAT_TOLERANCE_M).then_some(zmin)
+    };
+
+    // 1回目: 一番低い水平面の高さを探す。**柱の底がどこかは測らないと分からない**
+    // (地形に合わせて建物ごとに違う)。
+    let mut base_z = f64::MAX;
+    for poly in geometries.multipolygon.iter_range(range.clone()) {
+        if let Some(z) = flat_z(&mut poly.exterior().iter_closed()) {
+            base_z = base_z.min(z);
+        }
+    }
+    if base_z == f64::MAX {
+        return None;
+    }
+
+    // 2回目: その高さの水平面だけを採る。
+    let polygons: Vec<Polygon<f64>> = geometries
+        .multipolygon
+        .iter_range(range)
+        .filter(|poly| {
+            flat_z(&mut poly.exterior().iter_closed())
+                .is_some_and(|z| (z - base_z).abs() <= FLAT_TOLERANCE_M)
+        })
+        .map(|poly| {
+            let ring = |indices: &mut dyn Iterator<Item = u32>| -> LineString<f64> {
+                indices
+                    .map(|i| {
+                        let [lat, lon, _z] = geometries.vertices[i as usize];
+                        (lon, lat)
+                    })
+                    .collect()
+            };
+            // **底面は下を向いている**ので、真上から見た並びとは逆になる。
+            // 符号付き面積で向きを揃え、LOD0から作ったものと同じ規約にする。
+            let mut exterior = ring(&mut poly.exterior().iter_closed());
+            if signed_area(&exterior) < 0.0 {
+                exterior.0.reverse();
+            }
+            let interiors = poly
+                .interiors()
+                .map(|hole| {
+                    let mut hole = ring(&mut hole.iter_closed());
+                    if signed_area(&hole) > 0.0 {
+                        hole.0.reverse();
+                    }
+                    hole
+                })
+                .collect();
+            Polygon::new(exterior, interiors)
+        })
+        .collect();
+
+    (!polygons.is_empty()).then_some(polygons)
+}
+
+/// 環の符号付き面積 (靴紐公式)。**向きを判定するためだけに使う**ので、
+/// 緯度経度をそのまま入れて構わない (符号しか見ない)。
+fn signed_area(ring: &LineString<f64>) -> f64 {
+    ring.0
+        .windows(2)
+        .map(|pair| pair[0].x * pair[1].y - pair[1].x * pair[0].y)
+        .sum::<f64>()
+        / 2.0
 }
 
 /// 元の座標系 (JGD2011) からWGS84へ変換する。
@@ -473,5 +751,66 @@ mod tests {
         let keep_height = |h: f64| Some(h).filter(|h| *h != UNKNOWN_HEIGHT);
         assert_eq!(keep_height(9.8), Some(9.8));
         assert_eq!(keep_height(UNKNOWN_HEIGHT), None);
+    }
+
+    /// 向きの判定。**LOD1の底面は下を向いている**ので、符号で揃えている。
+    #[test]
+    fn signed_area_tells_the_winding_apart() {
+        // 反時計回り (上から見た通常の向き) は正。
+        let ccw: LineString<f64> = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]
+            .into_iter()
+            .collect();
+        assert!(signed_area(&ccw) > 0.0);
+
+        // 同じ環を逆に辿ると負。大きさは変わらない。
+        let mut cw = ccw.clone();
+        cw.0.reverse();
+        assert!(signed_area(&cw) < 0.0);
+        assert!((signed_area(&ccw) + signed_area(&cw)).abs() < 1e-12);
+    }
+
+    /// 伊勢市が踏んだ形。**同じ属性が2回出てくる**ので上流のパーサーが弾く。
+    /// 落とす対象だけが消え、**他は残る**ことを見る。
+    #[test]
+    fn strips_only_the_named_elements() {
+        let xml = br#"<bldg:Building>
+  <bldg:measuredHeight uom="m">12.3</bldg:measuredHeight>
+  <uro:bldgDataQualityAttribute>
+    <uro:DataQualityAttribute><uro:srcScale>1</uro:srcScale></uro:DataQualityAttribute>
+  </uro:bldgDataQualityAttribute>
+  <uro:bldgDataQualityAttribute>
+    <uro:DataQualityAttribute><uro:srcScale>2</uro:srcScale></uro:DataQualityAttribute>
+  </uro:bldgDataQualityAttribute>
+  <bldg:storeysAboveGround>3</bldg:storeysAboveGround>
+</bldg:Building>"#;
+
+        let stripped = strip_elements(xml, IGNORED_ELEMENTS).unwrap();
+        let text = String::from_utf8(stripped).unwrap();
+
+        assert!(!text.contains("bldgDataQualityAttribute"));
+        // 部分木ごと消えること。中身が残ると別の要素として浮いてしまう。
+        assert!(!text.contains("srcScale"));
+        // 読んでいる属性は触らないこと。
+        assert!(text.contains("12.3"));
+        assert!(text.contains("storeysAboveGround"));
+    }
+
+    /// 空要素 (`<... />`) でも落ちること。閉じタグを探しに行くと読み過ぎる。
+    #[test]
+    fn strips_self_closing_elements() {
+        let xml = br#"<bldg:Building><uro:bldgDataQualityAttribute/><bldg:class>3001</bldg:class></bldg:Building>"#;
+        let text = String::from_utf8(strip_elements(xml, IGNORED_ELEMENTS).unwrap()).unwrap();
+        assert!(!text.contains("bldgDataQualityAttribute"));
+        assert!(text.contains("3001"));
+    }
+
+    /// **対象が無ければ何も変えない。** 正常系のGMLを読み直すときに
+    /// 中身が変わっては困る。
+    #[test]
+    fn leaves_untargeted_xml_alone() {
+        let xml = br#"<bldg:Building><bldg:measuredHeight uom="m">9.8</bldg:measuredHeight></bldg:Building>"#;
+        let text = String::from_utf8(strip_elements(xml, IGNORED_ELEMENTS).unwrap()).unwrap();
+        assert!(text.contains("9.8"));
+        assert!(text.contains("uom=\"m\""));
     }
 }

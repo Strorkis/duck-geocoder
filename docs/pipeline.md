@@ -180,8 +180,13 @@ cargo run --release --bin plateau_bldg_to_geoparquet -- \
 # 手元のzipから (落としてあるならこちらが速い)
 cargo run --release --bin plateau_bldg_to_geoparquet -- \
   ../data/plateau/13103_minato-ku_pref_2025_citygml_1_op.zip \
-  ../data/output/plateau_bldg_minato.parquet
+  ../data/output/plateau_bldg_13103.parquet
 ```
+
+**出力名は都市コードで揃えること。** `--cities` が作る名前と別にすると
+**同じ都市が2つのファイルで配信され、カタログに2件並んで二重に描かれる**
+(実際に `plateau_bldg_minato.parquet` と `plateau_bldg_13103.parquet` が
+並んでいて、中身はバイト単位で同じだった)。
 
 **zipは展開しないこと。** 港区のCityGMLは2.0GBで、展開すると57,278ファイル・8.85GBになる。
 変換器は中央ディレクトリ経由で `udx/bldg/*.gml` (38本) とコードリストだけを取り出す。
@@ -639,7 +644,7 @@ data/output/
 ├── estat/     mesh_pop_01..47.parquet
 ├── isj/       isj_oaza_13.parquet, isj_block_13.parquet
 ├── overture/  overture_admin_jp.parquet, overture_buildings_minato.parquet
-└── plateau/   plateau_bldg_minato.parquet
+└── plateau/   plateau_bldg_13103.parquet … (306都市)
 ```
 
 入力側 (`data/isj/`, `data/estat/`, `data/plateau/`) と同じ切り方にしてある。
