@@ -142,6 +142,16 @@ rclone copy data/output/ksj/n02_sections_all.parquet "$R2/ksj/" -P
 `catalog.json` 1つだけ)。出所ごとのディレクトリを上げれば、その出所の
 Collection・ItemCollection・parquetがまとまって載る。
 
+**`build_catalog` は古いJSONを消さない。** データセットをやめたときは
+手元にCollectionのJSONが残るので、上げる前に消すこと
+(残っていても `catalog.json` が参照しないので壊れはしないが、配信先に
+誰も読まないファイルが積み上がる)。リンクが全部解決するかはこれで見られる。
+
+```sh
+mise exec -- jq -r '.links[] | select(.rel=="child") | .href' data/output/catalog.json |
+  while read h; do [ -f "data/output/$h" ] && echo "OK   $h" || echo "欠落 $h"; done
+```
+
 ```sh
 # 1. catalog.json 以外を先に上げる
 rclone copy data/output "$R2" --size-only --exclude 'catalog.json' -P
