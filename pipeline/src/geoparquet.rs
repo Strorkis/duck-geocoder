@@ -22,6 +22,46 @@ pub struct CoveringBbox {
     pub ymax: String,
 }
 
+/// 既にあるParquetから、ファイルレベルのメタデータを1つ読む。
+///
+/// **作り直しではなく作り足すときに要る。** 既存の配信物に段を足すとき
+/// ([`crate::lod`])、`geo` と `duck:vintage` を新しく作り直すと収録範囲や版が
+/// ずれるので、原本が名乗っているものをそのまま引き継ぐ。
+pub fn read_key_value(path: &Path, key: &str) -> Result<Option<String>> {
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+
+    let file = File::open(path).with_context(|| format!("開けません: {}", path.display()))?;
+    let reader = SerializedFileReader::new(file)
+        .with_context(|| format!("Parquetとして読めません: {}", path.display()))?;
+    Ok(reader
+        .metadata()
+        .file_metadata()
+        .key_value_metadata()
+        .and_then(|entries| entries.iter().find(|entry| entry.key == key))
+        .and_then(|entry| entry.value.clone()))
+}
+
+/// `geo` メタデータの `geometry_types` を差し替える。
+///
+/// 段を足すと種別が増える — 断片を `ST_LineMerge` で繋ぐと `LineString` が
+/// `MultiLineString` になる。**宣言と中身が食い違うと読み手が種別で分岐したときに
+/// 壊れる**ので、書き足す側に合わせて広げる。
+pub fn with_geometry_types(geo_json: &str, types: &[&str]) -> Result<String> {
+    let mut geo: serde_json::Value =
+        serde_json::from_str(geo_json).context("`geo` メタデータがJSONとして読めません")?;
+    let primary = geo
+        .get("primary_column")
+        .and_then(serde_json::Value::as_str)
+        .context("`geo` に primary_column がありません")?
+        .to_string();
+    let column = geo
+        .get_mut("columns")
+        .and_then(|columns| columns.get_mut(&primary))
+        .with_context(|| format!("`geo` に {primary} の宣言がありません"))?;
+    column["geometry_types"] = serde_json::json!(types);
+    serde_json::to_string(&geo).context("`geo` メタデータをJSONにできない")
+}
+
 /// `geo` メタデータから covering bbox 列の位置を読み取る。
 ///
 /// 列名を決め打ちしないのは、この情報がファイル自身に書かれているため。

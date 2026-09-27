@@ -8,6 +8,7 @@ pub mod catalog;
 pub mod geoparquet;
 pub mod isj_block;
 pub mod isj_oaza;
+pub mod lod;
 pub mod mesh;
 pub mod mesh_pop;
 pub mod n02;
