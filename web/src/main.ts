@@ -99,6 +99,17 @@ interface StacItem {
   assets: { data: { href: string } };
 }
 
+/**
+ * Itemと、それを載せていた文書の位置。
+ *
+ * **アセットのhrefはその文書からの相対**なので、解決するには文書の位置が要る。
+ */
+interface LocatedItem {
+  feature: StacItem;
+  /** ItemCollectionの、配信の起点からのパス。 */
+  base: string;
+}
+
 /** Collectionを扱いやすい形にしたもの。Itemは呼ばれるまで読まない。 */
 interface Collection {
   id: string;
@@ -121,7 +132,7 @@ interface Collection {
   /** いつ時点のデータか。**ファイルごとに版が違うものには入っていない。** */
   vintage: string | undefined;
   /** Itemを読む。**Collectionごとに1回だけ**通信する。 */
-  items: () => Promise<StacItem[]>;
+  items: () => Promise<LocatedItem[]>;
 }
 
 /**
@@ -140,6 +151,30 @@ const DATA_BASE_URL = (
 
 function dataUrl(file: string): string {
   return new URL(`${DATA_BASE_URL}/${file}`, window.location.href).toString();
+}
+
+/** 配信の起点にある唯一のファイル。ここから全部を辿る。 */
+const CATALOG_PATH = 'catalog.json';
+
+/**
+ * STACの相対リンクを、配信の起点からのパスに直す。
+ *
+ * **STACの相対リンクは「その文書からの相対」。** `overture/roads.json` の中の
+ * `roads-items.json` は `overture/roads-items.json` を指す。
+ * ここが配信の起点からの相対だと思って読むと、階層を作った瞬間に壊れる。
+ *
+ * 起点からのパスに正規化して返すのは、**この文字列がDuckDBの登録名を兼ねる**ため
+ * (`registerFileURL`)。同じファイルを別の文字列で二重登録しないよう、
+ * どの文書から辿っても同じ形にする。
+ *
+ * `base` は参照元の文書の、起点からのパス (`catalog.json` や `overture/roads.json`)。
+ */
+function resolveHref(href: string, base: string): string {
+  // 絶対URLはそのまま通す (配布元へのリンクなど、起点の外を指すものがある)。
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return href;
+  // URLの解決規則に任せる。起点は実在しなくてよいので固定の土台を置く。
+  const root = 'https://duck.invalid/';
+  return new URL(href, new URL(base, root)).href.slice(root.length);
 }
 
 /** E2Eテストのために公開するもの。アプリ本体はこれを参照しない。 */
@@ -181,11 +216,11 @@ function duckdbUrl(file: string): string {
  */
 const DUCKDB_EXTENSIONS_URL = duckdbUrl('extensions');
 
-async function fetchStac<T>(href: string): Promise<T> {
-  const response = await fetch(dataUrl(href));
+async function fetchStac<T>(path: string): Promise<T> {
+  const response = await fetch(dataUrl(path));
   if (!response.ok) {
     throw new Error(
-      `${href} が読めません (${response.status})。` +
+      `${path} が読めません (${response.status})。` +
         '`cargo run --bin build_catalog -- ../data/output` を実行してください。',
     );
   }
@@ -200,15 +235,20 @@ async function fetchStac<T>(href: string): Promise<T> {
  * ファイル1つずつの情報を持つItemは、使う段になってから読む。
  */
 async function fetchCollections(): Promise<Collection[]> {
-  const catalog = await fetchStac<{ links: StacLink[] }>('catalog.json');
+  const catalog = await fetchStac<{ links: StacLink[] }>(CATALOG_PATH);
   const children = catalog.links.filter((link) => link.rel === 'child');
+  // **文書の位置を持ち回る。** Collectionの中のリンクはその文書からの相対なので、
+  // どこにある文書だったかを知らないと解決できない。
   const documents = await Promise.all(
-    children.map((link) => fetchStac<StacCollection>(link.href)),
+    children.map(async (link) => {
+      const path = resolveHref(link.href, CATALOG_PATH);
+      return [await fetchStac<StacCollection>(path), path] as const;
+    }),
   );
-  return documents.map(toCollection);
+  return documents.map(([document, path]) => toCollection(document, path));
 }
 
-function toCollection(document: StacCollection): Collection {
+function toCollection(document: StacCollection, path: string): Collection {
   // 空間範囲は「先頭が全体」。ジオメトリを持たないデータセットは null が並ぶ。
   const [extent] = document.extent.spatial.bbox;
   const bbox =
@@ -217,7 +257,7 @@ function toCollection(document: StacCollection): Collection {
       : null;
 
   const itemsHref = document.links.find((link) => link.rel === 'items')?.href;
-  let items: Promise<StacItem[]> | undefined;
+  let items: Promise<LocatedItem[]> | undefined;
 
   return {
     id: document.id,
@@ -235,17 +275,28 @@ function toCollection(document: StacCollection): Collection {
     ),
     items: () =>
       (items ??= itemsHref
-        ? fetchStac<{ features: StacItem[] }>(itemsHref).then((collection) => collection.features)
+        ? (() => {
+            const itemsPath = resolveHref(itemsHref, path);
+            return fetchStac<{ features: StacItem[] }>(itemsPath).then((collection) =>
+              // Itemのアセットは**ItemCollectionの文書からの相対**。
+              collection.features.map((feature) => ({ feature, base: itemsPath })),
+            );
+          })()
         : Promise.resolve([])),
   };
 }
 
+/** Itemのアセットを、配信の起点からのパスに直す。 */
+function itemFile(item: LocatedItem): string {
+  return resolveHref(item.feature.assets.data.href, item.base);
+}
+
 /** Itemを配信パスと収録範囲の組にする。 */
-function itemFiles(items: StacItem[]): ItemFile[] {
-  return items.map((item) => ({
-    file: item.assets.data.href,
-    bbox: item.bbox?.length === 4 ? (item.bbox as Bbox) : null,
-    sourceLod: parseSourceLod(item.properties['duck:source_lod']),
+function itemFiles(items: LocatedItem[]): ItemFile[] {
+  return items.map(({ feature, base }) => ({
+    file: resolveHref(feature.assets.data.href, base),
+    bbox: feature.bbox?.length === 4 ? (feature.bbox as Bbox) : null,
+    sourceLod: parseSourceLod(feature.properties['duck:source_lod']),
   }));
 }
 
@@ -720,24 +771,29 @@ async function initDuckDb(collections: Collection[]): Promise<{
   // ここだけは起動時にItemが要る (どのファイルを読むか決まらないため)。
   const adminItems = (await Promise.all(adminCollections.map((c) => c.items()))).flat();
   const adminItem = adminItems.sort(
-    (a, b) => (b.properties['table:row_count'] ?? 0) - (a.properties['table:row_count'] ?? 0),
+    (a, b) =>
+      (b.feature.properties['table:row_count'] ?? 0) -
+      (a.feature.properties['table:row_count'] ?? 0),
   )[0];
   if (!adminItem) throw new Error('行政区域のItemがありません。');
-  const adminFile = adminItem.assets.data.href;
+  const adminFile = resolveHref(adminItem.feature.assets.data.href, adminItem.base);
 
   // 検索用の名称を抜き出したものがあれば使う。無い場合は行政区域から作るが、
   // そちらは名称の列がファイル全体に散らばっているため、HTTP越しだと
   // 往復が積み上がって初期化が数十秒かかる。
   const adminNamesCollection = byKind('admin_names')[0];
-  const adminNamesFile = adminNamesCollection
-    ? (await adminNamesCollection.items())[0]?.assets.data.href
+  const adminNamesItem = adminNamesCollection
+    ? (await adminNamesCollection.items())[0]
+    : undefined;
+  const adminNamesFile = adminNamesItem
+    ? resolveHref(adminNamesItem.feature.assets.data.href, adminNamesItem.base)
     : undefined;
 
   await register(adminNamesFile ? [adminFile, adminNamesFile] : [adminFile]);
 
   console.info(
     '[catalog] 行政区域:',
-    adminItem.id,
+    adminItem.feature.id,
     '/ 名称:',
     adminNamesFile ?? '(行政区域から都度作成)',
     '/ 地名:',
@@ -753,7 +809,7 @@ async function initDuckDb(collections: Collection[]): Promise<{
     // 地名のItemもここで初めて読む。検索するまで要らない。
     const files = (await Promise.all(oazaCollections.map((c) => c.items())))
       .flat()
-      .map((item) => item.assets.data.href);
+      .map(itemFile);
     await register(files);
     const list = files.map((file) => `'${file}'`).join(', ');
     await conn.query(`CREATE VIEW isj_oaza AS SELECT * FROM read_parquet([${list}]);`);
@@ -776,7 +832,7 @@ async function initDuckDb(collections: Collection[]): Promise<{
   const stationCollection = byKind('railway_station')[0];
   const ensureStations = stationCollection
     ? once(async () => {
-        const files = (await stationCollection.items()).map((item) => item.assets.data.href);
+        const files = (await stationCollection.items()).map(itemFile);
         await register(files);
         const list = files.map((file) => `'${file}'`).join(', ');
         await conn.query(`CREATE VIEW station AS SELECT * FROM read_parquet([${list}]);`);
@@ -793,7 +849,7 @@ async function initDuckDb(collections: Collection[]): Promise<{
   const sectionCollection = byKind('railway')[0];
   const ensureSections = sectionCollection
     ? once(async () => {
-        const files = (await sectionCollection.items()).map((item) => item.assets.data.href);
+        const files = (await sectionCollection.items()).map(itemFile);
         await register(files);
         await ensureSpatial();
         const list = files.map((file) => `'${file}'`).join(', ');
@@ -909,14 +965,14 @@ async function initDuckDb(collections: Collection[]): Promise<{
   const ensureRoutes =
     routeCollection && roadCollection
       ? once(async () => {
-          const routeFile = (await routeCollection.items())[0]?.assets.data.href;
+          const routeFile = ((first) => (first ? itemFile(first) : undefined))((await routeCollection.items())[0]);
           if (!routeFile) return;
           await register([routeFile]);
           await conn.query(
             `CREATE VIEW road_route AS SELECT * FROM read_parquet('${routeFile}');`,
           );
           // ハイライトは区間の方から引くので、同じ経路で用意しておく。
-          const files = (await roadCollection.items()).map((item) => item.assets.data.href);
+          const files = (await roadCollection.items()).map(itemFile);
           await register(files);
           const list = files.map((file) => `'${file}'`).join(', ');
           await conn.query(`CREATE VIEW road AS SELECT * FROM read_parquet([${list}]);`);

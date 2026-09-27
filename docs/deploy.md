@@ -129,16 +129,28 @@ rclone が更新時刻で比較して**129MBを上げ直しにいくことがあ
 (ブラウザから入れたファイルには更新時刻が入っていない)。
 差分だけ上げたいときは `--size-only` を付ける。
 
+**JSONは実データと同じディレクトリにある** (2026-09-27に寄せた。ルートは
+`catalog.json` 1つだけ)。出所ごとのディレクトリを上げれば、その出所の
+Collection・ItemCollection・parquetがまとまって載る。
+
 ```sh
-# 1. catalog.json 以外を先に上げる
+# 1. catalog.json 以外を先に上げる (出所のディレクトリごと)
 rclone copy data/output/ksj "$R2/ksj" -P
-rclone copy data/output "$R2" --include 'ksj-*.json' -P
 
 # 2. catalog.json を最後に上げる
 rclone copy data/output/catalog.json "$R2" -P
 
 # 3. 続けて push する (壊れうる時間をここに収める)
 git push
+```
+
+**平置きだった頃の古いJSONはルートに残る。** `rclone copy` は消さないので、
+`catalog.json` を差し替えれば参照されなくなるだけ。**しばらく残して**、
+公開後の確認が済んでから消す (戻す手段になる)。
+
+```sh
+rclone delete "$R2" --include '*-items.json'   # 確認が済んでから
+rclone delete "$R2" --include '*.json' --exclude 'catalog.json' --max-depth 1
 ```
 
 上げたものを確かめる。

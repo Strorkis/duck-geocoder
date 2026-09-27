@@ -27,8 +27,8 @@ interface StacLink {
  * 200で返すので、HEADの成否だけでは「配信されているか」を判定できない。
  */
 async function datasetUrl(page: Page, id: string): Promise<string | null> {
-  const fetchJson = async <T>(href: string): Promise<T | null> => {
-    const response = await page.request.get(await resolveDataUrl(page, href));
+  const fetchJson = async <T>(path: string): Promise<T | null> => {
+    const response = await page.request.get(await resolveDataUrl(page, path));
     return response.ok() ? ((await response.json()) as T) : null;
   };
 
@@ -36,16 +36,31 @@ async function datasetUrl(page: Page, id: string): Promise<string | null> {
   if (!catalog) return null;
 
   for (const child of catalog.links.filter((link) => link.rel === 'child')) {
-    const collection = await fetchJson<{ links: StacLink[] }>(child.href);
+    const collectionPath = resolveHref(child.href, 'catalog.json');
+    const collection = await fetchJson<{ links: StacLink[] }>(collectionPath);
     const itemsHref = collection?.links.find((link) => link.rel === 'items')?.href;
     if (!itemsHref) continue;
+    const itemsPath = resolveHref(itemsHref, collectionPath);
     const items = await fetchJson<{
       features: { id: string; assets: { data: { href: string } } }[];
-    }>(itemsHref);
+    }>(itemsPath);
     const item = items?.features.find((feature) => feature.id === id);
-    if (item) return resolveDataUrl(page, item.assets.data.href);
+    if (item) return resolveDataUrl(page, resolveHref(item.assets.data.href, itemsPath));
   }
   return null;
+}
+
+/**
+ * STACの相対リンクを配信の起点からのパスに直す。**アプリ側と同じ規則。**
+ *
+ * STACの相対リンクは**その文書からの相対**なので、
+ * 起点からの相対だと思って組み立てると階層を作った瞬間に壊れる
+ * (実際ここで壊れて、`catalog.json` の代わりに index.html を掴んだ)。
+ */
+function resolveHref(href: string, base: string): string {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return href;
+  const root = 'https://duck.invalid/';
+  return new URL(href, new URL(base, root)).href.slice(root.length);
 }
 
 /** 建物データが配信されているか。 */

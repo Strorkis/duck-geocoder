@@ -8,22 +8,29 @@
 //!   広げると460KB前後に達する見込みだった。使わないデータの分まで毎回待つことになる
 //! - **既存のツールに載る。** stac-browser や pystac がそのまま読める
 //!
-//! 置き方は**すべて配信の起点に平置き**する。
+//! 置き方は**出所ごとのディレクトリに、実データと一緒**。
+//! **ルートは `catalog.json` 1つだけ。**
 //!
 //! ```text
-//! catalog.json                  ← Catalog。各Collectionへの child リンク
-//! estat-mesh-pop.json           ← Collection
-//! estat-mesh-pop-items.json     ← ItemCollection (Itemをまとめたもの)
-//! estat/mesh_pop_13.parquet     ← 実データ
+//! catalog.json                         ← Catalog。各Collectionへの child リンク
+//! estat/estat-mesh-pop.json            ← Collection
+//! estat/estat-mesh-pop-items.json      ← ItemCollection (Itemをまとめたもの)
+//! estat/mesh_pop_13.parquet            ← 実データ
 //! ```
+//!
+//! 以前は起点に平置きしていたが、**出所が増えるたびにルートにJSONが積み上がった**
+//! (12コレクションで25ファイル)。実データは元から出所ごとに分かれていたので、
+//! そこへ寄せた。
 //!
 //! Itemを1件1ファイルにするのが静的STACの標準的な置き方だが、**採らない**。
 //! 人口メッシュ47件 + PLATEAU306都市で350ファイルを超え、
 //! 1つ読むたびに1往復する形になるため。代わりにCollectionごとに
 //! ItemCollection (STAC APIの `/items` が返すのと同じ形) を1つ置く。
 //!
-//! 相対リンクは**その文書からの相対**として解決される。平置きにしてあるので、
-//! `estat/mesh_pop_13.parquet` のような素直な文字列がそのまま通る。
+//! **相対リンクはその文書からの相対**として解決される。平置きの間は
+//! 「起点からの相対」と一致していてずれが表に出なかったが、階層を作ると出る。
+//! `root` は `../catalog.json`、`items` は兄弟なのでファイル名だけ、
+//! アセットも同じディレクトリにあるのでファイル名だけになる。
 
 use crate::catalog::{ColumnEntry, DatasetEntry, DatasetKind};
 use anyhow::{Result, bail};
@@ -47,14 +54,75 @@ pub struct Document {
     pub body: Value,
 }
 
-/// Collectionのファイル名。
+/// Collectionの文書を置くディレクトリ。**実データと同じところに置く。**
+///
+/// 起点に平置きしていたが、出所が増えるたびにルートにJSONが積み上がっていた
+/// (12コレクションで25ファイル)。実データは既に出所ごとのディレクトリに
+/// 分かれているので、**そこへ寄せればルートは `catalog.json` 1つになる。**
+///
+/// ディレクトリは実データの位置から導く。**別に持たない**のは、
+/// 置き場所が2か所に書かれていると食い違うため。
+/// 同じCollectionのファイルが複数のディレクトリに散っていたらエラーにする。
+fn collection_dir(entries: &[&DatasetEntry]) -> Result<String> {
+    let dirs: std::collections::BTreeSet<&str> = entries
+        .iter()
+        .map(|entry| match entry.file.rsplit_once('/') {
+            Some((dir, _)) => dir,
+            // 起点直下のファイル。ディレクトリ無しとして扱う。
+            None => "",
+        })
+        .collect();
+    match dirs.into_iter().collect::<Vec<_>>().as_slice() {
+        [dir] => Ok((*dir).to_string()),
+        many => bail!(
+            "1つのCollectionのファイルが複数のディレクトリに散っています: {many:?} \
+             (出所ごとに1つのディレクトリへ置くこと)"
+        ),
+    }
+}
+
+/// `dir` の中のファイルへの、起点からのパス。`dir` が空なら起点直下。
+fn in_dir(dir: &str, name: &str) -> String {
+    if dir.is_empty() {
+        name.to_string()
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+/// Collectionのファイル名 (ディレクトリを含まない)。
 fn collection_file(id: &str) -> String {
     format!("{id}.json")
 }
 
-/// ItemCollectionのファイル名。
+/// ItemCollectionのファイル名 (ディレクトリを含まない)。
 fn items_file(id: &str) -> String {
     format!("{id}-items.json")
+}
+
+/// `dir` にある文書から `catalog.json` への相対リンク。
+///
+/// **STACの相対リンクはその文書からの相対。** 起点からのパスを書くと、
+/// 仕様どおりに解決する読み手 (stac-browser など) で壊れる。
+fn root_href(dir: &str) -> String {
+    if dir.is_empty() {
+        CATALOG_FILE.to_string()
+    } else {
+        format!("../{CATALOG_FILE}")
+    }
+}
+
+const CATALOG_FILE: &str = "catalog.json";
+
+/// 実データへのリンク。**ファイル名だけ**を返す。
+///
+/// ItemCollectionを実データと同じディレクトリに置いているので、
+/// 文書からの相対はファイル名そのものになる。
+fn asset_href(file: &str) -> String {
+    match file.rsplit_once('/') {
+        Some((_, name)) => name.to_string(),
+        None => file.to_string(),
+    }
 }
 
 /// bboxから矩形のGeoJSONを作る。
@@ -120,7 +188,7 @@ fn via_link(href: &str) -> Value {
     json!({ "rel": "via", "href": href, "title": "配布元" })
 }
 
-fn item(entry: &DatasetEntry) -> Value {
+fn item(entry: &DatasetEntry, dir: &str) -> Value {
     let mut properties = json!({
         // STACは datetime を必須にしているが、このパイプラインは元データの時点を
         // 読んでいない。**null は本来 start/end とセットで使うもの**なので、
@@ -139,7 +207,7 @@ fn item(entry: &DatasetEntry) -> Value {
     }
 
     let mut links = vec![
-        json!({ "rel": "root", "href": "catalog.json", "type": JSON_MEDIA_TYPE }),
+        json!({ "rel": "root", "href": root_href(dir), "type": JSON_MEDIA_TYPE }),
         json!({
             "rel": "collection",
             "href": collection_file(entry.collection),
@@ -167,7 +235,8 @@ fn item(entry: &DatasetEntry) -> Value {
         "properties": properties,
         "assets": {
             "data": {
-                "href": entry.file,
+                // **ファイル名だけ。** 実データはこの文書と同じディレクトリにある。
+                "href": asset_href(&entry.file),
                 "type": PARQUET_MEDIA_TYPE,
                 "title": entry.title,
                 "roles": ["data"],
@@ -177,7 +246,7 @@ fn item(entry: &DatasetEntry) -> Value {
     })
 }
 
-fn collection(id: &str, entries: &[&DatasetEntry]) -> Result<Value> {
+fn collection(id: &str, entries: &[&DatasetEntry], dir: &str) -> Result<Value> {
     let Some(first) = entries.first() else {
         bail!("{id} に1件も入っていない");
     };
@@ -236,8 +305,8 @@ fn collection(id: &str, entries: &[&DatasetEntry]) -> Result<Value> {
             }
         },
         "links": [
-            { "rel": "root", "href": "catalog.json", "type": JSON_MEDIA_TYPE },
-            { "rel": "parent", "href": "catalog.json", "type": JSON_MEDIA_TYPE },
+            { "rel": "root", "href": root_href(dir), "type": JSON_MEDIA_TYPE },
+            { "rel": "parent", "href": root_href(dir), "type": JSON_MEDIA_TYPE },
             { "rel": "self", "href": collection_file(id), "type": JSON_MEDIA_TYPE },
             { "rel": "items", "href": items_file(id), "type": GEOJSON_MEDIA_TYPE },
             via_link(first.collection_via),
@@ -282,22 +351,29 @@ pub fn build(datasets: &[DatasetEntry]) -> Result<Vec<Document>> {
     let mut child_links = Vec::new();
 
     for (id, entries) in &grouped {
+        // **実データと同じディレクトリに置く。** ルートを `catalog.json` だけにするため。
+        let dir = collection_dir(entries)?;
+
         child_links.push(json!({
             "rel": "child",
-            "href": collection_file(id),
+            // catalog.json は起点にあるので、ここは起点からのパスでよい。
+            "href": in_dir(&dir, &collection_file(id)),
             "type": JSON_MEDIA_TYPE,
             "title": entries[0].title,
         }));
 
         documents.push(Document {
-            path: collection_file(id),
-            body: collection(id, entries)?,
+            path: in_dir(&dir, &collection_file(id)),
+            body: collection(id, entries, &dir)?,
         });
         documents.push(Document {
-            path: items_file(id),
+            path: in_dir(&dir, &items_file(id)),
             body: json!({
                 "type": "FeatureCollection",
-                "features": entries.iter().map(|entry| item(entry)).collect::<Vec<_>>(),
+                "features": entries
+                    .iter()
+                    .map(|entry| item(entry, &dir))
+                    .collect::<Vec<_>>(),
                 "links": [
                     { "rel": "root", "href": "catalog.json", "type": JSON_MEDIA_TYPE },
                     { "rel": "collection", "href": collection_file(id), "type": JSON_MEDIA_TYPE },
@@ -400,32 +476,99 @@ mod tests {
             .filter(|link| link["rel"] == "child")
             .collect();
         assert_eq!(children.len(), 1);
-        assert_eq!(children[0]["href"], "estat-mesh-pop.json");
+        // **実データと同じディレクトリに置く。** ルートは catalog.json だけ。
+        assert_eq!(children[0]["href"], "estat/estat-mesh-pop.json");
 
-        let collection = find(&documents, "estat-mesh-pop.json");
+        let collection = find(&documents, "estat/estat-mesh-pop.json");
         assert_eq!(collection["type"], "Collection");
         assert_eq!(collection["duck:kind"], "population_mesh");
 
-        let items = find(&documents, "estat-mesh-pop-items.json");
+        let items = find(&documents, "estat/estat-mesh-pop-items.json");
         assert_eq!(items["type"], "FeatureCollection");
         assert_eq!(items["features"].as_array().unwrap().len(), 2);
     }
 
-    // 配信の起点に平置きしてあるので、アセットのhrefはそのまま使える。
-    // ここが崩れるとブラウザがデータを引けない。
+    /// **STACの相対リンクはその文書からの相対。**
+    ///
+    /// 起点からのパスを書くと、仕様どおりに解決する読み手 (stac-browser など) が
+    /// `estat/estat/...` を引きに行って壊れる。平置きの間は両者が一致していて
+    /// ずれが表に出なかったが、階層を作ると出る。
     #[test]
-    fn asset_href_is_the_delivery_path() {
+    fn links_are_relative_to_the_document() {
         let datasets = vec![entry(
             "mesh_pop_13",
             "estat/mesh_pop_13.parquet",
             Some([139.0, 35.0, 140.0, 36.0]),
         )];
         let documents = build(&datasets).unwrap();
-        let items = find(&documents, "estat-mesh-pop-items.json");
+
+        // アセットは同じディレクトリにあるので、ファイル名だけ。
+        let items = find(&documents, "estat/estat-mesh-pop-items.json");
         assert_eq!(
             items["features"][0]["assets"]["data"]["href"],
-            "estat/mesh_pop_13.parquet"
+            "mesh_pop_13.parquet"
         );
+
+        let href = |document: &Value, rel: &str| -> String {
+            document["links"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|link| link["rel"] == rel)
+                .unwrap_or_else(|| panic!("{rel} が無い"))["href"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+
+        // 1つ下にいるので、起点へは `../`。
+        let collection = find(&documents, "estat/estat-mesh-pop.json");
+        assert_eq!(href(collection, "root"), "../catalog.json");
+        assert_eq!(href(collection, "parent"), "../catalog.json");
+        // 兄弟なのでファイル名だけ。
+        assert_eq!(href(collection, "items"), "estat-mesh-pop-items.json");
+        assert_eq!(href(collection, "self"), "estat-mesh-pop.json");
+
+        assert_eq!(href(&items["features"][0], "root"), "../catalog.json");
+        assert_eq!(
+            href(&items["features"][0], "collection"),
+            "estat-mesh-pop.json"
+        );
+    }
+
+    /// 起点直下に実データがある場合は、`../` を付けない。
+    #[test]
+    fn keeps_links_flat_when_the_data_sits_at_the_root() {
+        let datasets = vec![entry(
+            "mesh_pop_13",
+            "mesh_pop_13.parquet",
+            Some([139.0, 35.0, 140.0, 36.0]),
+        )];
+        let documents = build(&datasets).unwrap();
+        let collection = find(&documents, "estat-mesh-pop.json");
+        let root = collection["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|link| link["rel"] == "root")
+            .unwrap()["href"]
+            .as_str()
+            .unwrap();
+        assert_eq!(root, "catalog.json");
+    }
+
+    /// 1つのCollectionのファイルが複数のディレクトリに散っていたら気付けるようにする。
+    /// **どこに文書を置けばよいか決まらない**ので、黙って片方を選んではいけない。
+    #[test]
+    fn rejects_a_collection_split_across_directories() {
+        let datasets = vec![
+            entry("mesh_pop_13", "estat/mesh_pop_13.parquet", None),
+            entry("mesh_pop_14", "elsewhere/mesh_pop_14.parquet", None),
+        ];
+        let Err(err) = build(&datasets) else {
+            panic!("散っているのにエラーにならなかった");
+        };
+        assert!(err.to_string().contains("複数のディレクトリ"));
     }
 
     // 空間範囲は全体の1件だけ。ファイルごとの範囲はItemが持っているので、
