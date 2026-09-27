@@ -297,6 +297,9 @@ pub struct Provenance<'a> {
     pub vintage: Option<&'a str>,
     /// 原典にあるLOD (`"1,2,3"`)。**配信しているものと原典が違う**ときに書く。
     pub source_lod: Option<&'a str>,
+    /// **どのCollectionの整備範囲か** (`"plateau-buildings"`)。
+    /// 整備範囲のメッシュだけが持つ ([`crate::coverage`])。
+    pub covers: Option<&'a str>,
 }
 
 /// 非ジオメトリ列とジオメトリ列 (`geometry_columns` で作ったもの) を合わせて
@@ -359,6 +362,12 @@ pub fn write(
         writer.append_key_value_metadata(KeyValue::new(
             SOURCE_LOD_KEY.to_string(),
             source_lod.to_string(),
+        ));
+    }
+    if let Some(covers) = provenance.covers {
+        writer.append_key_value_metadata(KeyValue::new(
+            crate::coverage::COVERS_KEY.to_string(),
+            covers.to_string(),
         ));
     }
     writer.close().context("ファイルを閉じられません")?;
@@ -498,6 +507,7 @@ mod tests {
                 via: Some("https://example.invalid/source.zip"),
                 vintage: Some("TEST-01 (2026-01-01)"),
                 source_lod: Some("1,2,3"),
+                covers: Some("example-buildings"),
             },
         )
         .unwrap();

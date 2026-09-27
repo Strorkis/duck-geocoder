@@ -61,11 +61,12 @@ pub struct DatasetEntry {
     /// 今までどおり全行が原寸 ([`crate::lod`])。どのズームまで粗い段で足りるかは
     /// この誤差から導けるので、ズーム閾値を表示側に書かずに済む。
     pub coarse_lod_tolerance_m: Option<f64>,
-    /// **この高さ以上だけを収録していること** (メートル)。`duck:min_height_m` から読む。
+    /// **どのCollectionの整備範囲か** (`"plateau-buildings"`)。`duck:covers` から読む。
     ///
-    /// 全国の高い建物だけを集めたファイルが名乗る。UIが「60m以上だけ」と
-    /// 断って出せるようにするためにある。
-    pub min_height_m: Option<u32>,
+    /// 整備範囲のメッシュだけが持つ。UIがこれを見て建物のCollectionに結び付ける。
+    /// 「PLATEAUのものだ」とUI側で決め打ちすると、出所が増えたときに
+    /// 書き足す場所が分かれる。
+    pub covers: Option<String>,
     /// **この出所の配布元。** 出所全体で1つ。ファイル側に `via` が無くてもこれはある。
     pub collection_via: &'static str,
 }
@@ -108,6 +109,14 @@ pub enum DatasetKind {
     /// 地理院の道路中心線も名前は注記レイヤにしかない) ので、
     /// 「国道13号」で引けるのはこちらだけ。詳細は docs/data-sources.md。
     Road,
+    /// **整備範囲** (面)。地域メッシュで「どこまで入っているか」を表す。
+    ///
+    /// 収録範囲をbboxの和で示すと、PLATEAUを306都市に広げた時点で日本をほぼ覆う
+    /// 1つの箱になり、収録の無い山間部でも「ある」と出る。市区町村の境界で描くのも
+    /// **整備範囲が市域と一致しない**ので違う。詳細は [`crate::coverage`]。
+    ///
+    /// どのCollectionの範囲かは `duck:covers` がファイル側に持つ。
+    BuildingCoverage,
     /// 道路の路線 (「国道13号」など)。ジオメトリを持たない。
     ///
     /// [`DatasetKind::Road`] の要約で、**出所は同じ**。路線名で引いたときに
@@ -363,15 +372,16 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
     ),
     // **`plateau_bldg` より前に置くこと。** 前方一致で引くので、後ろだと吸われる。
     (
-        "plateau_bldg_tall",
+        "plateau_bldg_coverage",
         Description {
-            kind: DatasetKind::PlateauBuildings,
-            collection: "plateau-buildings-tall",
-            title: "高い建物 (PLATEAU・全国)",
-            description: "PLATEAUの建物のうち、高さ60m以上を全国からまとめたもの (面)。引いた表示で「そこに建物データがあるか」を見せるために持つ。建物に簡略化は効かない (ズーム12でフットプリントは1px未満) ので、高さで選んでいる。実物のLOD0フットプリントで近似は入っていない。",
+            kind: DatasetKind::BuildingCoverage,
+            collection: "plateau-buildings-coverage",
+            title: "建物の整備範囲 (PLATEAU)",
+            description: "PLATEAUの建物がどこまで整備されているかを1kmの地域メッシュで表したもの (面)。建物が実際にある場所を数えているので、市区町村の境界とは一致しない (PLATEAUの整備範囲は市域と一致しない)。メッシュは経緯度から計算する方眼なので境界データを含まない。",
             attribution: MLIT_PLATEAU,
-            summary_columns: &["usage"],
-            mesh_digits: None,
+            summary_columns: &[],
+            // 3次メッシュ (1km)。UIはコードを前から切って粗くする。
+            mesh_digits: Some(8),
             via: "https://www.geospatial.jp/ckan/dataset/plateau",
         },
     ),
@@ -618,12 +628,12 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
     let via = key_value(crate::geoparquet::VIA_KEY);
     let vintage = key_value(crate::geoparquet::VINTAGE_KEY);
     let source_lod = key_value(crate::geoparquet::SOURCE_LOD_KEY);
-    // 段と高さの下限も**ファイル自身が名乗る**。DESCRIPTIONSに書くと、
+    // 段と整備範囲の対象も**ファイル自身が名乗る**。DESCRIPTIONSに書くと、
     // 作った中身と宣言が食い違っても気付けない。
     let coarse_lod_tolerance_m = key_value(crate::lod::LOD_KEY)
         .as_deref()
         .and_then(crate::lod::coarse_resolution_m);
-    let min_height_m = key_value(crate::lod::MIN_HEIGHT_KEY).and_then(|v| v.parse().ok());
+    let covers = key_value(crate::coverage::COVERS_KEY);
 
     let columns = file_metadata
         .schema_descr()
@@ -664,7 +674,7 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         vintage,
         source_lod,
         coarse_lod_tolerance_m,
-        min_height_m,
+        covers,
         collection_via: described.via,
     })
 }

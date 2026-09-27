@@ -452,9 +452,9 @@ test('使わないデータのItemは起動時に読まない', async ({ page })
   expect(requested.filter((file) => file.startsWith('estat-mesh-pop'))).toEqual([]);
 
   // **都市ごとのItemは引いた表示で読まない。** 306都市あり、フッターを引くだけで
-  // 1回の表示が600往復を超える。読むのは全国の高い建物 (1ファイル) の方。
+  // 1回の表示が600往復を超える。読むのは整備範囲 (1ファイル) の方。
   expect(requested).not.toContain('plateau-buildings-items.json');
-  expect(requested).toContain('plateau-buildings-tall-items.json');
+  expect(requested).toContain('plateau-buildings-coverage-items.json');
 
   // 寄ると都市ごとの方に切り替わる。
   await page.evaluate(() => {
@@ -701,8 +701,9 @@ test('逆ジオコーディング中は合図が出る', async ({ page }) => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7671, 35.6812], zoom: 13 });
   });
-  // 先に建物を出し切って、合図が建物のものでないことを確かめられる状態にする。
-  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
+  // 先に建物側を出し切って、合図が建物のものでないことを確かめられる状態にする。
+  // **このズームで出るのは整備範囲のメッシュ** (建物そのものはズーム15から)。
+  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBeGreaterThan(0);
   await expect(page.locator('#busy')).toBeHidden();
 
   // 合図を確かめるまで行政区域を渡さない。
@@ -822,10 +823,15 @@ test('標高タイルから実際の高さが読める', async ({ page }) => {
 });
 
 /**
- * **引いても建物が消えない。** 「ズームしないとデータがあるか見えない」のを
- * やめたので、引いたときは全国の高い建物 (60m以上) に切り替わる。
+ * **引いたら整備範囲が出る。** 「ズームしないとデータがあるか見えない」のを
+ * やめた。建物そのものを引いた表示で出す道は無い (簡略化はフットプリントが
+ * 1px未満で効かず、高さで選ぶのは基準に意味を持たせられない) ので、
+ * **どこまで整備されているか**を1kmのメッシュで見せる。
+ *
+ * **bboxではなくメッシュなのが肝。** 306都市のbboxの和は日本をほぼ覆うので、
+ * 収録の無い山間部でも「ある」ことになってしまう。
  */
-test('引いても建物は消えず、高い建物だけに切り替わる', async ({ page }) => {
+test('引くと整備範囲がメッシュで出て、寄ると建物に切り替わる', async ({ page }) => {
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
 
   // 港区あたり。建物データを切り出した範囲の中に入る。
@@ -834,24 +840,92 @@ test('引いても建物は消えず、高い建物だけに切り替わる', as
     map.jumpTo({ center: [139.7554, 35.6586], zoom: 16 });
   });
   await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
-  // 寄っているときは絞っていないので、そうは書かない。
-  await expect(page.locator('#building-count')).not.toContainText('m以上だけ');
+  // 寄ったら整備範囲は出さない。**実物が出るので重ねる意味が無い。**
+  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBe(0);
 
-  // 引いても**消えない**。高さで絞った実物が出る。
+  // 引くと入れ替わる。
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7554, 35.6586], zoom: 9 });
   });
-  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
+  // **メッシュが複数出る。** 1つしか出ないならbboxの箱に戻ってしまっている。
+  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBeGreaterThan(1);
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBe(0);
 
-  // **何で絞ったかを断る。** 断らないと「この街には建物が数棟だけ」と読めてしまう。
-  //
-  // **件数では比べない。** ズームを変えると表示範囲も変わるので、引いた方が
-  // 多いことすらある (ズーム9は関東全体、ズーム16は港区の数街区)。
-  await expect(page.locator('#building-count')).toContainText('m以上だけ');
-
-  // 「ズームしろ」とは言わない。
+  // 何を見ているかを言う。「ズームしろ」とは言わない。
+  await expect(page.locator('#building-count')).toContainText('整備範囲');
   await expect(page.locator('#building-count')).not.toContainText('寄ると出ます');
+});
+
+/**
+ * **整備範囲は起動時に読まれるので、転送量に効く。**
+ *
+ * ファイルは0.71MBだが、UIが要るのは `mesh_code` と `buildings` と `bbox` だけで、
+ * `geometry` 列 (row groupあたり212KB) は読まない — 矩形はコードから計算する。
+ * ここが効かなくなると**起動するだけで数百KB余分に取る**ようになる。
+ */
+test('整備範囲はジオメトリ列を読まない', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  const dataset = await datasetUrl(page, 'plateau_bldg_coverage');
+  expect(dataset, '整備範囲がカタログに無い').not.toBeNull();
+
+  let fetchedBytes = 0;
+  page.on('response', (response) => {
+    if (response.url() !== dataset) return;
+    if (response.request().method() === 'HEAD') return;
+    fetchedBytes += Number(response.headers()['content-length'] ?? 0);
+  });
+
+  await page.reload();
+  await waitForReady(page);
+  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBeGreaterThan(0);
+
+  console.log(`整備範囲の転送量: ${(fetchedBytes / 1024).toFixed(0)} KB`);
+  expect(fetchedBytes, '転送量を計測できていない').toBeGreaterThan(0);
+  // 1 row group ぶんの必要な列で約154KB。ジオメトリ列まで読むと倍以上になる。
+  expect(
+    fetchedBytes,
+    `整備範囲を読みすぎ: ${(fetchedBytes / 1024).toFixed(0)} KB。` +
+      'ジオメトリ列 (212KB/group) を読んでいる可能性がある',
+  ).toBeLessThan(400 * 1024);
+});
+
+/**
+ * **整備範囲は引くほど粗く束ねる。** 1kmで配ってあるものを、コードを前から
+ * 切って10kmや80kmにする (人口メッシュと同じ仕組み)。束ねないと全国で
+ * 35,645セルを描くことになる。
+ */
+test('整備範囲は引くほど粗いメッシュになる', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  /**
+   * セル1つの幅 (経度の度数)。**件数では比べられない** — ズームを変えると
+   * 表示範囲も変わるので、粗い方が多いことすらある (実測でどちらも239セル)。
+   * 粗くなったかどうかは**セルの大きさ**に出る。
+   */
+  const cellWidthAt = async (zoom: number, size: string) => {
+    await page.evaluate((z) => {
+      const map = (window as unknown as TestWindow).__map!;
+      map.jumpTo({ center: [139.7554, 35.6586], zoom: z });
+    }, zoom);
+    // **件数で待たない。** 前のズームのセルがまだ残っているので、
+    // 新しい粒度が届く前に「0件より多い」が通ってしまう (それで最初は
+    // ズーム7で1kmのセルを測っていた)。粒度の表示が変わるのを待つ。
+    await expect(page.locator('#building-count')).toContainText(size);
+    return page.evaluate(async () => {
+      const map = (window as unknown as TestWindow).__map!;
+      const source = map.getSource('buildings-coverage') as GeoJSONSource;
+      const data = await source.getData();
+      if (data.type !== 'FeatureCollection') return 0;
+      const ring = (data.features[0].geometry as GeoJSON.Polygon).coordinates[0];
+      return Math.max(...ring.map((c) => c[0])) - Math.min(...ring.map((c) => c[0]));
+    });
+  };
+
+  // 3次メッシュ (1km) は経度45秒 = 1/80度。2次メッシュ (10km) は7分30秒 = 1/8度。
+  expect(await cellWidthAt(12, '1km')).toBeCloseTo(1 / 80, 5);
+  expect(await cellWidthAt(7, '10km')).toBeCloseTo(1 / 8, 5);
 });
 
 /**
@@ -982,14 +1056,19 @@ test('用途は一括で切り替えられる', async ({ page }) => {
   await expect.poll(checked).toBeGreaterThan(5);
 });
 
-// 引くと建物は消えるので、どこにデータがあるかを枠で示す。
-// 偶然その場所へ行かないと機能に気づけない、という状態を避けるため。
-test('引くと収録範囲が枠で出る', async ({ page }) => {
-  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+/**
+ * 引くと建物は消えるので、どこにデータがあるかを枠で示す。
+ * 偶然その場所へ行かないと機能に気づけない、という状態を避けるため。
+ *
+ * **整備範囲のメッシュを持たない出所だけの話。** PLATEAUはメッシュが出るので
+ * 枠は使わない。枠は「範囲しか分からない出所」への当て木。
+ */
+test('整備範囲を持たない出所は収録範囲を枠で出す', async ({ page }) => {
+  test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
 
-  // **枠は既定で切ってある。** 引いた表示でも実物 (高い建物) が出るので、
-  // 重ねると二重に見えるだけ。見たい人だけが入れる。
   await openLayerSettings(page, 'buildings');
+  await page.locator('#building-source').selectOption({ label: 'Overture' });
+  // **枠は既定で切ってある。** 見たい人だけが入れる。
   await page.locator('#coverage-toggle').check();
 
   await page.evaluate(() => {
@@ -1503,11 +1582,14 @@ test('収録範囲の枠は切り替えられる', async ({ page }) => {
   test.skip(!(await hasBuildings(page)), '建物データが無い');
 
   await openLayerSettings(page, 'buildings');
+  // **整備範囲のメッシュを持たない出所で見る。** PLATEAUはメッシュが出るので、
+  // この切り替えの対象にならない。
+  await page.locator('#building-source').selectOption({ label: 'Overture' });
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 10 });
   });
-  // **既定は切ってある。** 引いた表示でも実物が出るので枠は要らない。
+  // **既定は切ってある。**
   await expect(page.locator('#coverage-toggle')).not.toBeChecked();
   await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBe(0);
 
@@ -1605,9 +1687,9 @@ test('出ない理由が一覧に出て、寄る先が数字で分かる', async
 
   const status = page.locator('[data-layer-status="buildings"]');
 
-  // **PLATEAUは引いた表示でも出るので、寄れとは言わない。**
+  // **PLATEAUは引いた表示でも整備範囲が出るので、寄れとは言わない。**
   await expect(status).not.toContainText('まで寄ると出ます');
-  await expect(status).toContainText('m以上だけ');
+  await expect(status).toContainText('整備範囲');
 
   // 全国版を持たない出所 (Overture) では今も出ない。**そのときは理由を言う。**
   await openLayerSettings(page, 'buildings');
@@ -1942,6 +2024,37 @@ test('引いた表示でも道路が出て、簡略表示だと断る', async ({
   await expect(page.locator('#road-summary')).not.toContainText('まで寄ると出ます');
   // 黙って簡略化したものを見せない。どこから原寸になるかも言う。
   await expect(page.locator('#road-summary')).toContainText('簡略表示');
+});
+
+/**
+ * **簡略化だけでは足りない。** 転送量は粗い段で収まるが、全国の都道府県道
+ * 4,609本を一度に描くと画面が線で埋まって読めず、細い線が重なるので
+ * ツールチップも拾うたびに移り変わる。**引いたら幹線だけにする。**
+ */
+test('引いた表示では高速道路だけにして、出していない等級を言う', async ({ page }) => {
+  test.skip(!(await hasRoads(page)), '道路のデータが無い');
+
+  await showRoads(page, 6);
+  const summary = page.locator('#road-summary');
+
+  // **出していない等級があることを言う。** 黙って外すと「チェックしたのに
+  // 出ない」ように見える。
+  await expect(summary).toContainText('種別はズーム');
+
+  // 出ているのが高速だけであること。地物の種別を直接見る。
+  const classes = await page.evaluate(async () => {
+    const map = (window as unknown as TestWindow).__map!;
+    const source = map.getSource('road') as GeoJSONSource;
+    const data = await source.getData();
+    if (data.type !== 'FeatureCollection') return [];
+    return [...new Set(data.features.map((f) => f.properties?.roadClass as string))].sort();
+  });
+  // 地物が持つのは凡例と同じ呼び名 (`ROAD_STYLES` の label)。
+  expect(classes).toEqual(['高速道路']);
+
+  // 寄ると増え、断り書きが消える。
+  await showRoads(page, 12);
+  await expect(summary).not.toContainText('種別はズーム');
 });
 
 /**

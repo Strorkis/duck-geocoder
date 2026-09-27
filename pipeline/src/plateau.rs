@@ -716,6 +716,8 @@ pub fn write_geoparquet(
             // 分かるようになったらここに入れる (**推測で埋めない**)。
             vintage: None,
             source_lod,
+            // 整備範囲は別ファイル (`build_coverage`) が名乗る。
+            covers: None,
         },
     )
     .with_context(|| format!("書き出しに失敗しました: {}", output.display()))

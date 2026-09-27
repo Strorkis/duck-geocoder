@@ -334,9 +334,9 @@ fn collection(id: &str, entries: &[&DatasetEntry], dir: &str) -> Result<Value> {
     {
         body["duck:coarse_lod_tolerance_m"] = json!(first.coarse_lod_tolerance_m);
     }
-    // **何で絞ったか。** 「60m以上だけ」と画面で断るために出す。
-    if let Some(height) = first.min_height_m {
-        body["duck:min_height_m"] = json!(height);
+    // **どのCollectionの整備範囲か。** UIがこれで建物に結び付ける。
+    if let Some(covers) = &first.covers {
+        body["duck:covers"] = json!(covers);
     }
     // **いつ時点のデータか。** ファイルごとに違いうる (PLATEAUは都市ごとに
     // 更新年度が揃っていない) ので、**揃っているときだけ**Collectionに出す。
@@ -457,7 +457,7 @@ mod tests {
             vintage: None,
             source_lod: None,
             coarse_lod_tolerance_m: None,
-            min_height_m: None,
+            covers: None,
             collection_via: "https://example.invalid/download",
         }
     }

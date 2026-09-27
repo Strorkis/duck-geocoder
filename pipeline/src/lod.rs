@@ -48,9 +48,6 @@ pub const COARSE_TOLERANCE_M: f64 = 100.0;
 /// 段を持つファイルが名乗るメタデータのキー。
 pub const LOD_KEY: &str = "duck:lod";
 
-/// 高さの下限を名乗るメタデータのキー。高い建物だけのファイルが持つ。
-pub const MIN_HEIGHT_KEY: &str = "duck:min_height_m";
-
 /// `duck:lod` から**粗い段の解像度 (メートル)** を読む。段が無ければ `None`。
 ///
 /// カタログがこれを読んでCollectionに載せ、UIが「どのズームまで粗い段で足りるか」を
@@ -209,75 +206,6 @@ COPY (
     )
 }
 
-/// 全国の**高い建物だけ**を1ファイルにまとめるSQL。
-///
-/// 建物に簡略化は効かない (ズーム12でフットプリントは1px未満)。代わりに
-/// **高さで選ぶ** — 実物のLOD0フットプリントなので近似が入らない。
-///
-/// **都市ごとのファイルは束ねない。** [`crate::repack`] は全行をメモリに読むので、
-/// 306都市 (2,914万行) を1ファイルにすると約32GBを要求する。加えて引いた表示で
-/// 306ファイルのフッターを引くと1回で600往復を超え、R2のClass Bが効く。
-/// **これは解像度の段ではなく、全国の障害物を見るための別のデータ。**
-pub fn build_tall_buildings_stats_sql(input_glob: &str, min_height_m: u32) -> String {
-    format!(
-        "INSTALL spatial; LOAD spatial;
-SET memory_limit = '2GB';
-SELECT
-  min(bbox.xmin) AS xmin,
-  min(bbox.ymin) AS ymin,
-  max(bbox.xmax) AS xmax,
-  max(bbox.ymax) AS ymax,
-  -- ST_GeometryType は列挙型を返すので、そのままだとJSONにできない。
-  list_sort(list_distinct(list(ST_GeometryType(geometry)::VARCHAR))) AS geometry_types
-FROM read_parquet('{input_glob}', filename = true)
-WHERE height >= {min_height_m}
-  AND {CITY_FILES_ONLY};"
-    )
-}
-
-/// 都市ごとのファイルだけを読む条件。
-///
-/// **出力を入力に含めてはいけない。** 出力は `plateau_bldg_tall.parquet` で、
-/// 素直な glob (`plateau_bldg_*.parquet`) に**自分が引っかかる**。2回流すと
-/// 前回の出力を読み込んで件数が倍になる (実測で7,234棟が14,468棟になった)。
-///
-/// 都市ごとのファイルは `plateau_bldg_<5桁の都市コード>.parquet` なので、
-/// 末尾が数字のものだけを採る。
-const CITY_FILES_ONLY: &str = "regexp_matches(filename, '_[0-9]{5}\\.parquet$')";
-
-/// [`build_tall_buildings_stats_sql`] の結果から作る、高い建物だけのファイル。
-pub fn build_tall_buildings_sql(
-    input_glob: &str,
-    output: &str,
-    min_height_m: u32,
-    geo_metadata_json: &str,
-) -> String {
-    let escaped = geo_metadata_json.replace('\'', "''");
-    format!(
-        "INSTALL spatial; LOAD spatial;
-SET preserve_insertion_order = false;
-SET memory_limit = '2GB';
-COPY (
-  SELECT
-    building_id,
-    name,
-    usage,
-    class,
-    city,
-    height,
-    storeys,
-    bbox,
-    ST_AsWKB(geometry)::BLOB AS geometry
-  FROM read_parquet('{input_glob}', filename = true)
-  WHERE height >= {min_height_m}
-    AND {CITY_FILES_ONLY}
-) TO '{output}' (FORMAT PARQUET, KV_METADATA {{
-  geo: '{escaped}',
-  '{MIN_HEIGHT_KEY}': '{min_height_m}'
-}});"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,33 +283,6 @@ mod tests {
             sql.matches("ST_AsWKB(geometry)::BLOB AS geometry").count(),
             2
         );
-    }
-
-    /// 高さで選ぶだけで、ジオメトリには触らないこと。
-    #[test]
-    fn tall_buildings_only_filter_by_height() {
-        let sql = build_tall_buildings_sql("plateau_bldg_*.parquet", "tall.parquet", 60, "{}");
-        assert!(sql.contains("WHERE height >= 60"), "{sql}");
-        assert!(
-            !sql.contains("ST_Simplify"),
-            "近似を入れてはいけない: {sql}"
-        );
-        // **何で絞ったかをファイルに書く。** UIが「60m以上だけ」と断れるように。
-        assert!(sql.contains(MIN_HEIGHT_KEY), "{sql}");
-    }
-
-    /// **自分の出力を読み込まないこと。** 出力は `plateau_bldg_tall.parquet` で
-    /// 素直なglobに引っかかるので、2回流すと件数が倍になる (実測で14,468棟)。
-    #[test]
-    fn never_reads_its_own_output() {
-        for sql in [
-            build_tall_buildings_sql("plateau_bldg_*.parquet", "tall.parquet", 60, "{}"),
-            build_tall_buildings_stats_sql("plateau_bldg_*.parquet", 60),
-        ] {
-            assert!(sql.contains(CITY_FILES_ONLY), "{sql}");
-            // 条件を使うには filename 列が要る。
-            assert!(sql.contains("filename = true"), "{sql}");
-        }
     }
 
     /// 書いたメタデータをそのまま読み戻せること。

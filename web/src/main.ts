@@ -49,6 +49,7 @@ type DatasetKind =
   | 'block'
   | 'buildings'
   | 'plateau_buildings'
+  | 'building_coverage'
   | 'population_mesh'
   | 'railway'
   | 'railway_station'
@@ -75,10 +76,13 @@ interface StacCollection {
    */
   'duck:coarse_lod_tolerance_m'?: number;
   /**
-   * **この高さ以上だけを収録していること** (メートル)。
-   * 全国の高い建物だけを集めたCollectionが名乗る。画面で断るために使う。
+   * **どのCollectionの整備範囲か** (`"plateau-buildings"`)。
+   *
+   * 整備範囲のメッシュだけが持つ。これを見て建物に結び付ける。
+   * 「PLATEAUのものだ」とここで決め打ちすると、出所が増えたときに
+   * 書き足す場所が分かれる。
    */
-  'duck:min_height_m'?: number;
+  'duck:covers'?: string;
   /**
    * **いつ時点のデータか。** 配布元が名乗っている形 (`N02-25 (2026-03-06)` など)。
    *
@@ -144,8 +148,8 @@ interface Collection {
   meshDigits: number | undefined;
   /** 粗い段の許容誤差 (メートル)。段が無ければ undefined。 */
   coarseLodToleranceM: number | undefined;
-  /** この高さ以上だけを収録していること (メートル)。全件なら undefined。 */
-  minHeightM: number | undefined;
+  /** どのCollectionの整備範囲か。整備範囲のメッシュ以外は undefined。 */
+  covers: string | undefined;
   /** いつ時点のデータか。**ファイルごとに版が違うものには入っていない。** */
   vintage: string | undefined;
   /** Itemを読む。**Collectionごとに1回だけ**通信する。 */
@@ -285,7 +289,7 @@ function toCollection(document: StacCollection, path: string): Collection {
     via: document.links.find((link) => link.rel === 'via')?.href,
     meshDigits: document['duck:mesh_digits'],
     coarseLodToleranceM: document['duck:coarse_lod_tolerance_m'],
-    minHeightM: document['duck:min_height_m'],
+    covers: document['duck:covers'],
     vintage: document['duck:vintage'],
     bbox,
     summaries: document.summaries ?? {},
@@ -381,6 +385,53 @@ function once(run: () => Promise<void>): () => Promise<void> {
 }
 
 /** 範囲を、地図に描ける矩形のポリゴンにする。 */
+/**
+ * 整備範囲のメッシュをGeoJSONにする。
+ *
+ * **矩形はメッシュコードから計算する** (人口メッシュと同じ)。配られた
+ * ジオメトリを使わないのは、コードを前から切って束ねたあとの大きさで
+ * 描きたいため。
+ *
+ * 濃淡は建物の数で付ける。**整備の厚みが分かる** — 同じ「入っている」でも
+ * 都心と郊外で桁が違う。
+ */
+function coverageFeatureCollection(cells: CoverageCell[]): GeoJSON.FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: cells.map(({ code, buildings }) => {
+      const [west, south, east, north] = meshBounds(code);
+      return {
+        type: 'Feature',
+        properties: { buildings, opacity: coverageOpacity(buildings) },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [
+            [
+              [west, south],
+              [east, south],
+              [east, north],
+              [west, north],
+              [west, south],
+            ],
+          ],
+        },
+      };
+    }),
+  };
+}
+
+/**
+ * 建物の数から塗りの濃さを決める。
+ *
+ * **桁で見る。** 1棟のセルと1万棟のセルを線形に並べると、ほとんどが
+ * 最も薄い側に潰れて「入っているかどうか」しか読めなくなる。
+ */
+function coverageOpacity(buildings: number): number {
+  if (buildings <= 0) return 0;
+  // 1棟で0.15、10棟で0.3、100棟で0.45、1,000棟で0.6、10,000棟以上で0.6。
+  return Math.min(0.6, 0.15 * (1 + Math.log10(buildings)));
+}
+
 function bboxFeatureCollection([west, south, east, north]: Bbox): GeoJSON.FeatureCollection {
   return {
     type: 'FeatureCollection',
@@ -455,22 +506,26 @@ interface BuildingSource {
   /** 引く前に呼ぶ (Itemの読み込み・ファイル登録・空間関数の読み込み)。 */
   ensure: () => Promise<void>;
   /**
-   * **引いた表示で引く、全国の高い建物。** 無ければ引いた表示では何も出さない。
+   * **引いた表示で出す整備範囲。** 無ければ引いた表示では何も出さない。
    *
-   * 建物に簡略化は効かない (ズーム12でフットプリントは1px未満) ので、線のような
-   * 段は持てない。代わりに**高さで選んだ実物**を別ファイルで持つ。近似は入っていない。
-   *
-   * 都市ごとのファイルを引いた表示で読まないのは、306ファイルのフッターを引くと
-   * 1回の表示で600往復を超えるため。
+   * 建物そのものを引いた表示で出す道は無い — 簡略化はズーム12でフットプリントが
+   * 1px未満になって効かず、高さで選ぶのは基準に意味を持たせられなかった
+   * (2Dなら面積、3Dなら高さで見たいものが違い、「引きで見たい施設」は
+   * そのどちらとも別の概念)。**代わりに「どこまで整備されているか」を出す。**
    */
-  coarse: CoarseBuildings | undefined;
+  coverage: BuildingCoverage | undefined;
 }
 
-/** 全国の高い建物。[`BuildingSource.coarse`] が持つ。 */
-interface CoarseBuildings {
+/**
+ * 整備範囲のメッシュ。[`BuildingSource.coverage`] が持つ。
+ *
+ * **1kmで配られている。** 粗くするのはコードを前から切るだけで済む
+ * (人口メッシュと同じ仕組み)。
+ */
+interface BuildingCoverage {
   files: ItemFile[];
-  /** この高さ以上だけが入っている。画面で断るために使う。 */
-  minHeightM: number;
+  /** 配られている細かさ (メッシュコードの桁数)。これより細かくはできない。 */
+  meshDigits: number;
   ensure: () => Promise<void>;
 }
 
@@ -982,23 +1037,23 @@ async function initDuckDb(collections: Collection[]): Promise<{
     { kind: 'buildings', label: 'Overture' },
   ];
   const buildingSources: BuildingSource[] = buildingKinds.flatMap(({ kind, label }) => {
-    // **高さで絞ったCollectionは出所として並べない。** 同じ種別で並んでいるが、
-    // あれは引いた表示のための段であって別の出所ではない。
-    // 見分けるのは `duck:min_height_m` の有無で、IDでは判断しない。
-    const candidates = byKind(kind);
-    const collection = candidates.find((c) => c.minHeightM === undefined);
+    const collection = byKind(kind)[0];
     if (!collection) return [];
 
-    const tall = candidates.find((c) => c.minHeightM !== undefined);
-    const coarse: CoarseBuildings | undefined =
-      tall && tall.minHeightM !== undefined
+    // **整備範囲を結び付ける。** `duck:covers` がこのCollectionを指しているものを
+    // 探す。IDの綴りで判断しない (出所が増えたときに書き足す場所が分かれる)。
+    const coverageCollection = byKind('building_coverage').find(
+      (c) => c.covers === collection.id,
+    );
+    const coverage: BuildingCoverage | undefined =
+      coverageCollection && coverageCollection.meshDigits !== undefined
         ? {
             files: [],
-            minHeightM: tall.minHeightM,
+            meshDigits: coverageCollection.meshDigits,
             ensure: once(async () => {
-              const items = await tall.items();
-              coarse!.files = itemFiles(items);
-              await register(coarse!.files.map(({ file }) => file));
+              const items = await coverageCollection.items();
+              coverage!.files = itemFiles(items);
+              await register(coverage!.files.map(({ file }) => file));
               await ensureSpatial();
             }),
           }
@@ -1018,7 +1073,7 @@ async function initDuckDb(collections: Collection[]): Promise<{
       categoryColumn,
       usages,
       bbox: collection.bbox,
-      coarse,
+      coverage,
       ensure: once(async () => {
         const items = await collection.items();
         source.files = itemFiles(items);
@@ -1426,20 +1481,53 @@ interface BuildingFilter {
  * 中心からの距離順にしておけば、間引かれても手前から埋まり、遠景が薄くなるという
  * 見た目として自然な劣化になる。範囲そのものを切り詰めるより調整値が要らない。
  */
+/** 整備範囲のセル1つ。 */
+interface CoverageCell {
+  code: string;
+  /** このセルの中にある建物の数。濃淡に使う。 */
+  buildings: number;
+}
+
+/**
+ * 整備範囲を表示範囲のぶんだけ引く。
+ *
+ * **人口メッシュと同じ作り。** コードを前から切って束ねるので、
+ * 1kmで配ったものから10kmも80kmも作れる。
+ */
+async function fetchCoverageInView(
+  conn: duckdb.AsyncDuckDBConnection,
+  coverage: BuildingCoverage,
+  bounds: ViewBounds,
+  digits: number,
+): Promise<CoverageCell[]> {
+  const files = filesInView(coverage, bounds);
+  if (files.length === 0) return [];
+  const list = files.map((file) => `'${file}'`).join(', ');
+
+  const result = await conn.query(`
+    SELECT
+      substr(mesh_code, 1, ${digits}) AS code,
+      sum(buildings) AS buildings
+    FROM read_parquet([${list}])
+    WHERE bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}
+      AND bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}
+    GROUP BY code;
+  `);
+  return result.toArray().map((row) => {
+    const r = row.toJSON() as unknown as { code: string; buildings: number | bigint };
+    return { code: r.code, buildings: Number(r.buildings) };
+  });
+}
+
 async function fetchBuildingsInView(
   conn: duckdb.AsyncDuckDBConnection,
   source: BuildingSource,
   bounds: ViewBounds,
   filter: BuildingFilter,
   limit: number,
-  /**
-   * 引いた表示で引く、全国の高い建物。**渡されたらこちらから読む。**
-   * 列構成は都市ごとのファイルと同じなので、読む先を差し替えるだけで済む。
-   */
-  coarse?: { files: ItemFile[] },
 ): Promise<BuildingFeature[]> {
   // 表示範囲に重なるファイルだけを渡す。重なるものが無ければ問い合わせない。
-  const files = filesInView(coarse ?? source, bounds);
+  const files = filesInView(source, bounds);
   if (files.length === 0) return [];
   const list = files.map((file) => `'${file}'`).join(', ');
 
@@ -2231,13 +2319,26 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
         id: 'buildings-coverage-fill',
         type: 'fill',
         source: 'buildings-coverage',
-        paint: { 'fill-color': '#4a6785', 'fill-opacity': 0.08 },
+        paint: {
+          'fill-color': '#4a6785',
+          // **濃さは引くときに決めてしまう** (`coverageOpacity`)。整備範囲の
+          // メッシュは建物の数で濃淡を付け、収録範囲の枠 (`opacity` を持たない)
+          // はこれまでと同じ薄さにする。
+          'fill-opacity': ['coalesce', ['get', 'opacity'], 0.08],
+        },
       });
       map.addLayer({
         id: 'buildings-coverage-outline',
         type: 'line',
         source: 'buildings-coverage',
-        paint: { 'line-color': '#4a6785', 'line-width': 1.5, 'line-dasharray': [3, 2] },
+        paint: {
+          'line-color': '#4a6785',
+          'line-width': 1.5,
+          // **メッシュには破線を引かない。** 3万セルの縁を破線にすると
+          // 網目が潰れて塗りが読めない。枠 (1つだけ) のときは破線のままにする。
+          'line-dasharray': ['case', ['has', 'opacity'], ['literal', [1, 0]], ['literal', [3, 2]]],
+          'line-opacity': ['case', ['has', 'opacity'], 0.25, 1],
+        },
       });
 
       map.addSource('highlight', {
@@ -2748,28 +2849,7 @@ async function main() {
       return;
     }
 
-    // **引いた表示では全国の高い建物を出す。** 無い出所 (Overture) では
-    // これまでどおり収録範囲の枠だけになる。
     const zoomedOut = map.getZoom() < BUILDINGS_MIN_ZOOM;
-    const coarse = zoomedOut ? activeSource.coarse : undefined;
-
-    // 収録範囲の枠。**実物が出るなら要らない**ので、高い建物がある出所では既定で切る。
-    await coverage?.setData(
-      zoomedOut && coverageToggle.checked && activeSource.bbox
-        ? bboxFeatureCollection(activeSource.bbox)
-        : EMPTY_FEATURE_COLLECTION,
-    );
-
-    if (zoomedOut && !coarse) {
-      await mapSource.setData(EMPTY_FEATURE_COLLECTION);
-      // **どこまで寄れば出るかを数字で言う。**「拡大すると」だけだと、
-      // どれだけ動かせばいいのか分からない。
-      buildingCountEl.textContent = `ズーム${BUILDINGS_MIN_ZOOM}まで寄ると出ます`;
-      return;
-    }
-
-    // 連続して地図を動かしたりスライダーを動かしたりすると古い結果が後から届くので、
-    // 最新の要求以外は捨てる。
     const token = ++buildingsToken;
     const source = activeSource;
     // 取得を始める前に件数表示を空にする。引いていたときの「拡大すると建物が出ます」が
@@ -2785,13 +2865,47 @@ async function main() {
       centerLon: c.lng,
       centerLat: c.lat,
     };
-    const rows = await busy('建物を読み込み中…', async () => {
-      // 引いた表示では全国の1ファイルだけ読む。都市ごとのItemは読まない
-      // (306ファイルのフッターで600往復を超える)。
-      if (coarse) {
-        await coarse.ensure();
-        return fetchBuildingsInView(conn, source, bounds, filter, BUILDINGS_LIMIT, coarse);
+
+    // **引いた表示では整備範囲を出す。**
+    //
+    // 建物そのものを出す道は無い — 簡略化はフットプリントが1px未満で効かず、
+    // 高さで選ぶのは基準に意味を持たせられなかった。代わりに
+    // 「**どこまで整備されているか**」を1kmのメッシュで見せる。
+    if (zoomedOut) {
+      await mapSource.setData(EMPTY_FEATURE_COLLECTION);
+      if (!source.coverage) {
+        await coverage?.setData(
+          coverageToggle.checked && source.bbox
+            ? bboxFeatureCollection(source.bbox)
+            : EMPTY_FEATURE_COLLECTION,
+        );
+        // **どこまで寄れば出るかを数字で言う。**「拡大すると」だけだと、
+        // どれだけ動かせばいいのか分からない。
+        buildingCountEl.textContent = `ズーム${BUILDINGS_MIN_ZOOM}まで寄ると出ます`;
+        return;
       }
+
+      const area = source.coverage;
+      // 配られているより細かくはできない。引くほど粗く束ねる。
+      const digits = Math.min(meshDigits(map.getZoom()), area.meshDigits);
+      const cells = await busy('整備範囲を読み込み中…', async () => {
+        await area.ensure();
+        return fetchCoverageInView(conn, area, bounds, digits);
+      });
+      if (token !== buildingsToken) return;
+
+      await coverage?.setData(coverageFeatureCollection(cells));
+      const buildings = cells.reduce((total, cell) => total + cell.buildings, 0);
+      buildingCountEl.textContent =
+        `整備範囲 ${cells.length.toLocaleString()} メッシュ` +
+        ` (${MESH_SIZE_LABELS[digits] ?? `${digits}桁`}) · ` +
+        `建物 ${buildings.toLocaleString()} 棟 · ズーム${BUILDINGS_MIN_ZOOM}から建物そのもの`;
+      return;
+    }
+
+    // 寄ったら枠もメッシュも消す。実物が出るので要らない。
+    await coverage?.setData(EMPTY_FEATURE_COLLECTION);
+    const rows = await busy('建物を読み込み中…', async () => {
       await source.ensure();
       return fetchBuildingsInView(conn, source, bounds, filter, BUILDINGS_LIMIT);
     });
@@ -2809,12 +2923,7 @@ async function main() {
       rows.length >= BUILDINGS_LIMIT
         ? `${BUILDINGS_LIMIT}件以上 (表示上限)`
         : `${rows.length}件`;
-    // **高さで絞っていることを断る。** 断らないと「この街には建物が数棟だけ」と
-    // 読めてしまう。
-    const note = coarse
-      ? ` · ${coarse.minHeightM}m以上だけ (ズーム${BUILDINGS_MIN_ZOOM}から全部)`
-      : sourceLodNote(source, bounds);
-    buildingCountEl.textContent = count + note;
+    buildingCountEl.textContent = count + sourceLodNote(source, bounds);
   };
 
   const requestRefresh = () => {
@@ -3085,6 +3194,25 @@ async function main() {
   let roadToken = 0;
   let roadShown = false;
 
+  /**
+   * 等級ごとに、**どのズームから出すか**。
+   *
+   * **簡略化だけでは足りない。** 粗い段で転送量は収まるが、全国の都道府県道
+   * 4,609本を一度に描くと画面が線で埋まって何も読めず、細い線が重なるので
+   * ツールチップも拾うたびに移り変わる。**引いたら幹線だけにする。**
+   *
+   * 高速はズーム0から出す (全国の骨格として読めるし、1,360本しかない)。
+   */
+  const ROAD_CLASS_MIN_ZOOM: Record<string, number> = {
+    motorway: 0,
+    trunk: 8,
+    primary: 10,
+  };
+
+  /** このズームで出す等級。選ばれているもののうち、出してよいものだけ。 */
+  const roadClassesForZoom = (selected: string[], zoom: number): string[] =>
+    selected.filter((cls) => zoom >= (ROAD_CLASS_MIN_ZOOM[cls] ?? 0));
+
   const refreshRoads = async () => {
     const source = map.getSource('road') as GeoJSONSource | undefined;
     if (!source || !roadSource) return;
@@ -3106,7 +3234,12 @@ async function main() {
       .filter((input) => input.checked)
       .map((input) => input.value);
 
-    const lod = lodForZoom(roadSource, map.getZoom());
+    const zoom = map.getZoom();
+    // **引いたら幹線だけにする。** 選んであっても、そのズームで読めない等級は出さない。
+    const shownClasses = roadClassesForZoom(selectedClasses, zoom);
+    const heldBack = selectedClasses.length - shownClasses.length;
+
+    const lod = lodForZoom(roadSource, zoom);
     const token = ++roadToken;
     const features = await busy('道路を読み込み中…', async () => {
       await roadSource.ensure();
@@ -3123,7 +3256,7 @@ async function main() {
           centerLon: c.lng,
           centerLat: c.lat,
         },
-        selectedClasses,
+        shownClasses,
         ROAD_LIMIT,
         lod,
       );
@@ -3150,14 +3283,29 @@ async function main() {
       }),
     });
 
+    // **出していない等級があることを言う。** 黙って外すと「チェックしたのに
+    // 出ない」ように見える。どのズームで出るかも数字で言う。
+    const heldBackNote = () => {
+      if (heldBack === 0) return '';
+      const next = Math.min(
+        ...selectedClasses
+          .filter((cls) => !shownClasses.includes(cls))
+          .map((cls) => ROAD_CLASS_MIN_ZOOM[cls] ?? 0),
+      );
+      return ` · ${heldBack}種別はズーム${next}から`;
+    };
+
     if (features.length === 0) {
-      roadSummaryEl.textContent = 'この範囲に道路がありません';
+      roadSummaryEl.textContent =
+        (shownClasses.length === 0 ? '選んだ等級はこのズームでは出しません' : 'この範囲に道路がありません') +
+        heldBackNote();
       return;
     }
     const capped = features.length >= ROAD_LIMIT;
     roadSummaryEl.textContent =
       `${features.length.toLocaleString()} ${lod === COARSE_LOD ? '本' : '区間'}` +
       lodNote(roadSource, lod) +
+      heldBackNote() +
       (capped ? ' (上限に達しました。拡大すると全部出ます)' : '');
   };
 
@@ -3773,6 +3921,13 @@ async function main() {
   }
 
   if (roadSource) {
+    // **同じ道路の上を動いている間は作り直さない。**
+    //
+    // 道路は交差点ごとに区間が切れているので、1本の道をなぞるだけで別の地物へ
+    // 次々に移る。毎回中身を組み直すと、**同じ道を見ているのに表示がちらつく**。
+    // 名前と路線と等級が同じなら同じ道として扱い、位置だけ追わせる。
+    let hoveredRoad = '';
+
     map.on('mousemove', 'road-line', (e) => {
       const feature = e.features?.[0];
       if (!feature) return;
@@ -3782,23 +3937,29 @@ async function main() {
       const props = feature.properties;
       const routes = (props.routeNames as string) || '';
       const name = props.roadName as string | null;
-      hoverPopup
-        .setLngLat(e.lngLat)
-        .setDOMContent(
-          hoverContent([
-            // 名前が無い区間もある。その場合は路線名を見出しに繰り上げる。
-            ['', name || routes || '(名前なし)'],
-            // **路線は複数あることがある。** 見出しに使ったものと同じなら繰り返さない。
-            ['路線', routes && routes !== name ? routes : null],
-            ['種別', props.roadClass as string],
-            ['時点', roadVintage ?? null],
-          ]),
-        )
-        .addTo(map);
+      const roadClass = props.roadClass as string;
+
+      hoverPopup.setLngLat(e.lngLat).addTo(map);
+
+      const identity = `${name ?? ''}|${routes}|${roadClass}`;
+      if (identity === hoveredRoad) return;
+      hoveredRoad = identity;
+
+      hoverPopup.setDOMContent(
+        hoverContent([
+          // 名前が無い区間もある。その場合は路線名を見出しに繰り上げる。
+          ['', name || routes || '(名前なし)'],
+          // **路線は複数あることがある。** 見出しに使ったものと同じなら繰り返さない。
+          ['路線', routes && routes !== name ? routes : null],
+          ['種別', roadClass],
+          ['時点', roadVintage ?? null],
+        ]),
+      );
     });
 
     map.on('mouseleave', 'road-line', () => {
       hoveringBuilding = false;
+      hoveredRoad = '';
       updateCursor();
       hoverPopup.remove();
     });

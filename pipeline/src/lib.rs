@@ -5,6 +5,7 @@ use std::path::Path;
 
 pub mod admin_names;
 pub mod catalog;
+pub mod coverage;
 pub mod geoparquet;
 pub mod isj_block;
 pub mod isj_oaza;

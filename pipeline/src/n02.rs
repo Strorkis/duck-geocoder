@@ -297,6 +297,8 @@ fn write(
             vintage,
             // 鉄道にLODの概念は無い。
             source_lod: None,
+            // 整備範囲を別に配っていない (全国が入っている)。
+            covers: None,
         },
     )
     .with_context(|| format!("書き出しに失敗しました: {}", output.display()))
