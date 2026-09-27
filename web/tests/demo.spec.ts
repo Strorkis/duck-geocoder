@@ -450,16 +450,19 @@ test('使わないデータのItemは起動時に読まない', async ({ page })
   expect(requested.some((file) => file.startsWith('overture-admin'))).toBe(true);
   // 人口メッシュ (47ファイル・80KB) は、まだ誰も要求していない。
   expect(requested.filter((file) => file.startsWith('estat-mesh-pop'))).toEqual([]);
-  // 建物も寄るまで読まない。収録範囲の枠と絞り込みの選択肢はCollectionで足りる。
-  expect(requested.filter((file) => file.startsWith('plateau-'))).toEqual([]);
 
-  // 寄れば読みに行く。
+  // **都市ごとのItemは引いた表示で読まない。** 306都市あり、フッターを引くだけで
+  // 1回の表示が600往復を超える。読むのは全国の高い建物 (1ファイル) の方。
+  expect(requested).not.toContain('plateau-buildings-items.json');
+  expect(requested).toContain('plateau-buildings-tall-items.json');
+
+  // 寄ると都市ごとの方に切り替わる。
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 16 });
   });
   await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
-  expect(requested.some((file) => file.startsWith('plateau-'))).toBe(true);
+  expect(requested).toContain('plateau-buildings-items.json');
 });
 
 // 出典は既定でたたんである。出所が6件あって、広げると452×112pxの箱になるため。
@@ -593,17 +596,39 @@ test('出典が何行になってもパネルは覆われない', async ({ page 
 test('ボタンを押すと建物のある範囲へ移動する', async ({ page }) => {
   test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
 
-  expect(await sourceFeatureCount(page, 'buildings')).toBe(0);
+  // **件数で前後を比べない。** 引いた表示でも高い建物が出るので、押す前から0ではない。
+  // 見たいのは「原寸が出るところまで寄る」こと。
+  const zoom = () => page.evaluate(() => (window as unknown as TestWindow).__map!.getZoom());
+  expect(await zoom()).toBeLessThan(15);
 
   await openLayerSettings(page, 'buildings');
   await page.locator('#goto-buildings').click();
 
+  await expect.poll(zoom).toBeGreaterThanOrEqual(15);
   await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
   // 建物は立体で描くので、移動と同時に傾ける。傾き0のままだと真上から見ることになり、
   // 立体にした意味が伝わらない。真上に戻したいときはコンパスを押す。
   await expect
     .poll(() => page.evaluate(() => (window as unknown as TestWindow).__map!.getPitch()))
     .toBeGreaterThan(0);
+});
+
+/**
+ * **飛び先は選んでいる出所の範囲。** 出所全部の和にすると、収録範囲の広さが
+ * 違うときに外れる。PLATEAUを306都市に広げたら和が日本全体になり、その中心
+ * (岡山付近) にはOvertureの建物が1棟も無かった — 押しても「0件」に着いた。
+ */
+test('移動ボタンは選んでいる出所の範囲へ飛ぶ', async ({ page }) => {
+  test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  await openLayerSettings(page, 'buildings');
+  await page.locator('#building-source').selectOption({ label: 'Overture' });
+  await page.locator('#goto-buildings').click();
+
+  // 着いた先に実際に建物があること。**0件に着いたら意味が無い。**
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
+  await expect(page.locator('#building-count')).not.toHaveText('0件');
 });
 
 /**
@@ -634,6 +659,11 @@ test('建物を読み込んでいる間は合図が出る', async ({ page }) => 
 test('建物を読み込んでいる間は「寄ると出ます」と言わない', async ({ page }) => {
   test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
 
+  // **Overtureに切り替えて観察する。** PLATEAUは引いた表示でも全国の高い建物が
+  // 出るのでこの文言が出ない。全国版を持たない出所ではまだ出る。
+  await openLayerSettings(page, 'buildings');
+  await page.locator('#building-source').selectOption({ label: 'Overture' });
+
   // **どこまで寄れば出るかを数字で言う。**文言は BUILDINGS_MIN_ZOOM から作られる。
   const zoomedOutMessage = /ズーム\d+まで寄ると出ます/;
   await expect(page.locator('#building-count')).toHaveText(zoomedOutMessage);
@@ -648,7 +678,6 @@ test('建物を読み込んでいる間は「寄ると出ます」と言わな�
     await route.continue();
   });
 
-  await openLayerSettings(page, 'buildings');
   await page.locator('#goto-buildings').click();
   // 取得に入ったことは合図の文言で見分ける (移動中とは別の文言にしてある)。
   await expect(page.locator('#busy')).toContainText('建物を読み込み中…');
@@ -659,17 +688,38 @@ test('建物を読み込んでいる間は「寄ると出ます」と言わな�
   await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
 });
 
-// 逆ジオコーディングは名前が先に出て、ポリゴンはもう1往復あとに届く。
-// その間が無言だと「地名だけ出てポリゴンが表示されない」ように見える。
+/**
+ * 逆ジオコーディングは名前が先に出て、ポリゴンはもう1往復あとに届く。
+ * その間が無言だと「地名だけ出てポリゴンが表示されない」ように見える。
+ *
+ * **行政区域の取得を止めて観察する。** 引いた表示でも建物を出すようにしてから、
+ * クリックする時点では空間関数もファイルのフッターも既に温まっていて、
+ * 合図が一瞬で消えるようになった (このテストはそれで落ちた)。
+ */
 test('逆ジオコーディング中は合図が出る', async ({ page }) => {
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7671, 35.6812], zoom: 13 });
   });
+  // 先に建物を出し切って、合図が建物のものでないことを確かめられる状態にする。
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
+  await expect(page.locator('#busy')).toBeHidden();
+
+  // 合図を確かめるまで行政区域を渡さない。
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const admin = (await datasetUrl(page, ADMIN_DATASET))!;
+  await page.route(admin, async (route) => {
+    await held;
+    await route.continue();
+  });
 
   await pickOnMap(page, { x: 400, y: 300 });
   await expect(page.locator('#busy')).toBeVisible();
 
+  release();
   await expect.poll(() => highlightFeatureCount(page)).toBe(1);
   await expect(page.locator('#busy')).toBeHidden();
 });
@@ -771,8 +821,12 @@ test('標高タイルから実際の高さが読める', async ({ page }) => {
     .toBeGreaterThan(300);
 });
 
-test('十分に寄ると建物が表示され、離すと消える', async ({ page }) => {
-  test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
+/**
+ * **引いても建物が消えない。** 「ズームしないとデータがあるか見えない」のを
+ * やめたので、引いたときは全国の高い建物 (60m以上) に切り替わる。
+ */
+test('引いても建物は消えず、高い建物だけに切り替わる', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
 
   // 港区あたり。建物データを切り出した範囲の中に入る。
   await page.evaluate(() => {
@@ -780,13 +834,24 @@ test('十分に寄ると建物が表示され、離すと消える', async ({ pa
     map.jumpTo({ center: [139.7554, 35.6586], zoom: 16 });
   });
   await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
+  // 寄っているときは絞っていないので、そうは書かない。
+  await expect(page.locator('#building-count')).not.toContainText('m以上だけ');
 
-  // 引くと (閾値を下回ると) 件数が多すぎるので表示しない。
+  // 引いても**消えない**。高さで絞った実物が出る。
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
-    map.jumpTo({ center: [139.7554, 35.6586], zoom: 12 });
+    map.jumpTo({ center: [139.7554, 35.6586], zoom: 9 });
   });
-  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBe(0);
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
+
+  // **何で絞ったかを断る。** 断らないと「この街には建物が数棟だけ」と読めてしまう。
+  //
+  // **件数では比べない。** ズームを変えると表示範囲も変わるので、引いた方が
+  // 多いことすらある (ズーム9は関東全体、ズーム16は港区の数街区)。
+  await expect(page.locator('#building-count')).toContainText('m以上だけ');
+
+  // 「ズームしろ」とは言わない。
+  await expect(page.locator('#building-count')).not.toContainText('寄ると出ます');
 });
 
 /**
@@ -810,22 +875,27 @@ test('表示範囲と重ならない建物データは読みに行かない', as
     if (request.url() === plateau) requested.push(request.url());
   });
 
-  // 大阪市の中心部。港区のデータとは重ならない。
+  // 大阪市の中心部。**港区のファイルとは重ならない。**
+  //
+  // 大阪にもPLATEAUの建物はある (306都市を整備した) ので、件数は0にならない。
+  // ここで見たいのは**港区のファイルに触らないこと**なので、そちらだけを数える。
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [135.5023, 34.6937], zoom: 16 });
   });
-  await expect(page.locator('#building-count')).toHaveText('0件');
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
   expect(requested).toEqual([]);
 
   // 重なる場所へ行けば読む。これが無いと「そもそも何も通信していない」だけでも
   // 上の判定が通ってしまう。
+  //
+  // **件数で待たない。** 大阪の建物がまだソースに残っているので、
+  // 港区のデータが届く前に「0件より多い」が通ってしまう。
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 16 });
   });
-  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
-  expect(requested.length).toBeGreaterThan(0);
+  await expect.poll(() => requested.length, { timeout: 30_000 }).toBeGreaterThan(0);
 });
 
 test('建物はホバーで情報が出て、地図は動かない', async ({ page }) => {
@@ -916,6 +986,11 @@ test('用途は一括で切り替えられる', async ({ page }) => {
 // 偶然その場所へ行かないと機能に気づけない、という状態を避けるため。
 test('引くと収録範囲が枠で出る', async ({ page }) => {
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  // **枠は既定で切ってある。** 引いた表示でも実物 (高い建物) が出るので、
+  // 重ねると二重に見えるだけ。見たい人だけが入れる。
+  await openLayerSettings(page, 'buildings');
+  await page.locator('#coverage-toggle').check();
 
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
@@ -1260,7 +1335,12 @@ test('鉄道は事業者種別で絞れる', async ({ page }) => {
 
 // 引いた表示では出さない。路線のジオメトリ列は4.6MBあり、全国を一度に読むと
 // 起動時の転送量 (1.5MB) を大きく超える。
-test('引いた表示では鉄道を読みに行かない', async ({ page }) => {
+/**
+ * **引いた表示でも鉄道が出る。** 「ズームしないとデータがあるか見えない」のを
+ * やめた。全国を原寸で読むと4.5MBになるので、引いたときは粗い段 (`lod = 0`) を
+ * 引く — 全国597本・329KBで足りる。
+ */
+test('引いた表示でも鉄道が出て、簡略表示だと断る', async ({ page }) => {
   test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
 
   await showRailway(page);
@@ -1269,8 +1349,39 @@ test('引いた表示では鉄道を読みに行かない', async ({ page }) => 
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [138.0, 37.0], zoom: 6 });
   });
-  await expect(page.locator('#railway-summary')).toContainText('まで寄ると出ます');
-  expect(await sourceFeatureCount(page, 'railway')).toBe(0);
+
+  // **出る。** ここが0に戻ったら、隠す実装に戻ってしまっている。
+  await expect.poll(() => sourceFeatureCount(page, 'railway')).toBeGreaterThan(0);
+  await expect(page.locator('#railway-summary')).not.toContainText('まで寄ると出ます');
+  // 黙って簡略化したものを見せない。どこから原寸になるかも言う。
+  await expect(page.locator('#railway-summary')).toContainText('簡略表示');
+});
+
+/**
+ * 寄れば原寸に切り替わる。粗い段に留まると、細部が出ないまま気付けない。
+ *
+ * **件数では比べられない** (ズームを変えると表示範囲も変わる) ので、
+ * 断り書きが消えることで見る。
+ */
+test('寄ると鉄道が原寸に切り替わる', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+
+  await showRailway(page);
+  const summary = page.locator('#railway-summary');
+
+  const goTo = async (zoom: number) => {
+    await page.evaluate((z) => {
+      const map = (window as unknown as TestWindow).__map!;
+      map.jumpTo({ center: [139.7671, 35.6812], zoom: z });
+    }, zoom);
+    await expect.poll(() => sourceFeatureCount(page, 'railway')).toBeGreaterThan(0);
+  };
+
+  await goTo(8);
+  await expect(summary).toContainText('簡略表示');
+
+  await goTo(14);
+  await expect(summary).not.toContainText('簡略表示');
 });
 
 /**
@@ -1304,6 +1415,44 @@ test('鉄道は範囲に重なる分しか読まない', async ({ page }) => {
   expect(fetchedBytes, `路線を読みすぎ: ${(fetchedBytes / 1024).toFixed(0)} KB`).toBeLessThan(
     2.6 * 1024 * 1024,
   );
+});
+
+/**
+ * **粗い段を置いた効果を、転送量で確かめる。**
+ *
+ * ここが段の効果を測れる唯一の確かな場所。手元のファイルは page cache に
+ * 乗るので、読み飛ばしを時間では測れない (実測で原寸と粗い段の差が出なかった)。
+ *
+ * 全国の鉄道を原寸で読むと4.5MB、道路 (高速) は9.4MB。粗い段はそれぞれ
+ * 329KB / 483KB なので、**段が効いていれば1MBに収まる**。
+ * 効かなくなると「引いた瞬間に数MB」に黙って落ちる。
+ */
+test('引いた表示の転送量は粗い段のぶんで収まる', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+
+  const dataset = await datasetUrl(page, RAILWAY_DATASET);
+  let fetchedBytes = 0;
+  page.on('response', (response) => {
+    if (response.url() !== dataset) return;
+    if (response.request().method() === 'HEAD') return;
+    fetchedBytes += Number(response.headers()['content-length'] ?? 0);
+  });
+
+  // 日本全体が入るズーム。原寸なら全国を読むことになる縮尺。
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [138.0, 37.0], zoom: 5 });
+  });
+  await showLayer(page, 'railway');
+  await expect.poll(() => sourceFeatureCount(page, 'railway')).toBeGreaterThan(0);
+
+  console.log(`全国 (ズーム5) の鉄道の転送量: ${(fetchedBytes / 1024).toFixed(0)} KB`);
+  expect(fetchedBytes, '転送量を計測できていない').toBeGreaterThan(0);
+  expect(
+    fetchedBytes,
+    `引いた表示で読みすぎ: ${(fetchedBytes / 1024).toFixed(0)} KB。` +
+      '粗い段 (329KB) を読めていない可能性がある',
+  ).toBeLessThan(1024 * 1024);
 });
 
 // 出所を見ただけでは版が分からず、古いものを新しいと思って使う事故になる。
@@ -1358,13 +1507,15 @@ test('収録範囲の枠は切り替えられる', async ({ page }) => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 10 });
   });
-  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBe(1);
-
-  await page.locator('#coverage-toggle').uncheck();
+  // **既定は切ってある。** 引いた表示でも実物が出るので枠は要らない。
+  await expect(page.locator('#coverage-toggle')).not.toBeChecked();
   await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBe(0);
 
   await page.locator('#coverage-toggle').check();
   await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBe(1);
+
+  await page.locator('#coverage-toggle').uncheck();
+  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBe(0);
 });
 
 /**
@@ -1425,9 +1576,11 @@ test('収録範囲の外では「この範囲には無い」に移る', async ({
   });
   await expect(page.locator('#layer-rows [data-layer="buildings"]')).toBeVisible();
 
+  // **収録範囲の外は日本の外まで出ないと無い。** PLATEAUを306都市に広げたので、
+  // 札幌や大阪のような都市はもう収録されている。ここは三陸沖。
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
-    map.jumpTo({ center: [141.35, 43.06], zoom: 14 }); // 札幌 (建物の収録なし)
+    map.jumpTo({ center: [150.0, 40.0], zoom: 14 });
   });
   await expect(page.locator('#layer-absent [data-layer="buildings"]')).toBeVisible();
   await expect(page.locator('#layer-absent')).toContainText('この範囲には無い');
@@ -1451,6 +1604,14 @@ test('出ない理由が一覧に出て、寄る先が数字で分かる', async
   });
 
   const status = page.locator('[data-layer-status="buildings"]');
+
+  // **PLATEAUは引いた表示でも出るので、寄れとは言わない。**
+  await expect(status).not.toContainText('まで寄ると出ます');
+  await expect(status).toContainText('m以上だけ');
+
+  // 全国版を持たない出所 (Overture) では今も出ない。**そのときは理由を言う。**
+  await openLayerSettings(page, 'buildings');
+  await page.locator('#building-source').selectOption({ label: 'Overture' });
   await expect(status).toContainText('ズーム');
   await expect(status).toContainText('まで寄ると出ます');
 });
@@ -1763,6 +1924,46 @@ test('道路の件数が一覧に出る', async ({ page }) => {
 
   await showRoads(page);
   await expect(page.locator('[data-layer="road"]')).toContainText('区間', { timeout: 30_000 });
+});
+
+/**
+ * **引いた表示でも道路が出る。** 「ズームしないとデータがあるか見えない」のを
+ * やめた。原寸の幹線は65.6万区間・9.4MBあるので、引いたときは粗い段 (`lod = 0`) を
+ * 引く — 全国の高速は1,360本・483KBで足りる。
+ */
+test('引いた表示でも道路が出て、簡略表示だと断る', async ({ page }) => {
+  test.skip(!(await hasRoads(page)), '道路のデータが無い');
+
+  // 日本全体が入るズーム。**原寸を読んだら転送量が跳ね上がる縮尺。**
+  await showRoads(page, 6);
+
+  // **出る。** ここが0に戻ったら、隠す実装に戻ってしまっている。
+  expect(await sourceFeatureCount(page, 'road')).toBeGreaterThan(0);
+  await expect(page.locator('#road-summary')).not.toContainText('まで寄ると出ます');
+  // 黙って簡略化したものを見せない。どこから原寸になるかも言う。
+  await expect(page.locator('#road-summary')).toContainText('簡略表示');
+});
+
+/**
+ * 寄れば原寸に切り替わる。粗い段に留まると、細部が出ないまま気付けない。
+ *
+ * **件数では比べられない。** ズームを変えると表示範囲も変わるので、
+ * 引いた粗い段の方が多いことすらある (実測でズーム8が1,995本、ズーム14が860区間)。
+ * どちらを読んでいるかは**数える単位**に出る — 粗い段は統合した「本」、
+ * 原寸は断片の「区間」。
+ */
+test('寄ると道路が原寸に切り替わる', async ({ page }) => {
+  test.skip(!(await hasRoads(page)), '道路のデータが無い');
+
+  const summary = page.locator('#road-summary');
+
+  await showRoads(page, 8);
+  await expect(summary).toContainText('簡略表示');
+  await expect(summary).toContainText('本');
+
+  await showRoads(page, 14);
+  await expect(summary).not.toContainText('簡略表示');
+  await expect(summary).toContainText('区間');
 });
 
 /**

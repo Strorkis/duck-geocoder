@@ -93,11 +93,12 @@
             <label for="building-source">建物データ</label>
             <select id="building-source"></select>
           </div>
-          <!-- 収録範囲の枠。建物が出ないズームでどこにデータがあるかを示すためのもので、
-               収録範囲が広がれば要らなくなる。切れるようにしておく。 -->
+          <!-- 収録範囲の枠。**既定は切ってある。** 引いた表示でも全国の高い建物
+               (実物) が出るようになったので、枠を重ねると二重に見えるだけ。
+               高い建物を持たない出所 (Overture) ではまだ役に立つので残す。 -->
           <div class="field">
             <label class="toggle">
-              <input id="coverage-toggle" type="checkbox" checked />
+              <input id="coverage-toggle" type="checkbox" />
               収録範囲を枠で示す
             </label>
           </div>

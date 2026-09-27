@@ -67,6 +67,19 @@ interface StacCollection {
   /** 地域メッシュの細かさ (メッシュコードの桁数)。メッシュ以外には無い。 */
   'duck:mesh_digits'?: number;
   /**
+   * **粗い段の簡略化の許容誤差 (メートル)。** 段を持つファイルにだけ付く。
+   *
+   * 付いていれば、引いた表示で `lod = 0` の行 (統合して簡略化したもの) を引ける。
+   * どのズームまで粗い段で足りるかは [`coarseLodUntilZoom`] が誤差から決めるので、
+   * **ズーム閾値をここに書かない。**
+   */
+  'duck:coarse_lod_tolerance_m'?: number;
+  /**
+   * **この高さ以上だけを収録していること** (メートル)。
+   * 全国の高い建物だけを集めたCollectionが名乗る。画面で断るために使う。
+   */
+  'duck:min_height_m'?: number;
+  /**
    * **いつ時点のデータか。** 配布元が名乗っている形 (`N02-25 (2026-03-06)` など)。
    *
    * ファイルごとに版が違うCollection (PLATEAUは都市ごとに更新年度が揃っていない)
@@ -129,6 +142,10 @@ interface Collection {
   columns: Set<string>;
   /** 地域メッシュの細かさ (メッシュコードの桁数)。メッシュ以外は undefined。 */
   meshDigits: number | undefined;
+  /** 粗い段の許容誤差 (メートル)。段が無ければ undefined。 */
+  coarseLodToleranceM: number | undefined;
+  /** この高さ以上だけを収録していること (メートル)。全件なら undefined。 */
+  minHeightM: number | undefined;
   /** いつ時点のデータか。**ファイルごとに版が違うものには入っていない。** */
   vintage: string | undefined;
   /** Itemを読む。**Collectionごとに1回だけ**通信する。 */
@@ -267,6 +284,8 @@ function toCollection(document: StacCollection, path: string): Collection {
     attributionUrl: document['duck:attribution_url'],
     via: document.links.find((link) => link.rel === 'via')?.href,
     meshDigits: document['duck:mesh_digits'],
+    coarseLodToleranceM: document['duck:coarse_lod_tolerance_m'],
+    minHeightM: document['duck:min_height_m'],
     vintage: document['duck:vintage'],
     bbox,
     summaries: document.summaries ?? {},
@@ -435,6 +454,24 @@ interface BuildingSource {
   usages: string[];
   /** 引く前に呼ぶ (Itemの読み込み・ファイル登録・空間関数の読み込み)。 */
   ensure: () => Promise<void>;
+  /**
+   * **引いた表示で引く、全国の高い建物。** 無ければ引いた表示では何も出さない。
+   *
+   * 建物に簡略化は効かない (ズーム12でフットプリントは1px未満) ので、線のような
+   * 段は持てない。代わりに**高さで選んだ実物**を別ファイルで持つ。近似は入っていない。
+   *
+   * 都市ごとのファイルを引いた表示で読まないのは、306ファイルのフッターを引くと
+   * 1回の表示で600往復を超えるため。
+   */
+  coarse: CoarseBuildings | undefined;
+}
+
+/** 全国の高い建物。[`BuildingSource.coarse`] が持つ。 */
+interface CoarseBuildings {
+  files: ItemFile[];
+  /** この高さ以上だけが入っている。画面で断るために使う。 */
+  minHeightM: number;
+  ensure: () => Promise<void>;
 }
 
 /**
@@ -454,6 +491,8 @@ interface RailwaySource {
   kind: 'railway' | 'railway_station';
   bbox: Bbox | null;
   files: ItemFile[];
+  /** 粗い段の許容誤差 (メートル)。段が無ければ undefined。 */
+  coarseLodToleranceM: number | undefined;
   ensure: () => Promise<void>;
 }
 
@@ -465,6 +504,8 @@ interface RoadSource {
   id: string;
   bbox: Bbox | null;
   files: ItemFile[];
+  /** 粗い段の許容誤差 (メートル)。段が無ければ undefined。 */
+  coarseLodToleranceM: number | undefined;
   ensure: () => Promise<void>;
 }
 
@@ -537,6 +578,77 @@ function meshSourceFor(sources: MeshSource[], digits: number): MeshSource | unde
   return sources
     .filter((source) => source.digits >= digits)
     .sort((a, b) => a.digits - b.digits)[0];
+}
+
+/** 粗い段 (`lod = 0`)。統合して簡略化した行。 */
+const COARSE_LOD = 0;
+/** 原寸 (`lod = 1`)。元の行がそのまま入っている。 */
+const EXACT_LOD = 1;
+
+/**
+ * 緯度36°での1pxの大きさ (メートル)。`156543.03 * cos(36°) / 2^z`。
+ *
+ * 日本のほぼ中央での値。北海道と沖縄で2割ほど違うが、**段を選ぶのは
+ * 「誤差が見えるか」の判断**なので、この程度の差は効かない。
+ */
+function metersPerPixel(zoom: number): number {
+  return 126_643 / 2 ** zoom;
+}
+
+/**
+ * 許容誤差 `toleranceM` で簡略化したものが使えるのは、どのズームまでか。
+ *
+ * **誤差が2px以内なら使う。** 100mの誤差はズーム10で0.8px、11で1.6px、12で3.2px
+ * なので、100mの段はズーム11まで。線の太さが2px前後あるので、2px以内のずれは
+ * 線の中に収まって見えない。
+ *
+ * **ズーム閾値を書かずにここで決める**のが肝。データ側の誤差が変われば
+ * 切り替わるズームも自動で追従する。
+ */
+function coarseLodUntilZoom(toleranceM: number): number {
+  let zoom = 0;
+  while (zoom < 24 && toleranceM / metersPerPixel(zoom + 1) <= 2) zoom += 1;
+  return zoom;
+}
+
+/**
+ * このズームで読む段。段を持たないCollectionでは undefined (条件を付けない)。
+ *
+ * **読む側をこの1箇所に閉じてある。** 将来COGPの読み手に替えるとき、
+ * 変更点がここだけで済むようにするため。
+ */
+function lodForZoom(
+  source: { coarseLodToleranceM: number | undefined },
+  zoom: number,
+): number | undefined {
+  if (source.coarseLodToleranceM === undefined) return undefined;
+  return zoom <= coarseLodUntilZoom(source.coarseLodToleranceM) ? COARSE_LOD : EXACT_LOD;
+}
+
+/**
+ * 段を絞るWHERE句の断片。段が無いファイルでは**何も付けない**。
+ *
+ * 付けてしまうと、段を持たないファイル (`lod` 列が無い) を読んだときに
+ * 列が見つからずクエリごと失敗する。後ろに条件が続く形で使う。
+ */
+function lodFilter(lod: number | undefined): string {
+  return lod === undefined ? '' : `lod = ${lod} AND`;
+}
+
+/**
+ * いま粗い段を見ているのかを画面で断る文。
+ *
+ * **黙って簡略化したものを見せない。** 引いた表示では統合して簡略化した線が
+ * 出ているので、そう書いておかないと区間数が急に減ったように見える。
+ * どのズームで原寸に切り替わるかも一緒に言う。
+ */
+function lodNote(
+  source: { coarseLodToleranceM: number | undefined },
+  lod: number | undefined,
+): string {
+  if (source.coarseLodToleranceM === undefined || lod !== COARSE_LOD) return '';
+  const until = coarseLodUntilZoom(source.coarseLodToleranceM);
+  return ` · 簡略表示 (ズーム${until + 1}から原寸)`;
 }
 
 /**
@@ -870,8 +982,28 @@ async function initDuckDb(collections: Collection[]): Promise<{
     { kind: 'buildings', label: 'Overture' },
   ];
   const buildingSources: BuildingSource[] = buildingKinds.flatMap(({ kind, label }) => {
-    const collection = byKind(kind)[0];
+    // **高さで絞ったCollectionは出所として並べない。** 同じ種別で並んでいるが、
+    // あれは引いた表示のための段であって別の出所ではない。
+    // 見分けるのは `duck:min_height_m` の有無で、IDでは判断しない。
+    const candidates = byKind(kind);
+    const collection = candidates.find((c) => c.minHeightM === undefined);
     if (!collection) return [];
+
+    const tall = candidates.find((c) => c.minHeightM !== undefined);
+    const coarse: CoarseBuildings | undefined =
+      tall && tall.minHeightM !== undefined
+        ? {
+            files: [],
+            minHeightM: tall.minHeightM,
+            ensure: once(async () => {
+              const items = await tall.items();
+              coarse!.files = itemFiles(items);
+              await register(coarse!.files.map(({ file }) => file));
+              await ensureSpatial();
+            }),
+          }
+        : undefined;
+
     // 何で絞れるかは列の有無から決める。高さは列があれば絞れる。
     // 用途で絞れる列は**カタログが語彙を持っている列**。列名 (PLATEAUは usage、
     // Overtureは class) をここに書かないのは、出所が増えたときに書き足す場所が
@@ -886,6 +1018,7 @@ async function initDuckDb(collections: Collection[]): Promise<{
       categoryColumn,
       usages,
       bbox: collection.bbox,
+      coarse,
       ensure: once(async () => {
         const items = await collection.items();
         source.files = itemFiles(items);
@@ -932,6 +1065,7 @@ async function initDuckDb(collections: Collection[]): Promise<{
         kind,
         bbox: collection.bbox,
         files: [],
+        coarseLodToleranceM: collection.coarseLodToleranceM,
         ensure: once(async () => {
           const items = await collection.items();
           source.files = itemFiles(items);
@@ -950,6 +1084,7 @@ async function initDuckDb(collections: Collection[]): Promise<{
         id: roadCollection.id,
         bbox: roadCollection.bbox,
         files: [],
+        coarseLodToleranceM: roadCollection.coarseLodToleranceM,
         ensure: once(async () => {
           const items = await roadCollection.items();
           roadSource!.files = itemFiles(items);
@@ -1154,6 +1289,7 @@ async function fetchRailwayInView(
   bounds: ViewBounds,
   institutionTypes: string[] | null,
   limit: number,
+  lod: number | undefined,
 ): Promise<RailwayFeature[]> {
   const files = filesInView(source, bounds);
   if (files.length === 0) return [];
@@ -1163,6 +1299,7 @@ async function fetchRailwayInView(
     `bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}`,
     `bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}`,
   ];
+  if (lod !== undefined) conditions.push(`lod = ${lod}`);
   if (institutionTypes) {
     // 建物の用途と同じく、1つも選ばれていなければ1件も出さない。
     const types = institutionTypes.map((t) => `'${t.replace(/'/g, "''")}'`).join(', ');
@@ -1217,6 +1354,7 @@ async function fetchRoadsInView(
   bounds: ViewBounds,
   classes: string[],
   limit: number,
+  lod: number | undefined,
 ): Promise<RoadFeature[]> {
   if (classes.length === 0) return [];
   // ファイル名に class が入っているので、読むファイルの段階で絞れる。
@@ -1232,7 +1370,8 @@ async function fetchRoadsInView(
       ST_AsGeoJSON(geometry) AS geojson,
       road_name, class, route_names
     FROM read_parquet([${list}])
-    WHERE bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}
+    WHERE ${lodFilter(lod)}
+      bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}
       AND bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}
     ORDER BY
       pow(((bbox.xmin + bbox.xmax) / 2 - ${bounds.centerLon}) * ${lonScale}, 2)
@@ -1293,9 +1432,14 @@ async function fetchBuildingsInView(
   bounds: ViewBounds,
   filter: BuildingFilter,
   limit: number,
+  /**
+   * 引いた表示で引く、全国の高い建物。**渡されたらこちらから読む。**
+   * 列構成は都市ごとのファイルと同じなので、読む先を差し替えるだけで済む。
+   */
+  coarse?: { files: ItemFile[] },
 ): Promise<BuildingFeature[]> {
   // 表示範囲に重なるファイルだけを渡す。重なるものが無ければ問い合わせない。
-  const files = filesInView(source, bounds);
+  const files = filesInView(coarse ?? source, bounds);
   if (files.length === 0) return [];
   const list = files.map((file) => `'${file}'`).join(', ');
 
@@ -2573,7 +2717,13 @@ async function main() {
 
   clearButton.addEventListener('click', clearSearch);
 
-  // 建物は件数が多いので、ある程度寄ったときだけ表示範囲の分を読み込む。
+  /**
+   * ここから原寸 (都市ごとのファイル・全件) を読む。
+   *
+   * **これより引いても隠さない。** 全国の高い建物 (60m以上) を出す
+   * ([`BuildingSource.coarse`])。件数が多いのは変わらないので、
+   * **読む先を切り替える**ことで対応している。
+   */
   const BUILDINGS_MIN_ZOOM = 15;
   const BUILDINGS_LIMIT = 3000;
   // 高さを持つ建物を表示するときの傾き。
@@ -2598,17 +2748,19 @@ async function main() {
       return;
     }
 
-    // 建物が出ないズームでは、代わりに収録範囲の枠を出す。
-    // **切れるようにしてある** — 収録範囲が全国に広がれば、枠は日本を囲む箱に
-    // なって意味を失う。そのとき既定を変えられるよう、先に切り替えを用意した。
+    // **引いた表示では全国の高い建物を出す。** 無い出所 (Overture) では
+    // これまでどおり収録範囲の枠だけになる。
     const zoomedOut = map.getZoom() < BUILDINGS_MIN_ZOOM;
+    const coarse = zoomedOut ? activeSource.coarse : undefined;
+
+    // 収録範囲の枠。**実物が出るなら要らない**ので、高い建物がある出所では既定で切る。
     await coverage?.setData(
       zoomedOut && coverageToggle.checked && activeSource.bbox
         ? bboxFeatureCollection(activeSource.bbox)
         : EMPTY_FEATURE_COLLECTION,
     );
 
-    if (zoomedOut) {
+    if (zoomedOut && !coarse) {
       await mapSource.setData(EMPTY_FEATURE_COLLECTION);
       // **どこまで寄れば出るかを数字で言う。**「拡大すると」だけだと、
       // どれだけ動かせばいいのか分からない。
@@ -2634,6 +2786,12 @@ async function main() {
       centerLat: c.lat,
     };
     const rows = await busy('建物を読み込み中…', async () => {
+      // 引いた表示では全国の1ファイルだけ読む。都市ごとのItemは読まない
+      // (306ファイルのフッターで600往復を超える)。
+      if (coarse) {
+        await coarse.ensure();
+        return fetchBuildingsInView(conn, source, bounds, filter, BUILDINGS_LIMIT, coarse);
+      }
       await source.ensure();
       return fetchBuildingsInView(conn, source, bounds, filter, BUILDINGS_LIMIT);
     });
@@ -2651,7 +2809,12 @@ async function main() {
       rows.length >= BUILDINGS_LIMIT
         ? `${BUILDINGS_LIMIT}件以上 (表示上限)`
         : `${rows.length}件`;
-    buildingCountEl.textContent = count + sourceLodNote(source, bounds);
+    // **高さで絞っていることを断る。** 断らないと「この街には建物が数棟だけ」と
+    // 読めてしまう。
+    const note = coarse
+      ? ` · ${coarse.minHeightM}m以上だけ (ズーム${BUILDINGS_MIN_ZOOM}から全部)`
+      : sourceLodNote(source, bounds);
+    buildingCountEl.textContent = count + note;
   };
 
   const requestRefresh = () => {
@@ -2804,11 +2967,13 @@ async function main() {
   /**
    * 鉄道を引き直す。
    *
-   * **引いた表示では出さない。** 路線のジオメトリ列は4.6MBあり、全国を一度に
-   * 読むと起動時の転送量 (1.5MB) を大きく超える。建物 (ズーム15以上) ほど
-   * 寄らなくても意味のある縮尺なので、そこまでは絞らない。
+   * **ズームで隠さない。** 路線のジオメトリ列は原寸で4.5MBあって全国を一度に
+   * 読むと起動時の転送量 (1.5MB) を超えるが、**引いたときは粗い段 (`lod = 0`) を
+   * 引く**ので全国597本・329KBで足りる。
+   *
+   * **駅には段が無い。** 点に近い短い線なので簡略化しても縮まない。
+   * 表示範囲で絞るだけで足りる (全国で2.2万件・821KB)。
    */
-  const RAILWAY_MIN_ZOOM = 10;
   /** 1回に描く上限。路線と駅の合計ではなく、それぞれに掛かる。 */
   const RAILWAY_LIMIT = 4000;
   let railwayToken = 0;
@@ -2832,10 +2997,6 @@ async function main() {
 
     if (!isLayerVisible('railway')) {
       await clear('');
-      return;
-    }
-    if (map.getZoom() < RAILWAY_MIN_ZOOM) {
-      await clear(`ズーム${RAILWAY_MIN_ZOOM}まで寄ると出ます`);
       return;
     }
 
@@ -2866,6 +3027,8 @@ async function main() {
               bounds,
               railwayInstitutionTypes.length > 0 ? selectedTypes : null,
               RAILWAY_LIMIT,
+              // 駅には段が無いので、そちらは undefined が返って条件が付かない。
+              lodForZoom(source, map.getZoom()),
             ),
           };
         }),
@@ -2902,18 +3065,21 @@ async function main() {
       return;
     }
     const capped = lines.length >= RAILWAY_LIMIT || stations.length >= RAILWAY_LIMIT;
+    const lineSourceInfo = railwaySources.find((source) => source.kind === 'railway');
     railwaySummaryEl.textContent =
       `路線 ${lines.length.toLocaleString()} / 駅 ${stations.length.toLocaleString()}` +
+      (lineSourceInfo ? lodNote(lineSourceInfo, lodForZoom(lineSourceInfo, map.getZoom())) : '') +
       (capped ? ' (上限に達しました。拡大すると全部出ます)' : '');
   };
 
   /**
    * 道路を引き直す。
    *
-   * **鉄道より寄らせる。** 幹線だけで65.6万区間あり、鉄道 (3万区間) の20倍ある。
-   * 同じズームで出すと引いた画面が線で埋まって何も読めない。
+   * **ズームで隠さない。** 幹線だけで65.6万区間あり、原寸を引いた画面に出すと
+   * 9.4MB転送になって線で埋まるが、**引いたときは粗い段 (`lod = 0`) を引く**ので
+   * 全国でも高速1,360本・483KBで足りる。どのズームでどちらを引くかは
+   * [`lodForZoom`] がデータの許容誤差から決める。
    */
-  const ROAD_MIN_ZOOM = 12;
   /** 1回に描く上限。 */
   const ROAD_LIMIT = 6000;
   let roadToken = 0;
@@ -2935,15 +3101,12 @@ async function main() {
       await clear('');
       return;
     }
-    if (map.getZoom() < ROAD_MIN_ZOOM) {
-      await clear(`ズーム${ROAD_MIN_ZOOM}まで寄ると出ます`);
-      return;
-    }
 
     const selectedClasses = [...roadClassInputs]
       .filter((input) => input.checked)
       .map((input) => input.value);
 
+    const lod = lodForZoom(roadSource, map.getZoom());
     const token = ++roadToken;
     const features = await busy('道路を読み込み中…', async () => {
       await roadSource.ensure();
@@ -2962,6 +3125,7 @@ async function main() {
         },
         selectedClasses,
         ROAD_LIMIT,
+        lod,
       );
     });
     if (token !== roadToken) return;
@@ -2992,7 +3156,8 @@ async function main() {
     }
     const capped = features.length >= ROAD_LIMIT;
     roadSummaryEl.textContent =
-      `${features.length.toLocaleString()} 区間` +
+      `${features.length.toLocaleString()} ${lod === COARSE_LOD ? '本' : '区間'}` +
+      lodNote(roadSource, lod) +
       (capped ? ' (上限に達しました。拡大すると全部出ます)' : '');
   };
 
@@ -3152,7 +3317,8 @@ async function main() {
       vintage: railwayVintage,
       bbox: unionBbox(railwayCollections.map((c) => c.bbox).filter((b): b is Bbox => b !== null)),
       visible: false,
-      minZoom: RAILWAY_MIN_ZOOM,
+      // **「寄る」ボタンを出さない。** 引いた表示でも粗い段が出るので、
+      // 寄らないと見えないものが無い。
       settings: railwaySectionEl,
       refresh: requestRailwayRefresh,
     });
@@ -3167,7 +3333,7 @@ async function main() {
       vintage: roadVintage,
       bbox: roadSource.bbox,
       visible: false,
-      minZoom: ROAD_MIN_ZOOM,
+      // 鉄道と同じく「寄る」ボタンは出さない。
       settings: roadSectionEl,
       refresh: requestRoadRefresh,
     });
@@ -3438,13 +3604,16 @@ async function main() {
 
     // 建物は一部の範囲しか収録していないうえ、寄らないと出てこない。
     // 偶然そこへ行かないと機能に気づけないので、移動する手段を出しておく。
-    const bbox = unionBbox(
-      buildingSources.map((s) => s.bbox).filter((b): b is Bbox => b !== null),
-    );
-    if (bbox) {
-      const [west, south, east, north] = bbox;
+    //
+    // **選んでいる出所の範囲へ飛ぶ。** 出所全部の和にすると、収録範囲の広さが
+    // 違うときに外れる — PLATEAUを306都市に広げたら和は日本全体になり、
+    // その中心 (岡山付近) にはOvertureの建物が1棟も無かった。
+    if (buildingSources.some((source) => source.bbox)) {
       gotoBuildingsButton.hidden = false;
       gotoBuildingsButton.addEventListener('click', () => {
+        const bbox = activeSource?.bbox;
+        if (!bbox) return;
+        const [west, south, east, north] = bbox;
         // flyTo に1.5秒かかり、その後の moveend まで refreshBuildings は始まらない。
         // 押した感触が無いと二度押しされるので、移動そのものを合図の対象にする。
         // 続けて refreshBuildings 側の合図が立つので、表示は途切れない。

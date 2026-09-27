@@ -591,7 +591,7 @@ mod tests {
         let key = "duck:coarse_lod_tolerance_m";
 
         // 揃っている。
-        let documents = build(&vec![
+        let documents = build(&[
             with_level("estat/a.parquet", Some(100.0)),
             with_level("estat/b.parquet", Some(100.0)),
         ])
@@ -599,7 +599,7 @@ mod tests {
         assert_eq!(find(&documents, "estat/estat-mesh-pop.json")[key], 100.0);
 
         // 片方に無い。**出さない。**
-        let documents = build(&vec![
+        let documents = build(&[
             with_level("estat/a.parquet", Some(100.0)),
             with_level("estat/b.parquet", None),
         ])
@@ -608,7 +608,7 @@ mod tests {
 
         // 誤差が揃っていない。片方を代表値にすると、粗い方で細かいズームまで
         // 使ってしまう。**出さない。**
-        let documents = build(&vec![
+        let documents = build(&[
             with_level("estat/a.parquet", Some(100.0)),
             with_level("estat/b.parquet", Some(500.0)),
         ])
