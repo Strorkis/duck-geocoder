@@ -17,6 +17,18 @@ interface StacLink {
 }
 
 /**
+ * Item ID → 配信の起点からのパス。**worker内で使い回す。**
+ *
+ * カタログを歩くのは毎回同じ道のりで、**結果はページに依存しない**。
+ * 測ると1回で15〜25往復・最大734KB (PLATEAUのItemCollectionが595KBある) で、
+ * これをテストごとに払っていた。1件あたり約0.4〜0.6秒。
+ *
+ * `null` は「カタログに無い」。走っている間にカタログは変わらないので、
+ * 無かったことも覚えてよい。
+ */
+const datasetPaths = new Map<string, string | null>();
+
+/**
  * データセットのURLを**STACを辿って**引く。
  *
  * 配信時のパスはItemのアセットが持っている (出所ごとにディレクトリを
@@ -27,13 +39,29 @@ interface StacLink {
  * 200で返すので、HEADの成否だけでは「配信されているか」を判定できない。
  */
 async function datasetUrl(page: Page, id: string): Promise<string | null> {
+  if (!datasetPaths.has(id)) await walkCatalog(page, id);
+  const path = datasetPaths.get(id) ?? null;
+  return path === null ? null : resolveDataUrl(page, path);
+}
+
+/**
+ * 目的のIDが見つかるまでカタログを歩き、**道中で見たItemをすべて覚える**。
+ *
+ * 探しているものだけを覚えると、次に別のIDを聞かれたときにまた歩き直すことに
+ * なる。1つのItemCollectionには同じ出所のファイルがまとめて入っているので、
+ * ついでに入れておくと以降の問い合わせがほぼ通信なしで済む。
+ */
+async function walkCatalog(page: Page, id: string): Promise<void> {
   const fetchJson = async <T>(path: string): Promise<T | null> => {
     const response = await page.request.get(await resolveDataUrl(page, path));
     return response.ok() ? ((await response.json()) as T) : null;
   };
 
   const catalog = await fetchJson<{ links: StacLink[] }>('catalog.json');
-  if (!catalog) return null;
+  if (!catalog) {
+    datasetPaths.set(id, null);
+    return;
+  }
 
   for (const child of catalog.links.filter((link) => link.rel === 'child')) {
     const collectionPath = resolveHref(child.href, 'catalog.json');
@@ -44,10 +72,13 @@ async function datasetUrl(page: Page, id: string): Promise<string | null> {
     const items = await fetchJson<{
       features: { id: string; assets: { data: { href: string } } }[];
     }>(itemsPath);
-    const item = items?.features.find((feature) => feature.id === id);
-    if (item) return resolveDataUrl(page, resolveHref(item.assets.data.href, itemsPath));
+    for (const feature of items?.features ?? []) {
+      datasetPaths.set(feature.id, resolveHref(feature.assets.data.href, itemsPath));
+    }
+    if (datasetPaths.has(id)) return;
   }
-  return null;
+  // 全部歩いても無かった。**覚えておく** — 無いことの確認も毎回歩くと高くつく。
+  datasetPaths.set(id, null);
 }
 
 /**
