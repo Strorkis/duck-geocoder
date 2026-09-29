@@ -968,6 +968,93 @@ test('整備範囲は引くほど粗いメッシュになる', async ({ page }) 
 });
 
 /**
+ * **束ねたセルは「埋まり具合」を持つ。**
+ *
+ * 1つでも子があれば塗る形だと、日本全体が見えるまで引いたときにほぼ全国が
+ * 埋まって見える。実測では10kmメッシュ939個の平均充足率は38%で、
+ * 満杯なのは36個しかない (159個は5セル以下)。
+ *
+ * **塗りの濃さは測れない**ので (MapLibreの解決後の値は取り出せない)、
+ * ソースの `ratio` が実際に散らばっていることで確かめる。
+ */
+test('束ねた整備範囲は埋まり具合で濃淡が付く', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  const ratios = async (zoom: number, size: string, center: [number, number]) => {
+    await page.evaluate(
+      ([z, lon, lat]) => {
+        const map = (window as unknown as TestWindow).__map!;
+        map.jumpTo({ center: [lon, lat], zoom: z });
+      },
+      [zoom, center[0], center[1]] as const,
+    );
+    // 件数ではなく粒度の表示で待つ (前のズームのセルが残っているため)。
+    await expect(page.locator('#building-count')).toContainText(size);
+    return page.evaluate(async () => {
+      const map = (window as unknown as TestWindow).__map!;
+      const source = map.getSource('buildings-coverage') as GeoJSONSource;
+      const data = await source.getData();
+      if (data.type !== 'FeatureCollection') return [];
+      return data.features.map((f) => f.properties as { ratio: number; filled: number; total: number });
+    });
+  };
+
+  // **本州の中ほどを広く映す。** 東京だけを見ていると満杯のセルしか拾えない。
+  const coarse = await ratios(7, '10km', [137.0, 36.5]);
+  expect(coarse.length, 'セルが取れていない').toBeGreaterThan(0);
+
+  // 10kmメッシュの上限は1kmセル100個。
+  expect(coarse.every((c) => c.total === 100)).toBe(true);
+  expect(coarse.every((c) => c.filled >= 1 && c.filled <= c.total)).toBe(true);
+
+  // **満杯ではないセルが実在すること。** ここが本題 — 全部1.0なら濃淡に意味がない。
+  expect(coarse.some((c) => c.ratio < 1)).toBe(true);
+  // 一様でないこと。最小と最大が離れていることで見る。
+  const values = coarse.map((c) => c.ratio);
+  expect(Math.max(...values) - Math.min(...values)).toBeGreaterThan(0.2);
+
+  // **濃淡を数で裏付ける。** 色だけでは「薄い」が読み取れないので、
+  // 束ねているときはホバーに「N / 100」が出る。
+  //
+  // **固定のピクセルを指さない。** 10kmに束ねると画面内のどこにセルがあるかは
+  // 中心の緯度経度で変わり、決め打ちだと空振りする。しかも左下のパネルが
+  // 地図をかなり覆っていて、その上を指すとパネルがイベントを取ってしまう
+  // (最初この2つで落ちた)。**キャンバスが実際に受け取れる点**を探す。
+  const point = await page.evaluate(async () => {
+    const map = (window as unknown as TestWindow).__map!;
+    const source = map.getSource('buildings-coverage') as GeoJSONSource;
+    const data = await source.getData();
+    if (data.type !== 'FeatureCollection') return null;
+    const canvas = map.getCanvas();
+    const rect = canvas.getBoundingClientRect();
+    for (const feature of data.features) {
+      const ring = (feature.geometry as GeoJSON.Polygon).coordinates[0];
+      const at = map.project([(ring[0][0] + ring[2][0]) / 2, (ring[0][1] + ring[2][1]) / 2]);
+      // 縁ぎりぎりだと隣のセルに乗るので、余白を取った内側だけを使う。
+      const inside =
+        at.x > 40 && at.y > 40 && at.x < canvas.clientWidth - 40 && at.y < canvas.clientHeight - 40;
+      if (!inside) continue;
+      // パネルや検索欄に覆われていないこと。覆われているとhoverが届かない。
+      if (document.elementFromPoint(rect.left + at.x, rect.top + at.y) !== canvas) continue;
+      return { x: Math.round(at.x), y: Math.round(at.y) };
+    }
+    return null;
+  });
+  expect(point, '画面に出ていて、かつ覆われていないセルが無い').not.toBeNull();
+
+  await page.locator('#map canvas').hover({ position: point! });
+  await expect(page.locator('.hover-info')).toContainText('データのある1kmセル');
+  await expect(page.locator('.hover-info')).toContainText(/\d+ \/ 100 \(\d+%\)/);
+
+  // 1kmで見ているときは束ねていないので、必ず1/1になる。
+  // **東京に寄る。** さきほどの中心 (山間部) はそもそも整備されていないので、
+  // そのまま寄ると0件になる — それ自体がこの機能の存在理由でもある。
+  const fine = await ratios(12, '1km', [139.7671, 35.6812]);
+  expect(fine.length).toBeGreaterThan(0);
+  expect(fine.every((c) => c.total === 1 && c.filled === 1)).toBe(true);
+});
+
+/**
  * カタログを空間索引として使っていることを、通信で確かめる。
  *
  * 建物は都市ごとに1ファイルで、PLATEAUを全国に広げると300を超える。

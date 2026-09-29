@@ -386,26 +386,52 @@ function once(run: () => Promise<void>): () => Promise<void> {
 
 /** 範囲を、地図に描ける矩形のポリゴンにする。 */
 /**
+ * この桁のメッシュ1つに入る1kmセルの数。
+ *
+ * JIS X 0410 は 4桁 (80km) → 6桁 (10km) → 8桁 (1km) で、
+ * 4→6 は緯度経度それぞれ8分割 (8×8)、6→8 は10分割 (10×10)。
+ */
+function meshCellCapacity(digits: number): number {
+  if (digits >= 8) return 1;
+  if (digits === 6) return 100;
+  if (digits === 4) return 64 * 100;
+  throw new Error(`想定していないメッシュの桁数: ${digits}`);
+}
+
+/**
  * 整備範囲のメッシュをGeoJSONにする。
  *
  * **矩形はメッシュコードから計算する** (人口メッシュと同じ)。配られた
  * ジオメトリを使わないのは、コードを前から切って束ねたあとの大きさで
  * 描きたいため。
  *
- * **濃淡は付けない。** 建物の数で濃くすると人口密集部が濃くなるだけで、
- * 「整備されているか」とは別のものを見せてしまう。ここで見せたいのは
- * **入っているかどうか**なので、一様に塗る。
+ * **濃淡は充足率で付ける。** 建物の数で濃くすると人口密集部が濃くなるだけで、
+ * 「整備されているか」とは別のものを見せてしまう。代わりに
+ * **束ねたセルのうち何割にデータがあるか**で塗る。1つでも子があれば塗る形だと、
+ * 日本全体が見えるまで引いたときにほぼ全国が埋まって見えてしまうため。
+ *
+ * **沿岸のセルは決して100%にならない** — 海の子セルは元々データを持てない。
+ * つまりこれは「整備率」ではなく**このセルの面積のうちデータがある割合**。
  */
 function coverageFeatureCollection(cells: CoverageCell[]): GeoJSON.FeatureCollection {
   return {
     type: 'FeatureCollection',
-    features: cells.map(({ code, buildings, cities }) => {
+    features: cells.map(({ code, buildings, filled, cities }) => {
       const [west, south, east, north] = meshBounds(code);
+      const total = meshCellCapacity(code.length);
       return {
         type: 'Feature',
         // **メッシュだと分かる印を持たせる。** 収録範囲の枠も同じソースを
         // 使い回しているので、描き分けと当たり判定をこれで見分ける。
-        properties: { mesh: true, code, buildings, cities: cities.join('、') },
+        properties: {
+          mesh: true,
+          code,
+          buildings,
+          filled,
+          total,
+          ratio: filled / total,
+          cities: cities.join('、'),
+        },
         geometry: {
           type: 'Polygon',
           coordinates: [
@@ -1478,6 +1504,12 @@ interface CoverageCell {
   /** このセルの中にある建物の数。 */
   buildings: number;
   /**
+   * **データのある1kmセルの数。** 配られているのは常に8桁 (1km) なので、
+   * 束ねたときにいくつ集まったかがそのまま「どれだけ埋まっているか」になる。
+   * 8桁で見ているときは必ず1。
+   */
+  filled: number;
+  /**
    * このセルにかかる自治体。**1つに潰さない** — メッシュは境界をまたぐので、
    * 全国35,645セルのうち約10%が複数にかかる (最大4つ)。
    * 束ねて粗くすると当然もっと増える。
@@ -1505,6 +1537,9 @@ async function fetchCoverageInView(
     SELECT
       substr(mesh_code, 1, ${digits}) AS code,
       sum(buildings) AS buildings,
+      -- **束ねた1kmセルの数。** 行は1kmセルにつき1つしか無いので、
+      -- これが「このセルのうちどれだけ埋まっているか」の分子になる。
+      count(*) AS filled,
       -- 束ねると自治体も混ざる。**並べて重複を落とす**ので、
       -- 同じ顔ぶれなら並びも同じになる。
       list_sort(list_distinct(flatten(list(cities)))) AS cities
@@ -1517,11 +1552,13 @@ async function fetchCoverageInView(
     const r = row.toJSON() as unknown as {
       code: string;
       buildings: number | bigint;
+      filled: number | bigint;
       cities: unknown;
     };
     return {
       code: r.code,
       buildings: Number(r.buildings),
+      filled: Number(r.filled),
       // リスト列はArrowのVectorで返るので、素の配列に均す。
       cities: Array.from((r.cities ?? []) as ArrayLike<unknown>, String),
     };
@@ -2330,9 +2367,20 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
         source: 'buildings-coverage',
         paint: {
           'fill-color': '#4a6785',
-          // **一様に塗る。** 建物の数で濃淡を付けると人口密集部が濃くなるだけで、
-          // 「整備されているか」とは別のものを見せてしまう。
-          'fill-opacity': ['case', ['has', 'mesh'], 0.22, 0.08],
+          // **充足率で濃淡を付ける。** 建物の数で濃くすると人口密集部が濃くなる
+          // だけなので使わない。束ねた1kmセルのうち何割にデータがあるかで塗る。
+          //
+          // **低い側を広く取り、底を上げる。** 直線の傾斜にすると、80kmメッシュで
+          // 数セルしか無いところ (6400分の数) が事実上見えなくなる。実測では
+          // 80kmの平均充足率は7.2%しかないので、そこが消えると意味が逆転する。
+          // 「少しはある」と「全く無い」は別物なので、**描かれる限り必ず見える**
+          // 0.12を下限にする。8桁 (1km) では必ず1なので一様に塗られる。
+          'fill-opacity': [
+            'case',
+            ['has', 'mesh'],
+            ['interpolate', ['linear'], ['get', 'ratio'], 0, 0.12, 0.05, 0.18, 0.25, 0.26, 1, 0.36],
+            0.08,
+          ],
         },
       });
       map.addLayer({
@@ -3895,7 +3943,7 @@ async function main() {
     });
 
     // 整備範囲のメッシュ。**どのメッシュか、どの自治体かが読めること。**
-    // 塗りに濃淡を付けていないので、中身はここでしか分からない。
+    // 塗りの濃さは埋まり具合しか表さないので、中身はここでしか分からない。
     //
     // 道路と同じく、**同じセルの上を動いている間は作り直さない**
     // (セルは1km四方あるので滅多に変わらないが、境目でちらつく)。
@@ -3918,6 +3966,8 @@ async function main() {
       hoveredCell = code;
 
       const cities = (cell.properties.cities as string) || '(不明)';
+      const filled = cell.properties.filled as number;
+      const total = cell.properties.total as number;
       hoverPopup.setDOMContent(
         hoverContent([
           ['', `${MESH_SIZE_LABELS[code.length] ?? `${code.length}桁`}メッシュ`],
@@ -3925,6 +3975,16 @@ async function main() {
           // **束ねると自治体が増える。** 80kmまで引くと何十も並ぶので、
           // 多いときは数だけにする (全部出すとポップアップが画面を覆う)。
           ['自治体', cities.split('、').length > 6 ? `${cities.split('、').length} 市区町村` : cities],
+          // **濃淡を数で裏付ける。** 色だけだと「薄い」が読み取れない。
+          // 1kmで見ているときは必ず1/1なので出さない。
+          ...(total > 1
+            ? ([
+                [
+                  'データのある1kmセル',
+                  `${filled.toLocaleString()} / ${total.toLocaleString()} (${Math.round((filled / total) * 100)}%)`,
+                ],
+              ] as [string, string][])
+            : []),
           ['建物', `${(cell.properties.buildings as number).toLocaleString()} 棟`],
         ]),
       );
