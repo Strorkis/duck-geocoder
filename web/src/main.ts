@@ -1716,6 +1716,34 @@ async function fetchCoverageInView(
   });
 }
 
+/**
+ * 表示範囲に整備範囲のセルが**1つでも**あるか。一覧の「この範囲には無い」の判定に使う。
+ *
+ * Collectionの収録範囲 (bbox) だけで決めると、PLATEAUは306都市の和が日本を
+ * ほぼ覆う箱になり、山の中でも「ある」と出る。整備範囲は1kmのセルで持っているので、
+ * そちらに聞けば**建物が1棟でもあるところだけ**を「ある」と言える。
+ *
+ * **1行見つかれば止める** (`LIMIT 1`)。セルを数えたり束ねたりしないので、
+ * 描くための問い合わせ (`fetchCoverageInView`) より軽い。bboxの列の統計で
+ * 行グループごと読み飛ばすので、当たらない場所ではほとんど読まない。
+ */
+async function coverageInView(
+  conn: duckdb.AsyncDuckDBConnection,
+  coverage: BuildingCoverage,
+  bounds: ViewBounds,
+): Promise<boolean> {
+  const files = filesInView(coverage, bounds);
+  if (files.length === 0) return false;
+  const list = files.map((file) => `'${file}'`).join(', ');
+  const result = await conn.query(`
+    SELECT 1 FROM read_parquet([${list}])
+    WHERE bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}
+      AND bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}
+    LIMIT 1;
+  `);
+  return result.numRows > 0;
+}
+
 async function fetchBuildingsInView(
   conn: duckdb.AsyncDuckDBConnection,
   source: BuildingSource,
@@ -3757,6 +3785,11 @@ async function main() {
     /** 共有している設定パネルを、この行に向ける。 */
     onOpen?: () => void;
     refresh: () => void;
+    /**
+     * 整備範囲。**あればこれで「この範囲にあるか」を決める** (箱より正確)。
+     * 建物のうちメッシュを持つ出所 (PLATEAU) だけ。
+     */
+    coverage?: BuildingCoverage;
   }
 
   const byKind = (kind: DatasetKind) => collections.filter((c) => c.kind === kind);
@@ -3796,6 +3829,7 @@ async function main() {
           settings: buildingsSection,
           onOpen: () => pointBuildingSettings(source),
           refresh: requestRefresh,
+          coverage: source.coverage,
         });
         break;
       }
@@ -4075,12 +4109,62 @@ async function main() {
     return row;
   };
 
+  /**
+   * 整備範囲で確かめた「この範囲にあるか」。行ID → 答え。
+   *
+   * **表示範囲が変わっても消さず、新しい答えが来たら上書きする。** 消すと
+   * 答えが来るまでの間は箱で判定することになり、山の中でPLATEAUが
+   * 「ある」→「無い」と動かすたびにちらつく。少し動かしただけなら、
+   * 前の答えはたいてい正しい。
+   */
+  const presence = new Map<string, boolean>();
+  let presenceToken = 0;
+
+  /**
+   * 箱 (Collectionの収録範囲) の外なら確実に無い。箱の内側なら、整備範囲の
+   * 答えがあればそれに従う。**箱だけだと粗い** — PLATEAUは306都市の和が
+   * 日本をほぼ覆うので、箱だけでは山の中でも「ある」と出る。
+   */
+  const isPresent = (layer: Layer) => coversView(layer.bbox) && (presence.get(layer.id) ?? true);
+
   const renderLayerList = () => {
-    const present = layers.filter((layer) => coversView(layer.bbox));
-    const absent = layers.filter((layer) => !coversView(layer.bbox));
+    const present = layers.filter(isPresent);
+    const absent = layers.filter((layer) => !isPresent(layer));
     layerRowsEl.replaceChildren(...withHeadings(present, true));
     layerAbsentRowsEl.replaceChildren(...withHeadings(absent, false));
     layerAbsentEl.hidden = absent.length === 0;
+  };
+
+  /** 整備範囲を持つ行について、表示範囲にセルがあるかを聞き直す。 */
+  const refreshPresence = async () => {
+    const token = ++presenceToken;
+    const b = map.getBounds();
+    const c = map.getCenter();
+    const bounds: ViewBounds = {
+      west: b.getWest(),
+      south: b.getSouth(),
+      east: b.getEast(),
+      north: b.getNorth(),
+      centerLon: c.lng,
+      centerLat: c.lat,
+    };
+    for (const layer of layers) {
+      // 箱の外なら聞くまでもない。**読みに行かない。**
+      if (!layer.coverage || !coversView(layer.bbox)) continue;
+      await layer.coverage.ensure();
+      const inView = await coverageInView(conn, layer.coverage, bounds);
+      // 答えを待つ間に地図が動いていたら捨てる (次の問い合わせが上書きする)。
+      if (token !== presenceToken) return;
+      presence.set(layer.id, inView);
+    }
+    renderLayerList();
+  };
+
+  const requestPresence = () => {
+    refreshPresence().catch((e: unknown) => {
+      // 判定が失敗しても一覧は箱で出ている。**描画は止めない。**
+      console.error('[layers] presence failed', e);
+    });
   };
 
   // 人口メッシュと道路はパネルと行が1対1なので、パネルの要約をそのまま写す。
@@ -4088,11 +4172,14 @@ async function main() {
   if (roadSource) mirrorStatus(roadSource.id, roadSummaryEl);
 
   if (layers.length > 0) {
+    // **まず箱で描き、整備範囲の答えが来たら描き直す。** `moveend` ごとに走るので、
+    // 答えを待たせて一覧が空になる時間を作らない。
     renderLayerList();
-    // 収録範囲はCollectionのbbox (=ファイルの和) なので**粗い**。PLATEAUを全国に
-    // 広げると「日本全体」になり、306都市の外でも「ある」と出る。正確な範囲は
-    // Itemが持っていて、レイヤーをONにすると `ensure()` が読んで `filesInView` が絞る。
-    map.on('moveend', renderLayerList);
+    requestPresence();
+    map.on('moveend', () => {
+      renderLayerList();
+      requestPresence();
+    });
   }
 
   // ---- 表示量 ---------------------------------------------------------------

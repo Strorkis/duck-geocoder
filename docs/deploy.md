@@ -170,7 +170,8 @@ JSONは31ファイル・合計1MB弱なので、毎回全部上げても安い�
 
 ```sh
 # 1. catalog.json 以外のJSONを上げる (大きさで比べない)
-rclone copy data/output "$R2" --include '*.json' --exclude '/catalog.json' -P
+rclone copy data/output "$R2" \
+  --filter '- /catalog.json' --filter '+ *.json' --filter '- **' -P
 
 # 2. parquetを上げる (大きさで比べる。3.7GBを上げ直さないため)
 rclone copy data/output "$R2" --include '*.parquet' --size-only -P
@@ -182,8 +183,22 @@ rclone copy data/output/catalog.json "$R2" -P
 git push
 ```
 
-`--exclude '/catalog.json'` の先頭の `/` は**ルートのものだけ**を外す指定。
-付けないとサブカタログ (`plateau/catalog.json` など) まで外れてしまう。
+**1は `--filter` で書く。** `--include` と `--exclude` を混ぜると、rclone自身が
+「解釈の順が不定」と警告する。`--filter` は**上から順に最初に当たった規則**が効く。
+
+- `- /catalog.json` — 先頭の `/` で**ルートのものだけ**を外す。付けないと
+  サブカタログ (`plateau/catalog.json` など) まで外れる
+- `+ *.json` — 残りのJSON (サブカタログ5・Collection 13・ItemCollection 13)
+- `- **` — それ以外 (parquet) は外す
+
+選ばれるファイルは、**上げる前に手元で確かめられる** (`lsf` はリモートに触れない。
+暗号化した設定のパスワードを聞かれないよう、空の設定を渡す)。
+
+```sh
+rclone --config /dev/null lsf -R data/output --files-only \
+  --filter '- /catalog.json' --filter '+ *.json' --filter '- **'
+# 31行。ルートの catalog.json が無く、*/catalog.json が5つあること
+```
 
 **`rclone` はループで回さない。** 設定を暗号化していると**起動ごとに
 パスワードを聞かれる**ので、出所ごとに5回回すと5回打つことになる。

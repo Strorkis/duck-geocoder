@@ -1922,6 +1922,37 @@ test('収録範囲の外では「この範囲には無い」に移る', async ({
 });
 
 /**
+ * **整備範囲を持つ出所は、メッシュで「この範囲にあるか」を決める。**
+ *
+ * Collectionの収録範囲 (bbox) だけで決めると、PLATEAUは306都市の和が日本を
+ * ほぼ覆う箱になり、山の中でも「ある」と出る。上のテストが三陸沖まで
+ * 出ないと「無い」を確かめられなかったのはそのため。
+ *
+ * ここは飛騨の山中 (白山の東)。**箱の内側だが、ズーム12の画面に整備範囲の
+ * セルが1つも無い** (実測。北アルプスは山小屋や集落で460セルあって使えなかった)。
+ */
+test('整備範囲の外では、収録範囲の箱の内側でも「この範囲には無い」に移る', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  const jump = (center: [number, number]) =>
+    page.evaluate((c) => {
+      (window as unknown as TestWindow).__map!.jumpTo({ center: c, zoom: 12 });
+    }, center);
+
+  // 港区。整備範囲の内側。
+  await jump([139.7454, 35.6586]);
+  await expect(page.locator(`#layer-rows [data-layer="${LAYER.plateauBuildings}"]`)).toBeVisible();
+
+  // 飛騨の山中。箱の内側なので、箱だけで決めると「ある」のまま。
+  await jump([137.0, 36.0]);
+  await expect(page.locator(`#layer-absent [data-layer="${LAYER.plateauBuildings}"]`)).toBeVisible();
+
+  // 戻れば「ある」に戻る。**答えは表示範囲ごとに聞き直す。**
+  await jump([139.7454, 35.6586]);
+  await expect(page.locator(`#layer-rows [data-layer="${LAYER.plateauBuildings}"]`)).toBeVisible();
+});
+
+/**
  * **出ない理由は一覧のまま読めること。**
  *
  * 要約 (`#building-count` など) は設定の中にあるので、そこだけに出すと
