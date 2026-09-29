@@ -72,10 +72,15 @@
 ### カタログは STAC 1.1.0
 
 配信するデータの目録は [STAC](https://github.com/radiantearth/stac-spec) で書いている。
-`catalog.json` (Catalog) → `<collection>.json` (Collection) →
-`<collection>-items.json` (ItemCollection) の3階層で、**すべて配信の起点に平置き**。
-リンクはその文書からの相対として解決されるため。
+`catalog.json` (Catalog) → `<出所>/catalog.json` (サブカタログ) →
+`<出所>/<collection>.json` (Collection) → `<出所>/<collection>-items.json`
+(ItemCollection) の4階層。**JSONは実データと同じ出所ごとのディレクトリに置き**、
+ルートは `catalog.json` 1つだけ。リンクは**その文書からの相対**として解決する。
 
+- **出所のまとまりはサブカタログで表す。** UIの一覧の見出しはここから来る
+  (画面を読むことがカタログを歩くことになるように)。`providers[].name` は組織名で、
+  PLATEAUも国土数値情報も「国土交通省」にまとまってしまうので使えない。
+  題名は `pipeline/src/stac.rs` の `SUB_CATALOGS` にしか書かない
 - **Collectionはファイル数で増やさない。** 空間範囲は全体の1件だけにして、
   ファイルごとの範囲はItemに置く。Collectionは起動時に読むので小さく保つ
 - **Itemは1件1ファイルにしない。** 350ファイルを超えるので、

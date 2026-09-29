@@ -57,28 +57,37 @@ async function walkCatalog(page: Page, id: string): Promise<void> {
     return response.ok() ? ((await response.json()) as T) : null;
   };
 
-  const catalog = await fetchJson<{ links: StacLink[] }>('catalog.json');
-  if (!catalog) {
-    datasetPaths.set(id, null);
-    return;
-  }
+  /**
+   * 1つの文書の子を辿る。見つかったら true。
+   *
+   * **子がCatalog (サブカタログ) なら降りる。** アプリと同じ規則。ここを直し忘れると
+   * 全データが「無い」と判定され、テストが**失敗せずにスキップされる**。
+   */
+  const visit = async (path: string): Promise<boolean> => {
+    const document = await fetchJson<{ type?: string; links: StacLink[] }>(path);
+    if (!document) return false;
 
-  for (const child of catalog.links.filter((link) => link.rel === 'child')) {
-    const collectionPath = resolveHref(child.href, 'catalog.json');
-    const collection = await fetchJson<{ links: StacLink[] }>(collectionPath);
-    const itemsHref = collection?.links.find((link) => link.rel === 'items')?.href;
-    if (!itemsHref) continue;
-    const itemsPath = resolveHref(itemsHref, collectionPath);
+    if (document.type !== 'Collection') {
+      for (const child of document.links.filter((link) => link.rel === 'child')) {
+        if (await visit(resolveHref(child.href, path))) return true;
+      }
+      return false;
+    }
+
+    const itemsHref = document.links.find((link) => link.rel === 'items')?.href;
+    if (!itemsHref) return false;
+    const itemsPath = resolveHref(itemsHref, path);
     const items = await fetchJson<{
       features: { id: string; assets: { data: { href: string } } }[];
     }>(itemsPath);
     for (const feature of items?.features ?? []) {
       datasetPaths.set(feature.id, resolveHref(feature.assets.data.href, itemsPath));
     }
-    if (datasetPaths.has(id)) return;
-  }
-  // 全部歩いても無かった。**覚えておく** — 無いことの確認も毎回歩くと高くつく。
-  datasetPaths.set(id, null);
+    return datasetPaths.has(id);
+  };
+
+  // 全部歩いても無かったら**覚えておく** — 無いことの確認も毎回歩くと高くつく。
+  if (!(await visit('catalog.json'))) datasetPaths.set(id, null);
 }
 
 /**
@@ -105,7 +114,7 @@ async function hasPlateau(page: Page): Promise<boolean> {
 
 /** PLATEAUの建物が見える状態にする。PLATEAUは既定の出所なので選び直さない。 */
 async function showPlateauBuildings(page: Page) {
-  await openLayerSettings(page, 'buildings');
+  await openLayerSettings(page, LAYER.plateauBuildings);
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 16 });
@@ -183,6 +192,33 @@ async function setLayerVisible(page: Page, layer: string, visible: boolean) {
 
 const showLayer = (page: Page, layer: string) => setLayerVisible(page, layer, true);
 const hideLayer = (page: Page, layer: string) => setLayerVisible(page, layer, false);
+
+/**
+ * 一覧の行ID。**行はCollectionなので、Collection IDと同じ。**
+ *
+ * 地図のソースID (`'buildings'` `'railway'` など) とは別物。以前は行も
+ * 「建物」「鉄道」のように使う側のまとまりで、IDも手書きだった。
+ */
+const LAYER = {
+  plateauBuildings: 'plateau-buildings',
+  overtureBuildings: 'overture-buildings',
+  mesh: 'estat-mesh-pop',
+  railway: 'ksj-railway',
+  stations: 'ksj-railway-stations',
+  road: 'overture-roads',
+} as const;
+
+/**
+ * 建物をOvertureだけにして、その設定を開く。
+ *
+ * 以前は設定の中の選択欄で出所を切り替えていた。いまは一覧で出所ごとに
+ * 行が分かれているので、**PLATEAUを外してOvertureを入れる**。
+ */
+async function useOvertureBuildings(page: Page) {
+  await hideLayer(page, LAYER.plateauBuildings);
+  await showLayer(page, LAYER.overtureBuildings);
+  await openLayerSettings(page, LAYER.overtureBuildings);
+}
 
 /** 初期化 (DuckDB + 地図) の完了を待つ。 */
 async function waitForReady(page: Page) {
@@ -368,7 +404,9 @@ test('地図をクリックしても判定結果は消えない', async ({ page 
   // ポップアップの文字はポリゴンの取得より先に出る。揃うまで待ってから押す。
   await expect.poll(() => highlightFeatureCount(page)).toBe(1);
 
-  await page.locator('#map canvas').click({ position: { x: 200, y: 200 } });
+  // **地図の右側を押す。** 左側はデータの一覧が覆っていて、そこを押すとパネルに
+  // 取られる (一覧をカタログの階層にして縦に伸びたときに、(200, 200) が覆われた)。
+  await page.locator('#map canvas').click({ position: { x: 900, y: 400 } });
 
   await expect(page.locator('.result-popup .maplibregl-popup-content')).toBeVisible();
   expect(await highlightFeatureCount(page)).toBe(1);
@@ -559,7 +597,8 @@ test('できることは開かなくても分かる', async ({ page }) => {
   const panel = page.locator('#data-panel');
 
   // データは一覧にそのまま並ぶ。**開く操作すら要らない。**
-  for (const layer of ['建物', '人口密度']) {
+  // 行の名前はCollectionの題名 (カタログが名乗っているもの)。
+  for (const layer of ['建物', '人口メッシュ']) {
     await expect(panel.locator('.layer-row', { hasText: layer }).first()).toBeVisible();
   }
   // 背景地図もレイヤーの1つ。**たたまない** (selectが1つあるだけ)。
@@ -632,7 +671,7 @@ test('ボタンを押すと建物のある範囲へ移動する', async ({ page 
   const zoom = () => page.evaluate(() => (window as unknown as TestWindow).__map!.getZoom());
   expect(await zoom()).toBeLessThan(15);
 
-  await openLayerSettings(page, 'buildings');
+  await openLayerSettings(page, LAYER.plateauBuildings);
   await page.locator('#goto-buildings').click();
 
   await expect.poll(zoom).toBeGreaterThanOrEqual(15);
@@ -653,8 +692,7 @@ test('移動ボタンは選んでいる出所の範囲へ飛ぶ', async ({ page 
   test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
 
-  await openLayerSettings(page, 'buildings');
-  await page.locator('#building-source').selectOption({ label: 'Overture' });
+  await useOvertureBuildings(page);
   await page.locator('#goto-buildings').click();
 
   // 着いた先に実際に建物があること。**0件に着いたら意味が無い。**
@@ -671,7 +709,7 @@ test('建物を読み込んでいる間は合図が出る', async ({ page }) => 
 
   await expect(page.locator('#busy')).toBeHidden();
 
-  await openLayerSettings(page, 'buildings');
+  await openLayerSettings(page, LAYER.plateauBuildings);
   await page.locator('#goto-buildings').click();
   // flyTo に1.5秒かかるので、押した直後から出ていること。
   await expect(page.locator('#busy')).toBeVisible();
@@ -692,8 +730,7 @@ test('建物を読み込んでいる間は「寄ると出ます」と言わな�
 
   // **Overtureに切り替えて観察する。** PLATEAUは引いた表示でも全国の高い建物が
   // 出るのでこの文言が出ない。全国版を持たない出所ではまだ出る。
-  await openLayerSettings(page, 'buildings');
-  await page.locator('#building-source').selectOption({ label: 'Overture' });
+  await useOvertureBuildings(page);
 
   // **どこまで寄れば出るかを数字で言う。**文言は BUILDINGS_MIN_ZOOM から作られる。
   const zoomedOutMessage = /ズーム\d+まで寄ると出ます/;
@@ -1179,10 +1216,10 @@ test('建物はホバーで情報が出て、地図は動かない', async ({ pa
 test('絞り込みは列の有無で決まる', async ({ page }) => {
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
 
-  await expect(page.locator('[data-layer="buildings"]')).toBeVisible();
-  await openLayerSettings(page, 'buildings');
-  // 属性の揃っているPLATEAUが既定。
-  await expect(page.locator('#building-source')).toHaveValue(/plateau/);
+  await expect(page.locator(`[data-layer="${LAYER.plateauBuildings}"]`)).toBeVisible();
+  await openLayerSettings(page, LAYER.plateauBuildings);
+  // **どの出所の設定かは見出しで分かる。** パネルは出所の間で共有している。
+  await expect(page.locator('#layer-settings-title')).toContainText('PLATEAU');
   await expect(page.locator('#building-filters')).toBeVisible();
   await expect(page.locator('#height-field')).toBeVisible();
 
@@ -1191,7 +1228,8 @@ test('絞り込みは列の有無で決まる', async ({ page }) => {
   await expect.poll(() => page.locator('#usage-options label').count()).toBeGreaterThan(5);
 
   // Overtureも高さの列を持つので、高さでは絞れる。
-  await page.locator('#building-source').selectOption({ label: 'Overture' });
+  await useOvertureBuildings(page);
+  await expect(page.locator('#layer-settings-title')).toContainText('Overture');
   await expect(page.locator('#height-field')).toBeVisible();
 });
 
@@ -1225,8 +1263,7 @@ test('用途は一括で切り替えられる', async ({ page }) => {
 test('整備範囲を持たない出所は収録範囲を枠で出す', async ({ page }) => {
   test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
 
-  await openLayerSettings(page, 'buildings');
-  await page.locator('#building-source').selectOption({ label: 'Overture' });
+  await useOvertureBuildings(page);
   // **枠は既定で切ってある。** 見たい人だけが入れる。
   await page.locator('#coverage-toggle').check();
 
@@ -1317,9 +1354,9 @@ async function showPopulationMesh(page: Page, zoom = 13) {
     map.jumpTo({ center: [139.7454, 35.6586], zoom: z });
   }, zoom);
   // **チェックボックスは一覧にある。**設定を先に開くと一覧が隠れて押せない。
-  await showLayer(page, 'mesh');
+  await showLayer(page, LAYER.mesh);
   await expect.poll(() => sourceFeatureCount(page, 'population-mesh')).toBeGreaterThan(0);
-  await openLayerSettings(page, 'mesh');
+  await openLayerSettings(page, LAYER.mesh);
 }
 
 // 地上リスクの中心はSORAのiGRCで、その入力は人口密度。
@@ -1327,7 +1364,7 @@ async function showPopulationMesh(page: Page, zoom = 13) {
 test('人口密度は切り替えで出せる', async ({ page }) => {
   test.skip(!(await hasMesh(page)), '人口メッシュのデータが無い');
 
-  await expect(page.locator('[data-layer="mesh"]')).toBeVisible();
+  await expect(page.locator(`[data-layer="${LAYER.mesh}"]`)).toBeVisible();
   // 既定は消えている。チェックするまで読みにも行かない。
   expect(await sourceFeatureCount(page, 'population-mesh')).toBe(0);
 
@@ -1335,7 +1372,7 @@ test('人口密度は切り替えで出せる', async ({ page }) => {
   await expect(page.locator('#mesh-summary')).toContainText('人/km²');
 
   // 外せば消える。
-  await hideLayer(page, 'mesh');
+  await hideLayer(page, LAYER.mesh);
   await expect.poll(() => sourceFeatureCount(page, 'population-mesh')).toBe(0);
 });
 
@@ -1403,13 +1440,13 @@ test('メッシュを粗くしても最大密度は下がらない', async ({ pa
 test('メッシュのセルはすべて同じ大きさ', async ({ page }) => {
   test.skip(!(await hasMesh(page)), '人口メッシュのデータが無い');
 
-  await openLayerSettings(page, 'mesh');
+  await openLayerSettings(page, LAYER.mesh);
   for (const zoom of [15, 13, 11, 8]) {
     await page.evaluate((z) => {
       const map = (window as unknown as TestWindow).__map!;
       map.jumpTo({ center: [139.7454, 35.6586], zoom: z });
     }, zoom);
-    if (zoom === 15) await showLayer(page, 'mesh');
+    if (zoom === 15) await showLayer(page, LAYER.mesh);
     await expect.poll(() => sourceFeatureCount(page, 'population-mesh')).toBeGreaterThan(1);
 
     const sizes = await page.evaluate(async () => {
@@ -1457,8 +1494,8 @@ test('引いた表示では1kmの集約ファイルだけを読む', async ({ pa
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 8 });
   });
-  await openLayerSettings(page, 'mesh');
-  await showLayer(page, 'mesh');
+  await openLayerSettings(page, LAYER.mesh);
+  await showLayer(page, LAYER.mesh);
   await expect.poll(() => sourceFeatureCount(page, 'population-mesh')).toBeGreaterThan(0);
 
   expect(requested).toContain('mesh_pop_1km.parquet');
@@ -1477,8 +1514,8 @@ test('全国を俯瞰しても最大密度は残る', async ({ page }) => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [138.0, 37.0], zoom: 5 });
   });
-  await openLayerSettings(page, 'mesh');
-  await showLayer(page, 'mesh');
+  await openLayerSettings(page, LAYER.mesh);
+  await showLayer(page, LAYER.mesh);
   await expect(page.locator('#mesh-summary')).toContainText('80kmメッシュ');
 
   const text = (await page.locator('#mesh-summary').textContent()) ?? '';
@@ -1512,23 +1549,32 @@ async function showRailway(page: Page, zoom = 12) {
     map.jumpTo({ center: [139.7671, 35.6812], zoom: z }); // 東京駅
   }, zoom);
   // **チェックボックスは一覧にある。**設定を先に開くと一覧が隠れて押せない。
-  await showLayer(page, 'railway');
+  // 路線と駅は別のCollectionなので一覧でも別の行。両方入れる。
+  await showLayer(page, LAYER.railway);
+  await showLayer(page, LAYER.stations);
   await expect.poll(() => sourceFeatureCount(page, 'railway')).toBeGreaterThan(0);
-  await openLayerSettings(page, 'railway');
+  await openLayerSettings(page, LAYER.railway);
 }
 
 // 既定では出さない (建物を見に来た人の邪魔になる)。出せることが分かる形にする。
 test('鉄道は切り替えで出せる', async ({ page }) => {
   test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
 
-  await expect(page.locator('[data-layer="railway"]')).toBeVisible();
+  await expect(page.locator(`[data-layer="${LAYER.railway}"]`)).toBeVisible();
+  await expect(page.locator(`[data-layer="${LAYER.stations}"]`)).toBeVisible();
   // チェックするまで読みにも行かない。
   expect(await sourceFeatureCount(page, 'railway')).toBe(0);
 
   await showRailway(page);
   await expect(page.locator('#railway-summary')).toContainText('路線');
+  await expect.poll(() => sourceFeatureCount(page, 'railway-stations')).toBeGreaterThan(0);
 
-  await hideLayer(page, 'railway');
+  // **路線と駅は別々に切れる。** 以前は1行で常に一緒に出ていた。
+  await hideLayer(page, LAYER.stations);
+  await expect.poll(() => sourceFeatureCount(page, 'railway-stations')).toBe(0);
+  expect(await sourceFeatureCount(page, 'railway')).toBeGreaterThan(0);
+
+  await hideLayer(page, LAYER.railway);
   await expect.poll(() => sourceFeatureCount(page, 'railway')).toBe(0);
 });
 
@@ -1681,7 +1727,8 @@ test('引いた表示の転送量は粗い段のぶんで収まる', async ({ pa
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [138.0, 37.0], zoom: 5 });
   });
-  await showLayer(page, 'railway');
+  // 測っているのは路線のファイルだけなので、路線の行だけ入れる。
+  await showLayer(page, LAYER.railway);
   await expect.poll(() => sourceFeatureCount(page, 'railway')).toBeGreaterThan(0);
 
   console.log(`全国 (ズーム5) の鉄道の転送量: ${(fetchedBytes / 1024).toFixed(0)} KB`);
@@ -1741,10 +1788,9 @@ test('鉄道はホバーで路線名と事業者が出る', async ({ page }) => 
 test('収録範囲の枠は切り替えられる', async ({ page }) => {
   test.skip(!(await hasBuildings(page)), '建物データが無い');
 
-  await openLayerSettings(page, 'buildings');
   // **整備範囲のメッシュを持たない出所で見る。** PLATEAUはメッシュが出るので、
   // この切り替えの対象にならない。
-  await page.locator('#building-source').selectOption({ label: 'Overture' });
+  await useOvertureBuildings(page);
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 10 });
@@ -1761,18 +1807,65 @@ test('収録範囲の枠は切り替えられる', async ({ page }) => {
 });
 
 /**
- * データは**1行ずつの一覧**になっていて、種別ごとに節を積まない。
- * 節を積むとオープンデータが増えるだけ縦に伸び、頭打ちが無くなる。
+ * **一覧はカタログの階層そのもの。** サブカタログ (PLATEAU / Overture Maps …) が
+ * 見出しで、Collectionが行。以前は「建物」「道路」のように使う側のまとまりで
+ * 組んでいて、画面からカタログが見えなかった。
+ *
+ * 見出しを**カタログから読んで**突き合わせる。一覧側の文言を書き写すと、
+ * パイプラインで題名を変えたときに両方が揃って変わり、ずれを検出できない。
  */
-test('データはレイヤーの一覧に並ぶ', async ({ page }) => {
+test('一覧はカタログの階層で並ぶ', async ({ page }) => {
   await expect(page.locator('#layer-list')).toBeVisible();
   const rows = page.locator('#layer-rows .layer-row, #layer-absent-rows .layer-row');
   expect(await rows.count()).toBeGreaterThan(0);
 
-  // 行には出所が添えてある。どこのデータかが一覧のまま読める。
-  // **`#layer-rows` に絞る。** 「検索に使用」の行も同じクラスを持つうえ、
-  // 検索していない間は隠れているので、絞らないと隠れた行を掴む。
-  await expect(page.locator('#layer-rows .layer-row .layer-source').first()).toBeVisible();
+  // ルートの子 (サブカタログ) の題名。
+  const catalog = (await (
+    await page.request.get(await resolveDataUrl(page, 'catalog.json'))
+  ).json()) as { links: (StacLink & { title?: string })[] };
+  const groups = catalog.links.filter((l) => l.rel === 'child').map((l) => l.title);
+  expect(groups.length, 'サブカタログが無い (平らなカタログのまま?)').toBeGreaterThan(0);
+
+  // 見出しは**カタログの順に**、**カタログの題名で**並ぶ。行を持たない
+  // サブカタログ (位置参照情報は検索の裏方だけ) は見出しを出さない。
+  const headings = await page
+    .locator('#layer-rows .layer-group-title, #layer-absent-rows .layer-group-title')
+    .allTextContents();
+  expect(headings.length).toBeGreaterThan(0);
+  expect(groups).toEqual(expect.arrayContaining(headings));
+  expect(headings).toEqual(groups.filter((title) => headings.includes(title!)));
+
+  // **行IDはCollection ID。** 行とCollectionを同じ名前で呼ぶ。
+  await expect(page.locator(`[data-layer="${LAYER.plateauBuildings}"]`)).toBeVisible();
+});
+
+/**
+ * ⚙ を開くと、**その行がカタログのどこから来ているか**が出る。
+ *
+ * 絞り込みだけだと、行の裏にあるのがどのCollectionで、何ファイルあって、
+ * 元のJSONはどこかが画面から辿れない。
+ */
+test('設定を開くとCollectionの中身とJSONへのリンクが出る', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  await openLayerSettings(page, LAYER.plateauBuildings);
+  const card = page.locator(`.collection-card[data-collection="${LAYER.plateauBuildings}"]`);
+  await expect(card).toBeVisible();
+  await expect(card).toContainText(LAYER.plateauBuildings);
+
+  // **ファイル数はItemCollectionを開いたときに読む。** 起動時には読まない約束。
+  await expect(card.locator('.collection-item-count')).toHaveText(/^[\d,]+ 件$/);
+
+  // JSONへのリンクが、実際に配信されているCollection文書を指していること。
+  const href = await card.locator('.collection-head .json-link').getAttribute('href');
+  expect(href).toBeTruthy();
+  const collection = (await (await page.request.get(href!)).json()) as { id: string; type: string };
+  expect(collection.type).toBe('Collection');
+  expect(collection.id).toBe(LAYER.plateauBuildings);
+
+  // **整備範囲は建物の行の中に出る** (`duck:covers` で結ばれている)。行にはしない。
+  await expect(page.locator('.collection-card[data-collection="plateau-buildings-coverage"]')).toBeVisible();
+  await expect(page.locator('[data-layer="plateau-buildings-coverage"]')).toHaveCount(0);
 });
 
 /**
@@ -1791,7 +1884,7 @@ test('設定を開いてもパネルは画面に収まる', async ({ page }) => 
   const panel = page.locator('#data-panel');
   const viewport = page.viewportSize()!.height;
 
-  await openLayerSettings(page, 'buildings');
+  await openLayerSettings(page, LAYER.plateauBuildings);
   const opened = (await panel.boundingBox())!.height;
   expect(opened, `設定がはみ出している: ${opened}px / 画面 ${viewport}px`).toBeLessThan(viewport);
 
@@ -1816,7 +1909,7 @@ test('収録範囲の外では「この範囲には無い」に移る', async ({
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 14 }); // 港区
   });
-  await expect(page.locator('#layer-rows [data-layer="buildings"]')).toBeVisible();
+  await expect(page.locator(`#layer-rows [data-layer="${LAYER.plateauBuildings}"]`)).toBeVisible();
 
   // **収録範囲の外は日本の外まで出ないと無い。** PLATEAUを306都市に広げたので、
   // 札幌や大阪のような都市はもう収録されている。ここは三陸沖。
@@ -1824,7 +1917,7 @@ test('収録範囲の外では「この範囲には無い」に移る', async ({
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [150.0, 40.0], zoom: 14 });
   });
-  await expect(page.locator('#layer-absent [data-layer="buildings"]')).toBeVisible();
+  await expect(page.locator(`#layer-absent [data-layer="${LAYER.plateauBuildings}"]`)).toBeVisible();
   await expect(page.locator('#layer-absent')).toContainText('この範囲には無い');
 });
 
@@ -1845,17 +1938,18 @@ test('出ない理由が一覧に出て、寄る先が数字で分かる', async
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 12 });
   });
 
-  const status = page.locator('[data-layer-status="buildings"]');
+  // **状態は行ごと** (出所ごと)。建物はPLATEAUとOvertureで2行ある。
+  const status = (layer: string) => page.locator(`[data-layer-status="${layer}"]`);
 
   // **PLATEAUは引いた表示でも整備範囲が出るので、寄れとは言わない。**
-  await expect(status).not.toContainText('まで寄ると出ます');
-  await expect(status).toContainText('整備範囲');
+  await expect(status(LAYER.plateauBuildings)).not.toContainText('まで寄ると出ます');
+  await expect(status(LAYER.plateauBuildings)).toContainText('整備範囲');
 
-  // 全国版を持たない出所 (Overture) では今も出ない。**そのときは理由を言う。**
-  await openLayerSettings(page, 'buildings');
-  await page.locator('#building-source').selectOption({ label: 'Overture' });
-  await expect(status).toContainText('ズーム');
-  await expect(status).toContainText('まで寄ると出ます');
+  // 整備範囲を持たない出所 (Overture) では今も出ない。**そのときは理由を言う。**
+  await useOvertureBuildings(page);
+  await page.locator('#layer-back').click();
+  await expect(status(LAYER.overtureBuildings)).toContainText('ズーム');
+  await expect(status(LAYER.overtureBuildings)).toContainText('まで寄ると出ます');
 });
 
 /** 一覧の🔍は**いまの位置のまま**寄る。場所ごと動かす「範囲へ移動」とは別。 */
@@ -1869,7 +1963,7 @@ test('レイヤーの🔍はその場でズームする', async ({ page }) => {
     return { lng: c.lng, lat: c.lat };
   });
 
-  await page.locator('[data-layer="buildings"] .layer-zoom-button').click();
+  await page.locator(`[data-layer="${LAYER.plateauBuildings}"] .layer-zoom-button`).click();
 
   await expect
     .poll(() => page.evaluate(() => (window as unknown as TestWindow).__map!.getZoom()))
@@ -2142,7 +2236,7 @@ async function showRoads(page: Page, zoom = 13) {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7671, 35.6812], zoom: z }); // 東京駅
   }, zoom);
-  await showLayer(page, 'road');
+  await showLayer(page, LAYER.road);
   await expect.poll(() => sourceFeatureCount(page, 'road'), { timeout: 60_000 }).toBeGreaterThan(0);
 }
 
@@ -2153,7 +2247,7 @@ async function showRoads(page: Page, zoom = 13) {
 test('道路は切り替えで出せる', async ({ page }) => {
   test.skip(!(await hasRoads(page)), '道路のデータが無い');
 
-  await expect(page.locator('[data-layer="road"]')).toBeVisible();
+  await expect(page.locator(`[data-layer="${LAYER.road}"]`)).toBeVisible();
   // チェックするまで読みにも行かない。
   expect(await sourceFeatureCount(page, 'road')).toBe(0);
 
@@ -2165,7 +2259,7 @@ test('道路の件数が一覧に出る', async ({ page }) => {
   test.skip(!(await hasRoads(page)), '道路のデータが無い');
 
   await showRoads(page);
-  await expect(page.locator('[data-layer="road"]')).toContainText('区間', { timeout: 30_000 });
+  await expect(page.locator(`[data-layer="${LAYER.road}"]`)).toContainText('区間', { timeout: 30_000 });
 });
 
 /**
@@ -2299,7 +2393,7 @@ test('道路は種別で絞れる', async ({ page }) => {
   await showRoads(page);
   const before = await sourceFeatureCount(page, 'road');
 
-  await openLayerSettings(page, 'road');
+  await openLayerSettings(page, LAYER.road);
   await page.locator('#road-none').click();
   await expect.poll(() => sourceFeatureCount(page, 'road'), { timeout: 30_000 }).toBe(0);
 
@@ -2398,6 +2492,62 @@ test('OvertureにはLODを出さない', async ({ page }) => {
   await showPlateauBuildings(page);
   await expect(page.locator('#building-count')).toContainText('LOD', { timeout: 30_000 });
 
-  await page.locator('#building-source').selectOption({ label: 'Overture' });
-  await expect(page.locator('#building-count')).not.toContainText('LOD', { timeout: 30_000 });
+  await useOvertureBuildings(page);
+  // **件数が出るまで待ってから見る。** 空のうちは「LODを含まない」が即座に通ってしまう。
+  await expect(page.locator('#building-count')).toContainText('件', { timeout: 30_000 });
+  await expect(page.locator('#building-count')).not.toContainText('LOD');
+});
+
+/**
+ * **建物は出所ごとに出せて、両方出すこともできる。**
+ *
+ * 以前は設定の中の選択欄で択一だった。一覧をカタログの階層にしたので、
+ * PLATEAUとOvertureは別の行になり、それぞれにチェックがある。重なったところで
+ * どちらの建物か見分けられるよう、地物に出所 (`origin`) と塗り分けの番号
+ * (`palette`) を持たせている。
+ */
+test('建物は出所ごとに出せて、両方出すと塗り分けられる', async ({ page }) => {
+  test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  /** 出所ごとの件数と、それぞれに付いた塗り分けの番号。 */
+  const byOrigin = () =>
+    page.evaluate(async () => {
+      const map = (window as unknown as TestWindow).__map!;
+      const data = await (map.getSource('buildings') as GeoJSONSource).getData();
+      const result: Record<string, { count: number; palettes: number[] }> = {};
+      if (data.type !== 'FeatureCollection') return result;
+      for (const feature of data.features) {
+        const { origin, palette } = feature.properties as { origin: string; palette: number };
+        const entry = (result[origin] ??= { count: 0, palettes: [] });
+        entry.count += 1;
+        if (!entry.palettes.includes(palette)) entry.palettes.push(palette);
+      }
+      return result;
+    });
+
+  // 港区。**両方の出所が収録している場所。**
+  await showPlateauBuildings(page);
+  await showLayer(page, LAYER.overtureBuildings);
+
+  await expect
+    .poll(async () => Object.keys(await byOrigin()).sort(), { timeout: 30_000 })
+    .toEqual([LAYER.overtureBuildings, LAYER.plateauBuildings].sort());
+
+  // **出所ごとに1つの番号で、互いに違う。** 同じだと重なったところで見分けられない。
+  const both = await byOrigin();
+  const plateauPalettes = both[LAYER.plateauBuildings].palettes;
+  const overturePalettes = both[LAYER.overtureBuildings].palettes;
+  expect(plateauPalettes).toHaveLength(1);
+  expect(overturePalettes).toHaveLength(1);
+  expect(plateauPalettes[0]).not.toBe(overturePalettes[0]);
+
+  // **件数は行ごとに出る。** 1つの要約を両方の行に写すと同じ数が並んでしまう。
+  await expect(page.locator(`[data-layer-status="${LAYER.plateauBuildings}"]`)).toContainText('件');
+  await expect(page.locator(`[data-layer-status="${LAYER.overtureBuildings}"]`)).toContainText('件');
+
+  // 片方を外せば、そちらだけ消える。
+  await hideLayer(page, LAYER.plateauBuildings);
+  await expect.poll(async () => Object.keys(await byOrigin())).toEqual([LAYER.overtureBuildings]);
+  await expect(page.locator(`[data-layer-status="${LAYER.plateauBuildings}"]`)).toHaveText('');
 });

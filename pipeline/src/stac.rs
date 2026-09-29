@@ -12,7 +12,8 @@
 //! **ルートは `catalog.json` 1つだけ。**
 //!
 //! ```text
-//! catalog.json                         ← Catalog。各Collectionへの child リンク
+//! catalog.json                         ← Catalog。出所ごとのサブカタログへの child リンク
+//! estat/catalog.json                   ← Catalog (サブカタログ)。「国勢調査」
 //! estat/estat-mesh-pop.json            ← Collection
 //! estat/estat-mesh-pop-items.json      ← ItemCollection (Itemをまとめたもの)
 //! estat/mesh_pop_13.parquet            ← 実データ
@@ -21,6 +22,12 @@
 //! 以前は起点に平置きしていたが、**出所が増えるたびにルートにJSONが積み上がった**
 //! (12コレクションで25ファイル)。実データは元から出所ごとに分かれていたので、
 //! そこへ寄せた。
+//!
+//! **出所ごとにサブカタログを挟む。** 「PLATEAU」「Overture Maps」のような
+//! まとまりを表すSTAC本来の仕組みで、UIの一覧もこの階層で見出しを作る
+//! (画面を読むことがカタログを歩くことになるように)。`providers[].name` では
+//! 束ねられない — 組織名なので、PLATEAUも国土数値情報も位置参照情報も
+//! 「国土交通省」で1つにまとまってしまう。
 //!
 //! Itemを1件1ファイルにするのが静的STACの標準的な置き方だが、**採らない**。
 //! 人口メッシュ47件 + PLATEAU306都市で350ファイルを超え、
@@ -113,6 +120,57 @@ fn root_href(dir: &str) -> String {
 }
 
 const CATALOG_FILE: &str = "catalog.json";
+
+/// 出所ごとのサブカタログ。
+struct SubCatalog {
+    /// 置き場所のディレクトリ。**これで引く** — Collectionの置き場所は
+    /// 実データから導いている ([`collection_dir`]) ので、同じ鍵で題名を足す。
+    dir: &'static str,
+    title: &'static str,
+    description: &'static str,
+}
+
+/// **出所の名前はここにしか書かない。** UIの一覧の見出しはここから来る。
+///
+/// ディレクトリが増えたのにここに無ければエラーにする。題名の無い見出しを
+/// 黙って作ると、一覧に「plateau」のような置き場所の名前が出てしまう。
+const SUB_CATALOGS: &[SubCatalog] = &[
+    SubCatalog {
+        dir: "plateau",
+        title: "PLATEAU",
+        description: "国土交通省の3D都市モデル。建物の高さ・用途・階数がほぼ全件に入っている。",
+    },
+    SubCatalog {
+        dir: "overture",
+        title: "Overture Maps",
+        description: "Overture Maps Foundation のデータ。OpenStreetMapを含む複数の出所を統合したもの。",
+    },
+    SubCatalog {
+        dir: "ksj",
+        title: "国土数値情報",
+        description: "国土交通省の国土数値情報。",
+    },
+    SubCatalog {
+        dir: "estat",
+        title: "国勢調査",
+        description: "総務省統計局の地域メッシュ統計。",
+    },
+    SubCatalog {
+        dir: "isj",
+        title: "位置参照情報",
+        description: "国土交通省の位置参照情報。住所検索に使う代表点。",
+    },
+];
+
+fn sub_catalog(dir: &str) -> Result<&'static SubCatalog> {
+    match SUB_CATALOGS.iter().find(|sub| sub.dir == dir) {
+        Some(sub) => Ok(sub),
+        None => bail!(
+            "ディレクトリ {dir:?} のサブカタログが定義されていません \
+             (stac.rs の SUB_CATALOGS に題名と説明を足すこと)"
+        ),
+    }
+}
 
 /// 実データへのリンク。**ファイル名だけ**を返す。
 ///
@@ -306,7 +364,9 @@ fn collection(id: &str, entries: &[&DatasetEntry], dir: &str) -> Result<Value> {
         },
         "links": [
             { "rel": "root", "href": root_href(dir), "type": JSON_MEDIA_TYPE },
-            { "rel": "parent", "href": root_href(dir), "type": JSON_MEDIA_TYPE },
+            // 親は同じディレクトリのサブカタログ。起点直下に置いたときはルートが
+            // 親になるが、どちらもこの文書からは `catalog.json` で届く。
+            { "rel": "parent", "href": CATALOG_FILE, "type": JSON_MEDIA_TYPE },
             { "rel": "self", "href": collection_file(id), "type": JSON_MEDIA_TYPE },
             { "rel": "items", "href": items_file(id), "type": GEOJSON_MEDIA_TYPE },
             via_link(first.collection_via),
@@ -366,16 +426,17 @@ pub fn build(datasets: &[DatasetEntry]) -> Result<Vec<Document>> {
     }
 
     let mut documents = Vec::new();
-    let mut child_links = Vec::new();
+    // ディレクトリ → そこに置くCollectionへの child リンク。
+    let mut by_dir: BTreeMap<String, Vec<Value>> = BTreeMap::new();
 
     for (id, entries) in &grouped {
         // **実データと同じディレクトリに置く。** ルートを `catalog.json` だけにするため。
         let dir = collection_dir(entries)?;
 
-        child_links.push(json!({
+        by_dir.entry(dir.clone()).or_default().push(json!({
             "rel": "child",
-            // catalog.json は起点にあるので、ここは起点からのパスでよい。
-            "href": in_dir(&dir, &collection_file(id)),
+            // 親 (サブカタログ) と同じディレクトリにあるので、ファイル名だけでよい。
+            "href": collection_file(id),
             "type": JSON_MEDIA_TYPE,
             "title": entries[0].title,
         }));
@@ -393,7 +454,9 @@ pub fn build(datasets: &[DatasetEntry]) -> Result<Vec<Document>> {
                     .map(|entry| item(entry, &dir))
                     .collect::<Vec<_>>(),
                 "links": [
-                    { "rel": "root", "href": "catalog.json", "type": JSON_MEDIA_TYPE },
+                    // **この文書からの相対。** 以前は "catalog.json" と書いていて、
+                    // サブディレクトリから引くと同じ階層の (無い) ファイルを指していた。
+                    { "rel": "root", "href": root_href(&dir), "type": JSON_MEDIA_TYPE },
                     { "rel": "collection", "href": collection_file(id), "type": JSON_MEDIA_TYPE },
                 ],
             }),
@@ -401,10 +464,50 @@ pub fn build(datasets: &[DatasetEntry]) -> Result<Vec<Document>> {
     }
 
     let mut links = vec![
-        json!({ "rel": "root", "href": "catalog.json", "type": JSON_MEDIA_TYPE }),
-        json!({ "rel": "self", "href": "catalog.json", "type": JSON_MEDIA_TYPE }),
+        json!({ "rel": "root", "href": CATALOG_FILE, "type": JSON_MEDIA_TYPE }),
+        json!({ "rel": "self", "href": CATALOG_FILE, "type": JSON_MEDIA_TYPE }),
     ];
-    links.extend(child_links);
+
+    // 起点直下に置いたCollectionはサブカタログを挟まず、ルートから直接指す。
+    if let Some(children) = by_dir.remove("") {
+        links.extend(children);
+    }
+
+    // **サブカタログは `SUB_CATALOGS` の順に並べる。** UIの一覧の並びになるので、
+    // 既定で出ているもの (PLATEAUの建物) を先頭に置けるよう、IDの順にはしない。
+    // 表に無いディレクトリは先に弾く (`sub_catalog` がエラーにする)。
+    for dir in by_dir.keys() {
+        sub_catalog(dir)?;
+    }
+    for sub in SUB_CATALOGS {
+        let Some(children) = by_dir.remove(sub.dir) else {
+            continue;
+        };
+        links.push(json!({
+            "rel": "child",
+            "href": in_dir(sub.dir, CATALOG_FILE),
+            "type": JSON_MEDIA_TYPE,
+            "title": sub.title,
+        }));
+
+        let mut sub_links = vec![
+            json!({ "rel": "root", "href": root_href(sub.dir), "type": JSON_MEDIA_TYPE }),
+            json!({ "rel": "parent", "href": root_href(sub.dir), "type": JSON_MEDIA_TYPE }),
+            json!({ "rel": "self", "href": CATALOG_FILE, "type": JSON_MEDIA_TYPE }),
+        ];
+        sub_links.extend(children);
+        documents.push(Document {
+            path: in_dir(sub.dir, CATALOG_FILE),
+            body: json!({
+                "type": "Catalog",
+                "stac_version": STAC_VERSION,
+                "id": format!("{CATALOG_ID}-{}", sub.dir),
+                "title": sub.title,
+                "description": sub.description,
+                "links": sub_links,
+            }),
+        });
+    }
 
     documents.push(Document {
         path: "catalog.json".to_string(),
@@ -496,8 +599,22 @@ mod tests {
             .filter(|link| link["rel"] == "child")
             .collect();
         assert_eq!(children.len(), 1);
-        // **実データと同じディレクトリに置く。** ルートは catalog.json だけ。
-        assert_eq!(children[0]["href"], "estat/estat-mesh-pop.json");
+        // **ルートの子は出所ごとのサブカタログ。** Collectionはその下にいる。
+        assert_eq!(children[0]["href"], "estat/catalog.json");
+        assert_eq!(children[0]["title"], "国勢調査");
+
+        let sub = find(&documents, "estat/catalog.json");
+        assert_eq!(sub["type"], "Catalog");
+        assert_eq!(sub["title"], "国勢調査");
+        let sub_children: Vec<&Value> = sub["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|link| link["rel"] == "child")
+            .collect();
+        assert_eq!(sub_children.len(), 1);
+        // サブカタログと同じディレクトリにあるので、ファイル名だけ。
+        assert_eq!(sub_children[0]["href"], "estat-mesh-pop.json");
 
         let collection = find(&documents, "estat/estat-mesh-pop.json");
         assert_eq!(collection["type"], "Collection");
@@ -544,7 +661,8 @@ mod tests {
         // 1つ下にいるので、起点へは `../`。
         let collection = find(&documents, "estat/estat-mesh-pop.json");
         assert_eq!(href(collection, "root"), "../catalog.json");
-        assert_eq!(href(collection, "parent"), "../catalog.json");
+        // 親は同じディレクトリのサブカタログ。
+        assert_eq!(href(collection, "parent"), "catalog.json");
         // 兄弟なのでファイル名だけ。
         assert_eq!(href(collection, "items"), "estat-mesh-pop-items.json");
         assert_eq!(href(collection, "self"), "estat-mesh-pop.json");
@@ -554,6 +672,61 @@ mod tests {
             href(&items["features"][0], "collection"),
             "estat-mesh-pop.json"
         );
+        // **ItemCollection自身の root も文書からの相対。** 以前は "catalog.json" と
+        // 書いていて、同じ階層の (存在しない) ファイルを指していた。
+        assert_eq!(href(items, "root"), "../catalog.json");
+
+        // サブカタログから見ると、ルートは1つ上。
+        let sub = find(&documents, "estat/catalog.json");
+        assert_eq!(href(sub, "root"), "../catalog.json");
+        assert_eq!(href(sub, "parent"), "../catalog.json");
+        assert_eq!(href(sub, "self"), "catalog.json");
+    }
+
+    /// **表に無いディレクトリはエラーにする。** 題名の無い見出しを黙って作ると、
+    /// 一覧に置き場所の名前 (「newsource」) がそのまま出てしまう。
+    #[test]
+    fn rejects_a_directory_without_a_sub_catalog() {
+        let datasets = vec![entry(
+            "mesh_pop_13",
+            "newsource/mesh_pop_13.parquet",
+            Some([139.0, 35.0, 140.0, 36.0]),
+        )];
+        let error = build(&datasets)
+            .err()
+            .expect("エラーになるはず")
+            .to_string();
+        assert!(error.contains("newsource"), "{error}");
+        assert!(error.contains("SUB_CATALOGS"), "{error}");
+    }
+
+    /// **サブカタログは定義の順に並ぶ。** UIの一覧の並びになるので、IDの順
+    /// (estat → ... → plateau) にすると既定で出ているPLATEAUが最後に来る。
+    #[test]
+    fn orders_sub_catalogs_as_defined_not_alphabetically() {
+        let mut plateau = entry(
+            "plateau_bldg_13103",
+            "plateau/b.parquet",
+            Some([139.0, 35.0, 140.0, 36.0]),
+        );
+        plateau.collection = "plateau-buildings";
+        let datasets = vec![
+            entry(
+                "mesh_pop_13",
+                "estat/mesh_pop_13.parquet",
+                Some([139.0, 35.0, 140.0, 36.0]),
+            ),
+            plateau,
+        ];
+        let documents = build(&datasets).unwrap();
+        let titles: Vec<&str> = find(&documents, "catalog.json")["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|link| link["rel"] == "child")
+            .map(|link| link["title"].as_str().unwrap())
+            .collect();
+        assert_eq!(titles, ["PLATEAU", "国勢調査"]);
     }
 
     /// 起点直下に実データがある場合は、`../` を付けない。

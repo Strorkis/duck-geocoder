@@ -140,32 +140,58 @@ rclone copy data/output/ksj/n02_sections_all.parquet "$R2/ksj/" -P
 
 **JSONは実データと同じディレクトリにある** (2026-09-27に寄せた。ルートは
 `catalog.json` 1つだけ)。出所ごとのディレクトリを上げれば、その出所の
-Collection・ItemCollection・parquetがまとまって載る。
+サブカタログ・Collection・ItemCollection・parquetがまとまって載る。
+
+**出所ごとにサブカタログ (`plateau/catalog.json` など) がある** (2026-09-29に挟んだ)。
+ルートの子はCollectionではなくサブカタログで、UIの一覧の見出しはここから来る。
+**これを入れたときは構造の変更にあたる** — 公開中の古いバンドルはルートの子を
+Collectionとして読むので、新しい `catalog.json` を上げた瞬間から起動に失敗する。
+上の「先に上げると壊れる場合がある」の順で上げること。
 
 **`build_catalog` は古いJSONを消さない。** データセットをやめたときは
 手元にCollectionのJSONが残るので、上げる前に消すこと
 (残っていても `catalog.json` が参照しないので壊れはしないが、配信先に
-誰も読まないファイルが積み上がる)。リンクが全部解決するかはこれで見られる。
+誰も読まないファイルが積み上がる)。リンクが全部解決するかはこれで見られる
+(**サブカタログの下まで辿る**)。
 
 ```sh
-mise exec -- jq -r '.links[] | select(.rel=="child") | .href' data/output/catalog.json |
-  while read h; do [ -f "data/output/$h" ] && echo "OK   $h" || echo "欠落 $h"; done
+cd data/output && mise exec -- jq -r '.links[] | select(.rel=="child") | .href' catalog.json |
+  while read sub; do
+    [ -f "$sub" ] && echo "OK   $sub" || { echo "欠落 $sub"; continue; }
+    dir=$(dirname "$sub")
+    mise exec -- jq -r '.links[] | select(.rel=="child") | .href' "$sub" |
+      while read h; do [ -f "$dir/$h" ] && echo "OK   $dir/$h" || echo "欠落 $dir/$h"; done
+  done; cd -
 ```
 
-```sh
-# 1. catalog.json 以外を先に上げる
-rclone copy data/output "$R2" --size-only --exclude 'catalog.json' -P
+**JSONは `--size-only` を付けずに上げる。** 中身だけが変わって大きさが揃うことが
+ある (サブカタログを挟んだときは全Collectionの `parent` が書き換わった)。
+JSONは31ファイル・合計1MB弱なので、毎回全部上げても安い。
 
-# 2. catalog.json を最後に上げる
+```sh
+# 1. catalog.json 以外のJSONを上げる (大きさで比べない)
+rclone copy data/output "$R2" --include '*.json' --exclude '/catalog.json' -P
+
+# 2. parquetを上げる (大きさで比べる。3.7GBを上げ直さないため)
+rclone copy data/output "$R2" --include '*.parquet' --size-only -P
+
+# 3. catalog.json を最後に上げる
 rclone copy data/output/catalog.json "$R2" -P
 
-# 3. 続けて push する (壊れうる時間をここに収める)
+# 4. 続けて push する (壊れうる時間をここに収める)
 git push
 ```
+
+`--exclude '/catalog.json'` の先頭の `/` は**ルートのものだけ**を外す指定。
+付けないとサブカタログ (`plateau/catalog.json` など) まで外れてしまう。
 
 **`rclone` はループで回さない。** 設定を暗号化していると**起動ごとに
 パスワードを聞かれる**ので、出所ごとに5回回すと5回打つことになる。
 `data/output` を1回で渡せば済む (`--size-only` が無いと3.7GBを上げ直しに行く)。
+
+上の手順は**3回呼ぶ** (3回聞かれる)。比べ方がそれぞれ違うため —
+JSONは大きさで比べると取りこぼし、parquetは大きさで比べないと全部上げ直し、
+`catalog.json` は最後でなければならない。
 
 初回は**306都市で3.6GB**あるので時間がかかる。`-P` で進捗が出る。
 2回目以降は `--size-only` が効いて差分だけになる。

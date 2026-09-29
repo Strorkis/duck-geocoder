@@ -72,20 +72,27 @@
             <!-- 背景地図もレイヤーの1つ (QGISもそう扱う)。**地図に重なるものが
                  1か所に集まる。** selectが1つあるだけなので、たたまず常時出す。
                  将来サムネイルで選ばせる余地はここに残す (地理院地図がそうしている)。 -->
-            <div id="basemap-section">
-              <p class="layer-heading">背景地図</p>
-              <select id="basemap"></select>
-            </div>
-            <!-- 表示量もレイヤーをまたぐ設定なので、個別の⚙ではなくここに置く。
-                 背景地図と同じくselect1つなので、たたまず常時出す。 -->
-            <div id="detail-section">
-              <p class="layer-heading">表示量</p>
-              <select id="detail-level" title="上限に当たったら上げる。重ければ下げる"></select>
+            <!-- 背景地図と表示量はどちらもレイヤーをまたぐselect1つなので、
+                 **横に並べる。** 縦に積むと、一覧をカタログの階層にして伸びたぶんと
+                 合わせて地図の左側を覆いすぎた。 -->
+            <div id="view-settings">
+              <div id="basemap-section">
+                <p class="layer-heading">背景地図</p>
+                <select id="basemap"></select>
+              </div>
+              <!-- 表示量もレイヤーをまたぐ設定なので、個別の⚙ではなくここに置く。 -->
+              <div id="detail-section">
+                <p class="layer-heading">表示量</p>
+                <select id="detail-level" title="上限に当たったら上げる。重ければ下げる"></select>
+              </div>
             </div>
           </div>
           <div id="layer-settings" hidden>
             <button id="layer-back" type="button">← 一覧へ</button>
             <p id="layer-settings-title"></p>
+            <!-- この行がカタログのどこから来ているか (Collection・ファイル数・JSON)。
+                 開くたびに作り直す。設定より上に置くのは、何を設定しているのかが先に要るため。 -->
+            <div id="layer-catalog"></div>
             <div id="layer-settings-body"></div>
           </div>
         </div>
@@ -95,13 +102,11 @@
                機能があること自体に気づけないので、移動する手段を置く。
                データが無いときはJavaScript側で隠したままにする。 -->
           <button id="goto-buildings" type="button" hidden>建物のある範囲へ移動</button>
-          <div class="field">
-            <label for="building-source">建物データ</label>
-            <select id="building-source"></select>
-          </div>
-          <!-- 収録範囲の枠。**既定は切ってある。** 引いた表示でも全国の高い建物
-               (実物) が出るようになったので、枠を重ねると二重に見えるだけ。
-               高い建物を持たない出所 (Overture) ではまだ役に立つので残す。 -->
+          <!-- 出所 (PLATEAU / Overture) の選択欄はもう無い。一覧で出所ごとに
+               行が分かれ、どちらの ⚙ から開いたかでこのパネルの向き先が決まる。 -->
+          <!-- 収録範囲の枠。**既定は切ってある。** 整備範囲のメッシュを持つ出所
+               (PLATEAU) では引いた表示にメッシュが出るので、枠は要らない。
+               メッシュを持たない出所 (Overture) ではまだ役に立つので残す。 -->
           <div class="field">
             <label class="toggle">
               <input id="coverage-toggle" type="checkbox" />

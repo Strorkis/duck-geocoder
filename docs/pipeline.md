@@ -864,13 +864,40 @@ Webアプリはこれを読んでどのデータセットを使うかを決め�
 独自形式をやめて [STAC](https://github.com/radiantearth/stac-spec) に寄せた。
 
 ```text
-catalog.json                ← Catalog。各Collectionへの child リンク
-estat-mesh-pop.json         ← Collection。何があるか。ファイル数で増えない
-estat-mesh-pop-items.json   ← ItemCollection。ファイル1つずつの href と bbox
-estat/mesh_pop_13.parquet   ← 実データ
+catalog.json                      ← Catalog。出所ごとのサブカタログへの child リンク
+estat/catalog.json                ← Catalog (サブカタログ)。「国勢調査」
+estat/estat-mesh-pop.json         ← Collection。何があるか。ファイル数で増えない
+estat/estat-mesh-pop-items.json   ← ItemCollection。ファイル1つずつの href と bbox
+estat/mesh_pop_13.parquet         ← 実データ
 ```
 
 **起動時に読むのは Catalog と Collection だけ。** Item は使う段になって読む。
+サブカタログもCatalogなので起動時に読む (5つ、各1KB前後)。1段の中は並列に
+取るので、往復が1段増えるだけで済む。
+
+#### 出所ごとにサブカタログを挟む
+
+**UIの一覧の見出しはサブカタログから来る。** 以前は一覧を「建物」「道路」のように
+使う側のまとまりで組んでいて、STACを使っていることが画面から見えなかった。
+いまは**サブカタログが見出し、Collectionが行**で、画面を読むことがそのまま
+カタログを歩くことになる。⚙ を開くとCollectionの中身 (ID・ライセンス・ファイル数・
+範囲・列) と、JSONそのものへのリンクが出る。
+
+まとまりを表すのに**`providers[].name` は使えない。** 組織名なので、PLATEAUも
+国土数値情報も位置参照情報も「国土交通省」で1つになってしまう。STACで
+まとまりを表す本来の仕組みはサブカタログなので、そちらにした。
+
+- **題名は `stac.rs` の `SUB_CATALOGS` にしか書かない。** 鍵はディレクトリ名
+  (Collectionの置き場所を実データから導いているのと同じ鍵)。表に無いディレクトリは
+  エラーにする — 黙って作ると一覧に置き場所の名前 (`plateau`) が出てしまう
+- **並びは `SUB_CATALOGS` の順** (IDの順ではない)。一覧の並びになるので、
+  既定で出ているPLATEAUを先頭に置く
+- **Collectionの題名から出所を外した** (「建物 (PLATEAU)」→「建物」)。
+  平らな一覧のために付けていたもので、親のサブカタログが言うようになった
+
+UIはリンク先の文書の `type` で降りるかどうかを決める (`Catalog` なら降り、
+`Collection` なら止まる)。STACはどちらも子にできる。平らなカタログも読めるので、
+サブカタログを挟む前のデータでも一覧が見出しなしで出るだけで動く。
 
 | | 起動時に読む量 |
 | --- | ---: |
@@ -885,7 +912,11 @@ Collectionが件数で増えないようにしてある。**空間範囲は全�
 PLATEAU306都市で350ファイルを超え、1つ読むたびに1往復することになる。
 代わりにCollectionごとにItemCollection (STAC APIの `/items` が返すのと同じ形) を1つ置く。
 
-**リンクはすべて配信の起点からの相対**にするため、JSONは実データと同じ起点に平置きする。
+**JSONは実データと同じ出所ごとのディレクトリに置く。** リンクは**その文書からの相対**
+(STACの規則)。平置きしていた頃は「起点からの相対」と一致していてずれが表に
+出なかったが、階層を作ると出る — ItemCollectionの `root` が `catalog.json` のまま
+になっていて、サブディレクトリから引くと存在しないファイルを指していた
+(サブカタログを挟むときに見つけて `../catalog.json` に直した)。
 
 独自項目には接頭辞を付ける (STACの作法)。
 

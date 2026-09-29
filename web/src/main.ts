@@ -27,13 +27,17 @@ setWorkerUrl(maplibreWorkerUrl);
  * 変換したファイルが増えればUIは自動で追随する。
  *
  * ```text
- * catalog.json                ← Catalog。各Collectionへの child リンク
- * estat-mesh-pop.json         ← Collection。何があるか。件数で増えない
- * estat-mesh-pop-items.json   ← ItemCollection。ファイル1つずつの href と bbox
+ * catalog.json                      ← Catalog。出所ごとのサブカタログへの child リンク
+ * estat/catalog.json                ← Catalog (サブカタログ)。「国勢調査」
+ * estat/estat-mesh-pop.json         ← Collection。何があるか。件数で増えない
+ * estat/estat-mesh-pop-items.json   ← ItemCollection。ファイル1つずつの href と bbox
  * ```
  *
  * **起動時に読むのは Catalog と Collection だけ。** Item は使う段になって読む。
  * 1ファイルに全部入れていた頃は、人口メッシュ47件で72KBまで膨らんでいた。
+ *
+ * **レイヤーの一覧はこの階層で組む。** サブカタログが見出し、Collectionが行。
+ * 画面を読むことがそのままカタログを歩くことになるようにしてある。
  */
 interface StacLink {
   rel: string;
@@ -56,10 +60,24 @@ type DatasetKind =
   | 'road'
   | 'road_route';
 
-/** STAC Collection。`duck:` の付いたものはSTACに無い独自項目。 */
-interface StacCollection {
+/** STAC Catalog。ルートと、出所ごとのサブカタログ。 */
+interface StacCatalog {
+  type: 'Catalog';
   id: string;
   title?: string;
+  description?: string;
+  links: StacLink[];
+}
+
+/** STAC Collection。`duck:` の付いたものはSTACに無い独自項目。 */
+interface StacCollection {
+  type: 'Collection';
+  id: string;
+  title?: string;
+  description?: string;
+  /** SPDX識別子か "other"。 */
+  license?: string;
+  providers?: { name: string; roles?: string[]; url?: string }[];
   /** 種別。UIが扱いを切り替えるのに使う。STACにこの概念は無い。 */
   'duck:kind': DatasetKind;
   /** 地図に出す出典の文言。**表示義務があるので縮めない。** */
@@ -127,11 +145,39 @@ interface LocatedItem {
   base: string;
 }
 
+/**
+ * 出所のまとまり (サブカタログ)。**レイヤー一覧の見出しになる。**
+ *
+ * 「PLATEAU」「Overture Maps」をここで決め打ちしない。カタログが名乗っている
+ * ものをそのまま出すので、出所が増えればパイプライン側で1行足すだけで済む。
+ */
+interface CatalogGroup {
+  id: string;
+  title: string;
+  description: string;
+  /** この文書の、配信の起点からのパス。JSONそのものを見せるのに使う。 */
+  path: string;
+}
+
 /** Collectionを扱いやすい形にしたもの。Itemは呼ばれるまで読まない。 */
 interface Collection {
   id: string;
   kind: DatasetKind;
   title: string;
+  description: string;
+  /** SPDX識別子か "other"。 */
+  license: string;
+  /** 組織名 (STACの `providers[].name`)。 */
+  provider: string | undefined;
+  /**
+   * どのサブカタログの下にあるか。**ルート直下に置かれたCollectionは undefined**
+   * (サブカタログを挟む前の平らなカタログもそう読める)。
+   */
+  group: CatalogGroup | undefined;
+  /** Collection文書の、配信の起点からのパス。 */
+  path: string;
+  /** ItemCollection文書の、配信の起点からのパス。無ければ undefined。 */
+  itemsPath: string | undefined;
   attribution: string;
   attributionUrl: string;
   /**
@@ -249,27 +295,55 @@ async function fetchStac<T>(path: string): Promise<T> {
 }
 
 /**
- * Catalogから全Collectionを読む。
+ * Catalogから全Collectionを読む。**カタログに書かれた順に返す** (一覧の並びになる)。
  *
  * Collectionは**ファイルが増えても大きくならない** (収録範囲は全体の1件だけ、
  * 列構成と語彙は出所ごとに1つ) ので、起動時に全部読んでよい。
  * ファイル1つずつの情報を持つItemは、使う段になってから読む。
  */
 async function fetchCollections(): Promise<Collection[]> {
-  const catalog = await fetchStac<{ links: StacLink[] }>(CATALOG_PATH);
-  const children = catalog.links.filter((link) => link.rel === 'child');
-  // **文書の位置を持ち回る。** Collectionの中のリンクはその文書からの相対なので、
-  // どこにある文書だったかを知らないと解決できない。
-  const documents = await Promise.all(
-    children.map(async (link) => {
-      const path = resolveHref(link.href, CATALOG_PATH);
-      return [await fetchStac<StacCollection>(path), path] as const;
-    }),
-  );
-  return documents.map(([document, path]) => toCollection(document, path));
+  const catalog = await fetchStac<StacCatalog>(CATALOG_PATH);
+  return walkCatalog(catalog, CATALOG_PATH, undefined);
 }
 
-function toCollection(document: StacCollection, path: string): Collection {
+/**
+ * Catalogの子を辿る。**子がCatalogなら降り、Collectionならそこで止まる。**
+ *
+ * STACはどちらも子にできる。種類はリンクではなく**文書の `type`** で見分ける
+ * (リンクの `type` はメディアタイプで、どちらも `application/json`)。
+ *
+ * 兄弟は並べて取る。サブカタログを挟んだぶん往復は1段増えるが、
+ * 1段の中は並列なので、起動の待ちは1往復ぶんしか伸びない。
+ */
+async function walkCatalog(
+  catalog: StacCatalog,
+  path: string,
+  group: CatalogGroup | undefined,
+): Promise<Collection[]> {
+  const children = catalog.links.filter((link) => link.rel === 'child');
+  const nested = await Promise.all(
+    children.map(async (link) => {
+      // **文書の位置を持ち回る。** 中のリンクはその文書からの相対なので、
+      // どこにある文書だったかを知らないと解決できない。
+      const childPath = resolveHref(link.href, path);
+      const document = await fetchStac<StacCatalog | StacCollection>(childPath);
+      if (document.type === 'Collection') return [toCollection(document, childPath, group)];
+      return walkCatalog(document, childPath, {
+        id: document.id,
+        title: document.title ?? document.id,
+        description: document.description ?? '',
+        path: childPath,
+      });
+    }),
+  );
+  return nested.flat();
+}
+
+function toCollection(
+  document: StacCollection,
+  path: string,
+  group: CatalogGroup | undefined,
+): Collection {
   // 空間範囲は「先頭が全体」。ジオメトリを持たないデータセットは null が並ぶ。
   const [extent] = document.extent.spatial.bbox;
   const bbox =
@@ -278,12 +352,19 @@ function toCollection(document: StacCollection, path: string): Collection {
       : null;
 
   const itemsHref = document.links.find((link) => link.rel === 'items')?.href;
+  const itemsPath = itemsHref ? resolveHref(itemsHref, path) : undefined;
   let items: Promise<LocatedItem[]> | undefined;
 
   return {
     id: document.id,
     kind: document['duck:kind'],
     title: document.title ?? document.id,
+    description: document.description ?? '',
+    license: document.license ?? 'other',
+    provider: document.providers?.[0]?.name,
+    group,
+    path,
+    itemsPath,
     attribution: document['duck:attribution'],
     attributionUrl: document['duck:attribution_url'],
     via: document.links.find((link) => link.rel === 'via')?.href,
@@ -297,14 +378,11 @@ function toCollection(document: StacCollection, path: string): Collection {
       (document.item_assets?.data?.['table:columns'] ?? []).map((column) => column.name),
     ),
     items: () =>
-      (items ??= itemsHref
-        ? (() => {
-            const itemsPath = resolveHref(itemsHref, path);
-            return fetchStac<{ features: StacItem[] }>(itemsPath).then((collection) =>
-              // Itemのアセットは**ItemCollectionの文書からの相対**。
-              collection.features.map((feature) => ({ feature, base: itemsPath })),
-            );
-          })()
+      (items ??= itemsPath
+        ? fetchStac<{ features: StacItem[] }>(itemsPath).then((collection) =>
+            // Itemのアセットは**ItemCollectionの文書からの相対**。
+            collection.features.map((feature) => ({ feature, base: itemsPath })),
+          )
         : Promise.resolve([])),
   };
 }
@@ -500,10 +578,8 @@ function unionBbox(boxes: Bbox[]): Bbox | null {
  * カタログはGeoParquetの実際のメタデータから作られているので、そちらに従う。
  */
 interface BuildingSource {
-  /** Collectionの識別子。 */
+  /** Collectionの識別子。**一覧の行IDも兼ねる。** 名前はカタログ (サブカタログの題名) が持つ。 */
   id: string;
-  /** UIに出す名前。 */
-  label: string;
   /**
    * このデータセットを構成するファイルと、それぞれの収録範囲。
    *
@@ -1122,21 +1198,17 @@ async function initDuckDb(collections: Collection[]): Promise<{
     : undefined;
 
   // 建物は任意。無ければ建物レイヤーを出さないだけで、他の機能は動く。
-  // 並び順がそのまま選択肢の順になり、先頭が既定になる。
-  // 属性が揃っているPLATEAUを先に置く。
+  // **並びはカタログの順。** 先頭が既定で出て、塗りも青になる。どれを先に
+  // 置くかはパイプライン (`SUB_CATALOGS`) が決める — 属性が揃っているPLATEAUが先。
   //
   // **ビューは作らない。** 出所ごとに1つのビューへ束ねると、その時点で
   // ファイルの数だけフッターを読みに行くことになる (1ファイル1往復)。
   // 建物は都市ごとに1ファイルで、PLATEAUを全国に広げると300を超えるので、
   // 引くときに表示範囲と重なるものだけを渡す (`filesInView`)。
-  const buildingKinds: { kind: DatasetKind; label: string }[] = [
-    { kind: 'plateau_buildings', label: 'PLATEAU' },
-    { kind: 'buildings', label: 'Overture' },
-  ];
-  const buildingSources: BuildingSource[] = buildingKinds.flatMap(({ kind, label }) => {
-    const collection = byKind(kind)[0];
-    if (!collection) return [];
-
+  const buildingCollections = collections.filter(
+    (c) => c.kind === 'plateau_buildings' || c.kind === 'buildings',
+  );
+  const buildingSources: BuildingSource[] = buildingCollections.map((collection) => {
     // **整備範囲を結び付ける。** `duck:covers` がこのCollectionを指しているものを
     // 探す。IDの綴りで判断しない (出所が増えたときに書き足す場所が分かれる)。
     const coverageCollection = byKind('building_coverage').find(
@@ -1163,7 +1235,6 @@ async function initDuckDb(collections: Collection[]): Promise<{
     const [categoryColumn, usages] = Object.entries(collection.summaries)[0] ?? [null, []];
     const source: BuildingSource = {
       id: collection.id,
-      label,
       // Itemを読むまで空。寄って実際に引くまで通信しない。
       files: [],
       hasHeight: collection.columns.has('height'),
@@ -1178,7 +1249,7 @@ async function initDuckDb(collections: Collection[]): Promise<{
         await ensureSpatial();
       }),
     };
-    return [source];
+    return source;
   });
 
   // 人口メッシュ。建物と同じく、寄るまでItemを読まない。
@@ -2219,6 +2290,16 @@ function buildDataCredits(collections: Collection[]): string[] {
   );
 }
 
+/** 外部へのリンク。別タブで開き、参照元を渡さない。 */
+function externalLink(href: string, label: string): HTMLAnchorElement {
+  const link = document.createElement('a');
+  link.href = href;
+  link.target = '_blank';
+  link.rel = 'noreferrer';
+  link.textContent = label;
+  return link;
+}
+
 /**
  * 出典をパネルにも出す。**地図右下の ⓘ とは別に持つ。**
  *
@@ -2231,15 +2312,6 @@ function buildDataCredits(collections: Collection[]): string[] {
  * ⓘ の側が引き続き唯一の出どころになる。
  */
 function renderCredits(container: HTMLElement, collections: Collection[]): void {
-  const externalLink = (href: string, label: string) => {
-    const link = document.createElement('a');
-    link.href = href;
-    link.target = '_blank';
-    link.rel = 'noreferrer';
-    link.textContent = label;
-    return link;
-  };
-
   container.replaceChildren();
   for (const { titles, attribution, url, via, vintages } of groupCredits(collections)) {
     const term = document.createElement('dt');
@@ -2403,22 +2475,49 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
         paint: {
           // 高さで塗り分ける。傾けずに見るときも高さが分かるようにするため。
           // 高さを持たないデータ (Overtureはほぼ全件がそう) では既定色のままになる。
+          //
+          // **出所で色相を分ける。** PLATEAUとOvertureは同時に出せるので、
+          // 重なったところでどちらの建物かが見分けられないと困る。
+          // カタログで先頭の出所 (`palette` 0) が青、それ以外が橙。
           'fill-extrusion-color': [
-            'case',
-            ['==', ['get', 'height'], null],
-            '#4a6785',
+            'match',
+            ['get', 'palette'],
+            0,
             [
-              'interpolate',
-              ['linear'],
-              ['get', 'height'],
-              0,
-              '#c6d4e4',
-              20,
-              '#8fabc9',
-              60,
+              'case',
+              ['==', ['get', 'height'], null],
               '#4a6785',
-              150,
-              '#2d3f52',
+              [
+                'interpolate',
+                ['linear'],
+                ['get', 'height'],
+                0,
+                '#c6d4e4',
+                20,
+                '#8fabc9',
+                60,
+                '#4a6785',
+                150,
+                '#2d3f52',
+              ],
+            ],
+            [
+              'case',
+              ['==', ['get', 'height'], null],
+              '#c77d3a',
+              [
+                'interpolate',
+                ['linear'],
+                ['get', 'height'],
+                0,
+                '#f0cfa8',
+                20,
+                '#e0a669',
+                60,
+                '#c77d3a',
+                150,
+                '#8a4f1c',
+              ],
             ],
           ],
           // 高さが無い建物にも既定値を与える。0にすると描画されず、
@@ -2548,7 +2647,6 @@ async function main() {
   const gotoBuildingsButton = document.querySelector<HTMLButtonElement>('#goto-buildings')!;
   const basemapSelect = document.querySelector<HTMLSelectElement>('#basemap')!;
   const buildingsSection = document.querySelector<HTMLDivElement>('#buildings-section')!;
-  const sourceSelect = document.querySelector<HTMLSelectElement>('#building-source')!;
   const coverageToggle = document.querySelector<HTMLInputElement>('#coverage-toggle')!;
   const filtersEl = document.querySelector<HTMLDivElement>('#building-filters')!;
   const heightField = document.querySelector<HTMLDivElement>('#height-field')!;
@@ -2587,6 +2685,7 @@ async function main() {
     '#layer-settings-title',
   )!;
   const layerSettingsBodyEl = document.querySelector<HTMLDivElement>('#layer-settings-body')!;
+  const layerCatalogEl = document.querySelector<HTMLDivElement>('#layer-catalog')!;
   const layerBackButton = document.querySelector<HTMLButtonElement>('#layer-back')!;
   const aircraftSelect = document.querySelector<HTMLSelectElement>('#aircraft-class')!;
   const meshLegendBody = document.querySelector<HTMLTableSectionElement>('#mesh-legend tbody')!;
@@ -2957,6 +3056,22 @@ async function main() {
 
   clearButton.addEventListener('click', clearSearch);
 
+  // ---- 行の状態 --------------------------------------------------------------
+  //
+  // 件数や「ズーム15まで寄ると出ます」は**一覧の行に出す**。設定の中に置くと、
+  // 開かない限り出ない理由が読めない。
+  //
+  // **行はCollectionなので、状態もCollection IDで持つ。** 以前は設定パネルの
+  // 要約を監視して行へ写していたが、建物がPLATEAUとOvertureの2行になると
+  // 要約1つでは足りない。
+  const layerStatus = new Map<string, string>();
+  const setLayerStatus = (id: string, text: string) => {
+    layerStatus.set(id, text);
+    for (const el of document.querySelectorAll(`[data-layer-status="${id}"]`)) {
+      el.textContent = text;
+    }
+  };
+
   /**
    * 表示量。建物・鉄道・道路の上限とズームの閾値がここから決まる。
    *
@@ -2970,28 +3085,54 @@ async function main() {
   const BUILDINGS_PITCH = 50;
   let buildingsToken = 0;
 
-  // 選択中の出所と絞り込み条件。UIから書き換わる。
-  let activeSource: BuildingSource | undefined = buildingSources[0];
-  const filter: BuildingFilter = { minHeight: 0, usages: null };
+  /**
+   * 設定パネルを向けている出所。**描く出所とは別。**
+   *
+   * 描くのは一覧でONになっているもの全部 (PLATEAUとOvertureを同時に出せる)。
+   * ここが決めるのは、共有している設定パネルの中身 (絞り込み・件数・移動ボタン)
+   * をどちらに向けるかだけ。どちらかの ⚙ を押すと切り替わる。
+   */
+  let settingsSource: BuildingSource | undefined = buildingSources[0];
+  /**
+   * 絞り込み。**出所ごとに持つ。** 用途の語彙が出所ごとに違う
+   * (PLATEAUは「商業施設」、Overtureは `commercial`) ので、共有すると意味が変わる。
+   */
+  const filters = new Map<string, BuildingFilter>(
+    buildingSources.map((source) => [source.id, { minHeight: 0, usages: null }]),
+  );
+  const filterOf = (source: BuildingSource): BuildingFilter => filters.get(source.id)!;
 
+  /** 行の状態に書き、パネルを開いている出所なら件数の欄にも出す。 */
+  const showBuildingStatus = (source: BuildingSource, text: string) => {
+    setLayerStatus(source.id, text);
+    if (source === settingsSource) buildingCountEl.textContent = text;
+  };
+
+  /**
+   * 一覧でONになっている出所の建物を引き直す。
+   *
+   * **出所ごとに引いて1つのソースにまとめる。** 地物に `origin` (Collection ID) を
+   * 持たせて塗り分けるので、地図のレイヤーは出所が増えても1組のまま。
+   * 上限は出所ごとに掛かる (両方ONなら最大で2倍描く)。
+   */
   const refreshBuildings = async () => {
     const mapSource = map.getSource('buildings') as GeoJSONSource | undefined;
     const coverage = map.getSource('buildings-coverage') as GeoJSONSource | undefined;
-    if (!mapSource || !activeSource) return;
+    if (!mapSource || buildingSources.length === 0) return;
 
-    if (!isLayerVisible('buildings')) {
+    const visible = buildingSources.filter((source) => isLayerVisible(source.id));
+    // 取得を始める前に件数表示を空にする。引いていたときの「拡大すると建物が出ます」が
+    // 残っていると、すでに寄っている利用者に拡大しろと言い続けることになる。
+    for (const source of buildingSources) showBuildingStatus(source, '');
+
+    if (visible.length === 0) {
       await coverage?.setData(EMPTY_FEATURE_COLLECTION);
       await mapSource.setData(EMPTY_FEATURE_COLLECTION);
-      buildingCountEl.textContent = '';
       return;
     }
 
     const zoomedOut = map.getZoom() < detail.buildingsMinZoom;
     const token = ++buildingsToken;
-    const source = activeSource;
-    // 取得を始める前に件数表示を空にする。引いていたときの「拡大すると建物が出ます」が
-    // 残っていると、すでに寄っている利用者に拡大しろと言い続けることになる。
-    buildingCountEl.textContent = '';
     const b = map.getBounds();
     const c = map.getCenter();
     const bounds: ViewBounds = {
@@ -3003,6 +3144,10 @@ async function main() {
       centerLat: c.lat,
     };
 
+    // 状態は最後にまとめて出す。途中で打ち切ったとき (地図が動いた) に
+    // 片方の出所だけ新しい件数が出る、という食い違いを作らない。
+    const statuses: [BuildingSource, string][] = [];
+
     // **引いた表示では整備範囲を出す。**
     //
     // 建物そのものを出す道は無い — 簡略化はフットプリントが1px未満で効かず、
@@ -3010,57 +3155,75 @@ async function main() {
     // 「**どこまで整備されているか**」を1kmのメッシュで見せる。
     if (zoomedOut) {
       await mapSource.setData(EMPTY_FEATURE_COLLECTION);
-      if (!source.coverage) {
-        await coverage?.setData(
-          coverageToggle.checked && source.bbox
-            ? bboxFeatureCollection(source.bbox)
-            : EMPTY_FEATURE_COLLECTION,
-        );
-        // **どこまで寄れば出るかを数字で言う。**「拡大すると」だけだと、
-        // どれだけ動かせばいいのか分からない。
-        buildingCountEl.textContent = `ズーム${detail.buildingsMinZoom}まで寄ると出ます`;
-        return;
+      const features: GeoJSON.Feature[] = [];
+      for (const source of visible) {
+        if (!source.coverage) {
+          if (coverageToggle.checked && source.bbox) {
+            features.push(...bboxFeatureCollection(source.bbox).features);
+          }
+          // **どこまで寄れば出るかを数字で言う。**「拡大すると」だけだと、
+          // どれだけ動かせばいいのか分からない。
+          statuses.push([source, `ズーム${detail.buildingsMinZoom}まで寄ると出ます`]);
+          continue;
+        }
+
+        const area = source.coverage;
+        // 配られているより細かくはできない。引くほど粗く束ねる。
+        const digits = Math.min(meshDigits(map.getZoom()), area.meshDigits);
+        const cells = await busy('整備範囲を読み込み中…', async () => {
+          await area.ensure();
+          return fetchCoverageInView(conn, area, bounds, digits);
+        });
+        if (token !== buildingsToken) return;
+
+        features.push(...coverageFeatureCollection(cells).features);
+        const buildings = cells.reduce((total, cell) => total + cell.buildings, 0);
+        statuses.push([
+          source,
+          `整備範囲 ${cells.length.toLocaleString()} メッシュ` +
+            ` (${MESH_SIZE_LABELS[digits] ?? `${digits}桁`}) · ` +
+            `建物 ${buildings.toLocaleString()} 棟 · ズーム${detail.buildingsMinZoom}から建物そのもの`,
+        ]);
       }
-
-      const area = source.coverage;
-      // 配られているより細かくはできない。引くほど粗く束ねる。
-      const digits = Math.min(meshDigits(map.getZoom()), area.meshDigits);
-      const cells = await busy('整備範囲を読み込み中…', async () => {
-        await area.ensure();
-        return fetchCoverageInView(conn, area, bounds, digits);
-      });
-      if (token !== buildingsToken) return;
-
-      await coverage?.setData(coverageFeatureCollection(cells));
-      const buildings = cells.reduce((total, cell) => total + cell.buildings, 0);
-      buildingCountEl.textContent =
-        `整備範囲 ${cells.length.toLocaleString()} メッシュ` +
-        ` (${MESH_SIZE_LABELS[digits] ?? `${digits}桁`}) · ` +
-        `建物 ${buildings.toLocaleString()} 棟 · ズーム${detail.buildingsMinZoom}から建物そのもの`;
+      await coverage?.setData({ type: 'FeatureCollection', features });
+      for (const [source, text] of statuses) showBuildingStatus(source, text);
       return;
     }
 
     // 寄ったら枠もメッシュも消す。実物が出るので要らない。
     await coverage?.setData(EMPTY_FEATURE_COLLECTION);
-    const rows = await busy('建物を読み込み中…', async () => {
-      await source.ensure();
-      return fetchBuildingsInView(conn, source, bounds, filter, detail.buildingsLimit);
-    });
-    if (token !== buildingsToken) return;
+    const features: GeoJSON.Feature[] = [];
+    for (const source of visible) {
+      const rows = await busy('建物を読み込み中…', async () => {
+        await source.ensure();
+        return fetchBuildingsInView(conn, source, bounds, filterOf(source), detail.buildingsLimit);
+      });
+      if (token !== buildingsToken) return;
 
-    await mapSource.setData({
-      type: 'FeatureCollection',
-      features: rows.map((row) => ({
-        type: 'Feature',
-        properties: { name: row.name, category: row.category, height: row.height },
-        geometry: row.geojson,
-      })),
-    });
-    const count =
-      rows.length >= detail.buildingsLimit
-        ? `${detail.buildingsLimit}件以上 (表示上限)`
-        : `${rows.length}件`;
-    buildingCountEl.textContent = count + sourceLodNote(source, bounds);
+      for (const row of rows) {
+        features.push({
+          type: 'Feature',
+          properties: {
+            name: row.name,
+            category: row.category,
+            height: row.height,
+            // **どの出所の建物か。** ホバーの「出所」に使う。
+            origin: source.id,
+            // 塗り分けの番号。IDを塗りの式に書くと出所が増えたときに直す場所が
+            // 分かれるので、カタログに並んだ順番で渡す。
+            palette: buildingSources.indexOf(source),
+          },
+          geometry: row.geojson,
+        });
+      }
+      const count =
+        rows.length >= detail.buildingsLimit
+          ? `${detail.buildingsLimit}件以上 (表示上限)`
+          : `${rows.length}件`;
+      statuses.push([source, count + sourceLodNote(source, bounds)]);
+    }
+    await mapSource.setData({ type: 'FeatureCollection', features });
+    for (const [source, text] of statuses) showBuildingStatus(source, text);
   };
 
   const requestRefresh = () => {
@@ -3124,7 +3287,8 @@ async function main() {
       meshSummaryEl.textContent = message;
     };
 
-    if (!isLayerVisible('mesh')) {
+    // 行は細かさ違いのCollectionを束ねた1つで、IDは先頭のもの (一覧側と同じ規則)。
+    if (!isLayerVisible(meshSources[0]?.id ?? '')) {
       await clear('');
       return;
     }
@@ -3238,9 +3402,13 @@ async function main() {
         railwayShown = false;
       }
       railwaySummaryEl.textContent = message;
+      for (const source of railwaySources) setLayerStatus(source.id, '');
     };
 
-    if (!isLayerVisible('railway')) {
+    // **路線と駅は別のCollectionなので、一覧でも別の行。** ONの方だけを引く。
+    // 絞り込み (事業者種別) と設定パネルは両方で共有する。
+    const visibleSources = railwaySources.filter((source) => isLayerVisible(source.id));
+    if (visibleSources.length === 0) {
       await clear('');
       return;
     }
@@ -3262,7 +3430,7 @@ async function main() {
         centerLat: c.lat,
       };
       return Promise.all(
-        railwaySources.map(async (source) => {
+        visibleSources.map(async (source) => {
           await source.ensure();
           return {
             kind: source.kind,
@@ -3305,12 +3473,29 @@ async function main() {
     await lineSource.setData(toGeoJson(lines));
     await stationSource.setData(toGeoJson(stations));
 
+    // 行ごとの状態。**出していない方は空にする** (前の件数が残らないように)。
+    for (const source of railwaySources) {
+      if (!visibleSources.includes(source)) {
+        setLayerStatus(source.id, '');
+        continue;
+      }
+      const features = source.kind === 'railway' ? lines : stations;
+      setLayerStatus(
+        source.id,
+        features.length === 0
+          ? 'この範囲にありません'
+          : `${features.length.toLocaleString()} ${source.kind === 'railway' ? '本' : '駅'}` +
+              lodNote(source, lodForZoom(source, map.getZoom())) +
+              (features.length >= detail.railwayLimit ? ' (表示上限)' : ''),
+      );
+    }
+
     if (lines.length === 0 && stations.length === 0) {
       railwaySummaryEl.textContent = 'この範囲に鉄道がありません';
       return;
     }
     const capped = lines.length >= detail.railwayLimit || stations.length >= detail.railwayLimit;
-    const lineSourceInfo = railwaySources.find((source) => source.kind === 'railway');
+    const lineSourceInfo = visibleSources.find((source) => source.kind === 'railway');
     railwaySummaryEl.textContent =
       `路線 ${lines.length.toLocaleString()} / 駅 ${stations.length.toLocaleString()}` +
       (lineSourceInfo ? lodNote(lineSourceInfo, lodForZoom(lineSourceInfo, map.getZoom())) : '') +
@@ -3365,7 +3550,7 @@ async function main() {
       roadSummaryEl.textContent = message;
     };
 
-    if (!isLayerVisible('road')) {
+    if (!isLayerVisible(roadSource.id)) {
       await clear('');
       return;
     }
@@ -3545,89 +3730,110 @@ async function main() {
 
   // ---- レイヤー一覧 -------------------------------------------------------
   //
-  // **Collection とレイヤー行は1対1ではない。** 建物は出所違いの択一 (PLATEAU /
-  // Overture)、人口メッシュは細かさ違い、鉄道は路線と駅で常に一緒に出す。
-  // 一覧に並べるのは「使う側から見た1つのもの」。
+  // **カタログの階層をそのまま一覧にする。** サブカタログ (PLATEAU / Overture Maps …)
+  // が見出し、Collectionが行。以前は「建物」「道路」のように使う側から見た
+  // まとまりで組んでいて、画面からカタログが見えなかった。
+  //
+  // 行とCollectionは**ほぼ1対1**。例外は2つだけ。
+  // - 人口メッシュは細かさ違いのCollection (125m / 1km) をズームで選ぶので1行に束ねる
+  // - 整備範囲は建物の「引いた姿」なので行にせず、建物の ⚙ の中に出す
+  //   (`duck:covers` で結ばれている)
   interface Layer {
+    /** 先頭のCollectionのID。**行とCollectionを同じ名前で呼ぶ。** */
     id: string;
     title: string;
-    /** 行に出す出所。版が分かっていれば添える。 */
-    source: string;
+    /** どのサブカタログの下か。一覧の見出しになる。 */
+    group: CatalogGroup | undefined;
+    /** この行を作っているCollection。⚙ で中身を見せる。 */
+    collections: Collection[];
     vintage?: string;
     /** 収録範囲。**この場所にあるか**の判定に使う。複数Collectionなら和。 */
     bbox: Bbox | null;
     visible: boolean;
     /** 出るのに要るズーム。**無ければどの縮尺でも出る。** */
     minZoom?: number;
-    /** 設定の中身。一覧から開いたときに出す。 */
+    /** 設定の中身。一覧から開いたときに出す。**複数の行で共有することがある。** */
     settings: HTMLElement;
+    /** 共有している設定パネルを、この行に向ける。 */
+    onOpen?: () => void;
     refresh: () => void;
   }
 
   const byKind = (kind: DatasetKind) => collections.filter((c) => c.kind === kind);
-  const collectionsOf = (...kinds: DatasetKind[]) => kinds.flatMap((kind) => byKind(kind));
+  const bboxOf = (members: Collection[]) =>
+    unionBbox(members.map((c) => c.bbox).filter((b): b is Bbox => b !== null));
 
+  /** 建物の設定パネルをその出所に向ける。中身は建物の節 (下) で埋める。 */
+  let pointBuildingSettings: (source: BuildingSource) => void = () => {};
+
+  // **カタログに書かれた順に並べる。** 並びはパイプライン側 (`SUB_CATALOGS`) が決める。
   const layers: Layer[] = [];
-  if (activeSource) {
-    const buildingCollections = collectionsOf('plateau_buildings', 'buildings');
-    layers.push({
-      id: 'buildings',
-      title: '建物',
-      source: buildingSources.map((s) => s.label).join(' / '),
-      vintage: buildingCollections.find((c) => c.vintage)?.vintage,
-      bbox: unionBbox(buildingCollections.map((c) => c.bbox).filter((b): b is Bbox => b !== null)),
-      // 建物はこのアプリの出発点なので既定で出す。
-      visible: true,
-      minZoom: detail.buildingsMinZoom,
-      settings: buildingsSection,
-      refresh: requestRefresh,
-    });
-  }
-  if (meshSources.length > 0) {
-    const meshCollections = collectionsOf('population_mesh');
-    layers.push({
-      id: 'mesh',
-      title: '人口密度',
-      source: '国勢調査',
-      vintage: meshCollections.find((c) => c.vintage)?.vintage,
-      bbox: unionBbox(meshCollections.map((c) => c.bbox).filter((b): b is Bbox => b !== null)),
+  for (const collection of collections) {
+    const base = {
+      id: collection.id,
+      title: collection.title,
+      group: collection.group,
+      collections: [collection],
+      vintage: collection.vintage,
+      bbox: collection.bbox,
       visible: false,
-      settings: meshSectionEl,
-      refresh: requestMeshRefresh,
-    });
+    };
+    switch (collection.kind) {
+      case 'plateau_buildings':
+      case 'buildings': {
+        const source = buildingSources.find((s) => s.id === collection.id);
+        if (!source) break;
+        const coverage = collections.find(
+          (c) => c.kind === 'building_coverage' && c.covers === collection.id,
+        );
+        layers.push({
+          ...base,
+          collections: coverage ? [collection, coverage] : [collection],
+          // **カタログで先頭の建物だけ既定で出す。** このアプリの出発点なので
+          // 何か出ていてほしいが、両方出すと重なって描かれる。
+          visible: source === buildingSources[0],
+          minZoom: detail.buildingsMinZoom,
+          settings: buildingsSection,
+          onOpen: () => pointBuildingSettings(source),
+          refresh: requestRefresh,
+        });
+        break;
+      }
+      case 'population_mesh': {
+        // 細かさ違いを1行に束ねる。**描画側と同じく先頭のメッシュをIDにする。**
+        const first = meshSources[0];
+        if (!first || first.id !== collection.id) break;
+        const members = byKind('population_mesh');
+        layers.push({
+          ...base,
+          collections: members,
+          bbox: bboxOf(members),
+          settings: meshSectionEl,
+          refresh: requestMeshRefresh,
+        });
+        break;
+      }
+      case 'railway':
+      case 'railway_station':
+        if (!railwaySources.some((s) => s.id === collection.id)) break;
+        layers.push({
+          ...base,
+          // **「寄る」ボタンを出さない。** 引いた表示でも粗い段が出るので、
+          // 寄らないと見えないものが無い。設定 (事業者種別) は路線と駅で共有する。
+          settings: railwaySectionEl,
+          refresh: requestRailwayRefresh,
+        });
+        break;
+      case 'road':
+        if (roadSource?.id !== collection.id) break;
+        // 鉄道と同じく「寄る」ボタンは出さない。
+        layers.push({ ...base, settings: roadSectionEl, refresh: requestRoadRefresh });
+        break;
+      default:
+        // 検索の裏方と整備範囲は行にしない (「検索できるもの」と建物の ⚙ に出る)。
+        break;
+    }
   }
-  if (railwaySources.length > 0) {
-    const railwayCollections = collectionsOf('railway', 'railway_station');
-    layers.push({
-      id: 'railway',
-      title: '鉄道',
-      source: '国土数値情報',
-      vintage: railwayVintage,
-      bbox: unionBbox(railwayCollections.map((c) => c.bbox).filter((b): b is Bbox => b !== null)),
-      visible: false,
-      // **「寄る」ボタンを出さない。** 引いた表示でも粗い段が出るので、
-      // 寄らないと見えないものが無い。
-      settings: railwaySectionEl,
-      refresh: requestRailwayRefresh,
-    });
-  }
-  if (roadSource) {
-    layers.push({
-      id: 'road',
-      title: '道路',
-      // **国のデータではない。** N13にもRdCLにも路線名が無いので、
-      // 「国道13号」で引けるのはOvertureだけ (docs/data-sources.md)。
-      source: 'Overture',
-      vintage: roadVintage,
-      bbox: roadSource.bbox,
-      visible: false,
-      // 鉄道と同じく「寄る」ボタンは出さない。
-      settings: roadSectionEl,
-      refresh: requestRoadRefresh,
-    });
-  }
-
-  const layerStatus: Record<string, string> = {};
 
   const isLayerVisible = (id: string) => layers.find((l) => l.id === id)?.visible ?? false;
 
@@ -3643,9 +3849,93 @@ async function main() {
     layerListEl.hidden = false;
   };
 
+  /** 配信しているJSONそのものへのリンク。**カタログが実在することを見せる。** */
+  const jsonLink = (path: string | undefined, label: string): HTMLElement => {
+    const link = document.createElement('a');
+    link.className = 'json-link';
+    link.textContent = `${label} ↗`;
+    if (path) {
+      link.href = dataUrl(path);
+      link.target = '_blank';
+      link.rel = 'noopener';
+    }
+    return link;
+  };
+
+  const formatBbox = ([west, south, east, north]: Bbox) =>
+    `${west.toFixed(2)}, ${south.toFixed(2)} – ${east.toFixed(2)}, ${north.toFixed(2)}`;
+
+  /**
+   * Collection 1つぶんの中身。**カタログに書いてあることだけを出す。**
+   *
+   * 絞り込みだけでは、行の裏にあるのがどのCollectionで、何ファイルあって、
+   * 元のJSONはどこか、が画面から辿れない。
+   */
+  const collectionCard = (collection: Collection): HTMLElement => {
+    const card = document.createElement('div');
+    card.className = 'collection-card';
+    card.dataset.collection = collection.id;
+
+    const head = document.createElement('div');
+    head.className = 'collection-head';
+    const id = document.createElement('code');
+    id.textContent = collection.id;
+    head.append(id, jsonLink(collection.path, 'Collection'));
+
+    const description = document.createElement('p');
+    description.className = 'collection-description';
+    description.textContent = collection.description;
+
+    const facts = document.createElement('dl');
+    facts.className = 'collection-facts';
+    const fact = (term: string, ...value: (string | Node)[]) => {
+      const dt = document.createElement('dt');
+      dt.textContent = term;
+      const dd = document.createElement('dd');
+      dd.append(...value);
+      facts.append(dt, dd);
+      return dd;
+    };
+    // `other` は「SPDXに当てはまるものが無い」。中身は利用規約にあるので、そこへ飛ばす。
+    fact(
+      'ライセンス',
+      collection.license === 'other'
+        ? externalLink(collection.attributionUrl, '利用規約')
+        : collection.license,
+    );
+    if (collection.provider) fact('提供', collection.provider);
+    if (collection.vintage) fact('版', collection.vintage);
+    // **ファイル数はItemCollectionを読まないと分からない。** 起動時には読まない
+    // 約束なので、開いたときに読む (1回だけ。建物を引くときもこれを使い回す)。
+    const count = document.createElement('span');
+    count.className = 'collection-item-count';
+    count.textContent = '…';
+    fact('ファイル', count, ' ', jsonLink(collection.itemsPath, 'Items'));
+    collection
+      .items()
+      .then((items) => (count.textContent = `${items.length.toLocaleString()} 件`))
+      .catch(() => (count.textContent = '読めません'));
+    if (collection.bbox) fact('範囲', formatBbox(collection.bbox));
+
+    // 列は多い (PLATEAUは十数列) ので、たたんでおく。
+    const columns = document.createElement('details');
+    const summary = document.createElement('summary');
+    summary.textContent = `列 (${collection.columns.size})`;
+    const list = document.createElement('p');
+    list.textContent = [...collection.columns].join(', ');
+    columns.append(summary, list);
+
+    card.append(head, description, facts, columns);
+    return card;
+  };
+
   const openLayerSettings = (layer: Layer) => {
-    for (const other of layers) other.settings.hidden = other !== layer;
-    layerSettingsTitleEl.textContent = layer.title;
+    // **要素で比べる。** 建物のPLATEAUとOvertureは同じパネルを共有しているので、
+    // 行で比べると並び順によっては自分のパネルをもう一方の行が隠してしまう。
+    for (const other of layers) other.settings.hidden = other.settings !== layer.settings;
+    layerSettingsTitleEl.textContent = layer.group ? `${layer.group.title} › ${layer.title}` : layer.title;
+    layerCatalogEl.replaceChildren(...layer.collections.map(collectionCard));
+    layer.onOpen?.();
     layerListEl.hidden = true;
     layerSettingsEl.hidden = false;
   };
@@ -3686,11 +3976,12 @@ async function main() {
     const status = document.createElement('span');
     status.className = 'layer-status';
     status.dataset.layerStatus = layer.id;
-    status.textContent = layerStatus[layer.id] ?? '';
+    status.textContent = layerStatus.get(layer.id) ?? '';
 
+    // 出所は見出し (サブカタログ) が言うので、行には版だけを添える。
     const source = document.createElement('span');
     source.className = 'layer-source';
-    source.textContent = layer.vintage ? `${layer.source} · ${layer.vintage}` : layer.source;
+    source.textContent = layer.vintage ?? '';
 
     // **いまの位置のまま寄る。** 「建物のある範囲へ移動」は場所ごと動かすが、
     // 見たい場所は既に画面にあることが多く、足りないのはズームだけ。
@@ -3734,21 +4025,40 @@ async function main() {
   };
 
   /**
-   * 設定の中にある要約を、一覧の行へ写す。
+   * 設定の中にある要約を、一覧の行へ写す。**行とパネルが1対1のものだけ**に使う。
    *
-   * 「拡大すると建物が出ます」のような**出ない理由**は、設定を開かないと
-   * 読めない場所にあると意味がない。要約を書いている側 (`refreshBuildings` など) は
-   * 触らず、**書かれたものを監視して写す** — 書き換え箇所が増えても追従する。
+   * 建物 (PLATEAUとOverture) と鉄道 (路線と駅) は1つのパネルを2行で共有するので、
+   * 要約1つを写すと両方の行に同じことが出る。そちらは描く側が行ごとに直接書く。
    */
   const mirrorStatus = (layerId: string, from: HTMLElement) => {
-    const apply = () => {
-      layerStatus[layerId] = from.textContent ?? '';
-      for (const el of document.querySelectorAll(`[data-layer-status="${layerId}"]`)) {
-        el.textContent = layerStatus[layerId];
-      }
-    };
+    const apply = () => setLayerStatus(layerId, from.textContent ?? '');
     new MutationObserver(apply).observe(from, { childList: true, characterData: true, subtree: true });
     apply();
+  };
+
+  /** サブカタログの見出し。その文書のJSONへのリンクを添える。 */
+  const groupHeading = (group: CatalogGroup): HTMLElement => {
+    const heading = document.createElement('div');
+    heading.className = 'layer-group';
+    heading.dataset.group = group.id;
+    heading.title = group.description;
+    const title = document.createElement('span');
+    title.className = 'layer-group-title';
+    title.textContent = group.title;
+    heading.append(title, jsonLink(group.path, 'Catalog'));
+    return heading;
+  };
+
+  /** 行を並べ、サブカタログが変わるところに見出しを挟む。 */
+  const withHeadings = (rows: Layer[], present: boolean): HTMLElement[] => {
+    const nodes: HTMLElement[] = [];
+    let previous: CatalogGroup | undefined;
+    for (const layer of rows) {
+      if (layer.group && layer.group.id !== previous?.id) nodes.push(groupHeading(layer.group));
+      previous = layer.group;
+      nodes.push(layerRow(layer, present));
+    }
+    return nodes;
   };
 
   /** 裏方 (検索・逆ジオコーディングが使うもの)。**切れてはいけない**ので出すだけ。 */
@@ -3768,20 +4078,14 @@ async function main() {
   const renderLayerList = () => {
     const present = layers.filter((layer) => coversView(layer.bbox));
     const absent = layers.filter((layer) => !coversView(layer.bbox));
-    layerRowsEl.replaceChildren(...present.map((layer) => layerRow(layer, true)));
-    layerAbsentRowsEl.replaceChildren(...absent.map((layer) => layerRow(layer, false)));
+    layerRowsEl.replaceChildren(...withHeadings(present, true));
+    layerAbsentRowsEl.replaceChildren(...withHeadings(absent, false));
     layerAbsentEl.hidden = absent.length === 0;
   };
 
-  const statusSources: [string, HTMLElement][] = [
-    ['buildings', buildingCountEl],
-    ['mesh', meshSummaryEl],
-    ['railway', railwaySummaryEl],
-    ['road', roadSummaryEl],
-  ];
-  for (const [id, el] of statusSources) {
-    if (layers.some((layer) => layer.id === id)) mirrorStatus(id, el);
-  }
+  // 人口メッシュと道路はパネルと行が1対1なので、パネルの要約をそのまま写す。
+  if (meshSources[0]) mirrorStatus(meshSources[0].id, meshSummaryEl);
+  if (roadSource) mirrorStatus(roadSource.id, roadSummaryEl);
 
   if (layers.length > 0) {
     renderLayerList();
@@ -3809,8 +4113,10 @@ async function main() {
     saveDetailLevel(level);
 
     // 「寄る」ボタンの行き先は建物のズームで決まる。行は作り直すので値だけ差し替える。
-    const buildingsLayer = layers.find((layer) => layer.id === 'buildings');
-    if (buildingsLayer) buildingsLayer.minZoom = detail.buildingsMinZoom;
+    // 寄るボタンを持つのは建物の行だけ (出所の数だけある)。
+    for (const layer of layers) {
+      if (layer.minZoom !== undefined) layer.minZoom = detail.buildingsMinZoom;
+    }
     if (layers.length > 0) renderLayerList();
 
     requestRefresh();
@@ -3837,22 +4143,15 @@ async function main() {
     layerSupportEl.hidden = false;
   }
 
-  if (activeSource) {
+  if (settingsSource) {
     map.on('moveend', requestRefresh);
-
-    for (const source of buildingSources) {
-      const option = document.createElement('option');
-      option.value = source.id;
-      option.textContent = source.label;
-      sourceSelect.append(option);
-    }
-    // 出所が1つしか無ければ選ばせる意味がない。
-    sourceSelect.disabled = buildingSources.length < 2;
 
     /** チェック状態を条件に反映する。全部入っていれば「絞っていない」= null。 */
     const syncUsageFilter = (all: string[]) => {
+      if (!settingsSource) return;
       const checked = [...usageOptionsEl.querySelectorAll<HTMLInputElement>('input:checked')];
-      filter.usages = checked.length === all.length ? null : checked.map((c) => c.value);
+      filterOf(settingsSource).usages =
+        checked.length === all.length ? null : checked.map((c) => c.value);
       requestRefresh();
     };
 
@@ -3860,9 +4159,15 @@ async function main() {
     // 以前はここで全ファイルの用途の列を走査していて、起動のたびに
     // ファイルの数だけ往復していた。
     const showFilters = (source: BuildingSource) => {
+      const filter = filterOf(source);
       heightField.hidden = !source.hasHeight;
       usageField.hidden = source.categoryColumn === null;
       filtersEl.hidden = !source.hasHeight && source.categoryColumn === null;
+
+      // **その出所の絞り込みを戻す。** パネルは共有なので、開き直すたびに
+      // 前に開いていた出所の値が残っている。
+      minHeightInput.value = String(filter.minHeight);
+      minHeightValue.textContent = `${filter.minHeight} m`;
 
       if (source.categoryColumn === null) return;
       const usages = source.usages;
@@ -3874,7 +4179,7 @@ async function main() {
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.value = usage;
-        checkbox.checked = true;
+        checkbox.checked = filter.usages === null || filter.usages.includes(usage);
         checkbox.addEventListener('change', () => syncUsageFilter(usages));
         label.append(checkbox, document.createTextNode(usage));
         usageOptionsEl.append(label);
@@ -3893,17 +4198,14 @@ async function main() {
 
     coverageToggle.addEventListener('change', requestRefresh);
 
-    sourceSelect.addEventListener('change', () => {
-      activeSource = buildingSources.find((s) => s.id === sourceSelect.value);
-      if (!activeSource) return;
-      // 出所を変えたら絞り込みは初期状態に戻す。
-      // 用途の語彙が出所ごとに違うので、そのまま持ち越すと意味が変わる。
-      filter.usages = null;
-      // どちらの出所も高さの列を持ち立体で描かれるので、傾きは出所で変えない。
-      showFilters(activeSource);
-      requestRefresh();
-    });
-    showFilters(activeSource);
+    // **どちらかの ⚙ を押したら、共有しているパネルをその出所に向ける。**
+    // 描く出所は変えない (それは一覧のチェックが決める)。
+    pointBuildingSettings = (source) => {
+      settingsSource = source;
+      showFilters(source);
+      buildingCountEl.textContent = layerStatus.get(source.id) ?? '';
+    };
+    showFilters(settingsSource);
     // 収録範囲の枠は refreshBuildings が出すが、その呼び出しは moveend でしか
     // 起きない。起動直後にも一度呼んでおかないと、地図を動かすまで枠が出ない。
     requestRefresh();
@@ -3911,6 +4213,8 @@ async function main() {
     // スライダーは動かすたびにイベントが飛ぶので、少し待ってからクエリする。
     let heightTimer: ReturnType<typeof setTimeout> | undefined;
     minHeightInput.addEventListener('input', () => {
+      if (!settingsSource) return;
+      const filter = filterOf(settingsSource);
       filter.minHeight = Number(minHeightInput.value);
       minHeightValue.textContent = `${filter.minHeight} m`;
       clearTimeout(heightTimer);
@@ -3920,14 +4224,21 @@ async function main() {
     // 建物は一部の範囲しか収録していないうえ、寄らないと出てこない。
     // 偶然そこへ行かないと機能に気づけないので、移動する手段を出しておく。
     //
-    // **選んでいる出所の範囲へ飛ぶ。** 出所全部の和にすると、収録範囲の広さが
-    // 違うときに外れる — PLATEAUを306都市に広げたら和は日本全体になり、
+    // **パネルを向けている出所の範囲へ飛ぶ。** 出所全部の和にすると、収録範囲の
+    // 広さが違うときに外れる — PLATEAUを306都市に広げたら和は日本全体になり、
     // その中心 (岡山付近) にはOvertureの建物が1棟も無かった。
     if (buildingSources.some((source) => source.bbox)) {
       gotoBuildingsButton.hidden = false;
       gotoBuildingsButton.addEventListener('click', () => {
-        const bbox = activeSource?.bbox;
-        if (!bbox) return;
+        const source = settingsSource;
+        const bbox = source?.bbox;
+        if (!source || !bbox) return;
+        // 出していなければ一緒に出す。飛んだ先で何も出ないのは分かりにくい。
+        const layer = layers.find((l) => l.id === source.id);
+        if (layer && !layer.visible) {
+          layer.visible = true;
+          renderLayerList();
+        }
         const [west, south, east, north] = bbox;
         // flyTo に1.5秒かかり、その後の moveend まで refreshBuildings は始まらない。
         // 押した感触が無いと二度押しされるので、移動そのものを合図の対象にする。
@@ -4024,7 +4335,7 @@ async function main() {
     return box;
   };
 
-  if (activeSource) {
+  if (buildingSources.length > 0) {
     map.on('mousemove', 'buildings-3d', (e) => {
       const building = e.features?.[0];
       if (!building) return;
@@ -4032,6 +4343,9 @@ async function main() {
       updateCursor();
 
       const props = building.properties;
+      // **どちらの出所の建物か。** PLATEAUとOvertureは同時に出せるので、
+      // 重なっているところでは色だけでは見分けにくい。見出しと同じ名前で言う。
+      const origin = collections.find((c) => c.id === props.origin);
       hoverPopup
         .setLngLat(e.lngLat)
         .setDOMContent(
@@ -4039,6 +4353,7 @@ async function main() {
             ['', (props.name as string | null) ?? '(名称なし)'],
             ['用途', (props.category as string | null) ?? null],
             ['高さ', props.height ? `${props.height as number} m` : null],
+            ['出所', origin?.group?.title ?? origin?.title ?? null],
           ]),
         )
         .addTo(map);

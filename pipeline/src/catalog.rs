@@ -376,7 +376,8 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
         Description {
             kind: DatasetKind::BuildingCoverage,
             collection: "plateau-buildings-coverage",
-            title: "建物の整備範囲 (PLATEAU)",
+            // 出所は親のサブカタログ (`plateau/catalog.json`) が言うので、題名には書かない。
+            title: "建物の整備範囲",
             description: "PLATEAUの建物がどこまで整備されているかを1kmの地域メッシュで表したもの (面)。建物が実際にある場所を数えているので、市区町村の境界とは一致しない (PLATEAUの整備範囲は市域と一致しない)。メッシュは経緯度から計算する方眼なので境界データを含まない。",
             attribution: MLIT_PLATEAU,
             summary_columns: &[],
@@ -390,7 +391,8 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
         Description {
             kind: DatasetKind::PlateauBuildings,
             collection: "plateau-buildings",
-            title: "建物 (PLATEAU)",
+            // Overtureの「建物」とは親のサブカタログで見分ける。
+            title: "建物",
             description: "PLATEAUの建物 (面)。高さ・用途・階数がほぼ全件に入っている。都市ごとに1ファイル。",
             attribution: MLIT_PLATEAU,
             // PLATEAUの用途。コードリストで解決済みの「住宅」「商業施設」など。

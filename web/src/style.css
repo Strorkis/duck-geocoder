@@ -656,6 +656,104 @@ body,
   display: none;
 }
 
+/* サブカタログの見出し (PLATEAU / Overture Maps …)。**一覧の構造はカタログの階層。**
+   行 (Collection) よりは強く、「この場所のデータ」よりは弱く見せる。 */
+.layer-group {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+  padding-bottom: 0.1rem;
+  border-bottom: 1px solid #eee;
+}
+
+.layer-group:first-child {
+  margin-top: 0.1rem;
+}
+
+.layer-group-title {
+  flex: 1;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #14508c;
+}
+
+/* 配信しているJSONそのものへのリンク。目立たせない — 読む人は読む。 */
+.json-link {
+  flex: none;
+  font-size: 0.65rem;
+  color: #999;
+  text-decoration: none;
+}
+
+.json-link[href]:hover {
+  color: #14508c;
+  text-decoration: underline;
+}
+
+/* 設定の上に出す「この行はカタログのどこから来ているか」。 */
+#layer-catalog:empty {
+  display: none;
+}
+
+.collection-card {
+  margin-bottom: 0.5rem;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid #e3e8ee;
+  border-radius: 0.3rem;
+  background: #f7f9fb;
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
+.collection-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.collection-head code {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.7rem;
+  color: #333;
+}
+
+.collection-description {
+  margin: 0.2rem 0;
+  color: #555;
+}
+
+/* 項目名と値の2列。項目名は短いので幅を固定する。 */
+.collection-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0 0.5rem;
+  margin: 0.2rem 0;
+}
+
+.collection-facts dt {
+  color: #888;
+}
+
+.collection-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.collection-card details summary {
+  cursor: pointer;
+  color: #888;
+}
+
+.collection-card details p {
+  margin: 0.2rem 0 0;
+  color: #555;
+  overflow-wrap: anywhere;
+}
+
 /* 使い方と出典。**右下** — MapLibreの ⓘ と同じ性格のものを同じ側へ集める。
    出典が伸びると押し上げられるので、実測した高さ (`--attribution-space`) の上に置く。 */
 #info-panel {
@@ -694,12 +792,23 @@ body,
 }
 
 /* 背景地図と表示量。データ一覧の最後に置く (QGISでも背景はレイヤーの1つ)。
-   どちらもレイヤーをまたぐ設定なので、同じ見た目で並べる。 */
-#basemap-section,
-#detail-section {
+   どちらもレイヤーをまたぐselect1つなので、**横に並べて縦を1段減らす。** */
+#view-settings {
+  display: flex;
+  gap: 0.5rem;
   margin-top: 0.4rem;
   padding-top: 0.4rem;
   border-top: 1px solid #eee;
+}
+
+#basemap-section,
+#detail-section {
+  flex: 1;
+  min-width: 0;
+}
+
+#view-settings .layer-heading {
+  margin-top: 0;
 }
 
 #basemap-section select,
