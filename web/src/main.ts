@@ -751,6 +751,86 @@ function meshDigits(zoom: number): number {
   return 4;
 }
 
+/**
+ * 表示量。**上限とズームの閾値だけを動かす** — 何をどう読むかは変えない。
+ *
+ * どこまで描けるかは端末で違うので、利用者が決められるようにする。
+ * 数字を直接触らせず3段にしているのは、上限を3000にするか4000にするかを
+ * 決める材料が利用者の側に無いため。**上限に当たったことは各レイヤーが
+ * 「表示上限」と断る**ので、そこを見て段を上げればよい。
+ */
+type DetailLevel = 'low' | 'medium' | 'high';
+
+interface DetailSettings {
+  /** 建物が原寸に切り替わるズーム。これより引くと整備範囲を出す。 */
+  buildingsMinZoom: number;
+  buildingsLimit: number;
+  railwayLimit: number;
+  roadLimit: number;
+  /**
+   * 道路の等級ごとの最小ズームから**引く**値。大きいほど引いた表示で
+   * 多くの等級が出る。高速は元が0なので動かない。
+   */
+  roadClassZoomShift: number;
+}
+
+/**
+ * **標準は従来の値と完全に一致させる。** 転送量や件数を測っている
+ * E2Eの基準がこれで決まっているため、既定を動かすとそちらも動く。
+ *
+ * 多めは上限を2倍、建物を1ズーム早く、道路の等級を2ズーム早く。
+ * 控えめはその逆。**建物のズームを1より大きく動かさない** —
+ * 14で原寸の1画面は15の4倍の面積で、そこから下げると上限に当たるだけになる。
+ */
+const DETAIL_LEVELS: Record<DetailLevel, DetailSettings & { label: string }> = {
+  low: {
+    label: '控えめ',
+    buildingsMinZoom: 16,
+    buildingsLimit: 1500,
+    railwayLimit: 2000,
+    roadLimit: 3000,
+    roadClassZoomShift: -2,
+  },
+  medium: {
+    label: '標準',
+    buildingsMinZoom: 15,
+    buildingsLimit: 3000,
+    railwayLimit: 4000,
+    roadLimit: 6000,
+    roadClassZoomShift: 0,
+  },
+  high: {
+    label: '多め',
+    buildingsMinZoom: 14,
+    buildingsLimit: 6000,
+    railwayLimit: 8000,
+    roadLimit: 12000,
+    roadClassZoomShift: 2,
+  },
+};
+
+const DETAIL_STORAGE_KEY = 'duck-geocoder:detail';
+
+/** 保存されている段。無い・読めない・知らない値なら標準。 */
+function loadDetailLevel(): DetailLevel {
+  try {
+    const saved = localStorage.getItem(DETAIL_STORAGE_KEY);
+    if (saved && saved in DETAIL_LEVELS) return saved as DetailLevel;
+  } catch {
+    // プライベートブラウズなどで localStorage が使えないことがある。
+    // 覚えられないだけで表示はできるので、黙って標準にする。
+  }
+  return 'medium';
+}
+
+function saveDetailLevel(level: DetailLevel): void {
+  try {
+    localStorage.setItem(DETAIL_STORAGE_KEY, level);
+  } catch {
+    // 同上。覚えられなくても今の表示には効いている。
+  }
+}
+
 /** 機体の区分。SORA 2.5 の iGRC 表の列。 */
 const AIRCRAFT_CLASSES = [
   { label: '1m / 25m/s', dimension: '1m' },
@@ -2878,14 +2958,12 @@ async function main() {
   clearButton.addEventListener('click', clearSearch);
 
   /**
-   * ここから原寸 (都市ごとのファイル・全件) を読む。
+   * 表示量。建物・鉄道・道路の上限とズームの閾値がここから決まる。
    *
-   * **これより引いても隠さない。** 全国の高い建物 (60m以上) を出す
-   * ([`BuildingSource.coarse`])。件数が多いのは変わらないので、
-   * **読む先を切り替える**ことで対応している。
+   * 建物は `buildingsMinZoom` から原寸 (都市ごとのファイル・全件) を読む。
+   * **これより引いても隠さない** — 整備範囲をメッシュで出す。
    */
-  const BUILDINGS_MIN_ZOOM = 15;
-  const BUILDINGS_LIMIT = 3000;
+  let detail: DetailSettings = DETAIL_LEVELS[loadDetailLevel()];
   // 高さを持つ建物を表示するときの傾き。
   // 60度まで倒せるが、そこまでいくと表示範囲 (getBounds) が真上から見たときの
   // 7.1倍まで広がる。50度なら3.1倍で、立体感は十分に出る。
@@ -2908,7 +2986,7 @@ async function main() {
       return;
     }
 
-    const zoomedOut = map.getZoom() < BUILDINGS_MIN_ZOOM;
+    const zoomedOut = map.getZoom() < detail.buildingsMinZoom;
     const token = ++buildingsToken;
     const source = activeSource;
     // 取得を始める前に件数表示を空にする。引いていたときの「拡大すると建物が出ます」が
@@ -2940,7 +3018,7 @@ async function main() {
         );
         // **どこまで寄れば出るかを数字で言う。**「拡大すると」だけだと、
         // どれだけ動かせばいいのか分からない。
-        buildingCountEl.textContent = `ズーム${BUILDINGS_MIN_ZOOM}まで寄ると出ます`;
+        buildingCountEl.textContent = `ズーム${detail.buildingsMinZoom}まで寄ると出ます`;
         return;
       }
 
@@ -2958,7 +3036,7 @@ async function main() {
       buildingCountEl.textContent =
         `整備範囲 ${cells.length.toLocaleString()} メッシュ` +
         ` (${MESH_SIZE_LABELS[digits] ?? `${digits}桁`}) · ` +
-        `建物 ${buildings.toLocaleString()} 棟 · ズーム${BUILDINGS_MIN_ZOOM}から建物そのもの`;
+        `建物 ${buildings.toLocaleString()} 棟 · ズーム${detail.buildingsMinZoom}から建物そのもの`;
       return;
     }
 
@@ -2966,7 +3044,7 @@ async function main() {
     await coverage?.setData(EMPTY_FEATURE_COLLECTION);
     const rows = await busy('建物を読み込み中…', async () => {
       await source.ensure();
-      return fetchBuildingsInView(conn, source, bounds, filter, BUILDINGS_LIMIT);
+      return fetchBuildingsInView(conn, source, bounds, filter, detail.buildingsLimit);
     });
     if (token !== buildingsToken) return;
 
@@ -2979,8 +3057,8 @@ async function main() {
       })),
     });
     const count =
-      rows.length >= BUILDINGS_LIMIT
-        ? `${BUILDINGS_LIMIT}件以上 (表示上限)`
+      rows.length >= detail.buildingsLimit
+        ? `${detail.buildingsLimit}件以上 (表示上限)`
         : `${rows.length}件`;
     buildingCountEl.textContent = count + sourceLodNote(source, bounds);
   };
@@ -3142,8 +3220,7 @@ async function main() {
    * **駅には段が無い。** 点に近い短い線なので簡略化しても縮まない。
    * 表示範囲で絞るだけで足りる (全国で2.2万件・821KB)。
    */
-  /** 1回に描く上限。路線と駅の合計ではなく、それぞれに掛かる。 */
-  const RAILWAY_LIMIT = 4000;
+  // 1回に描く上限は `detail.railwayLimit`。路線と駅の合計ではなく、それぞれに掛かる。
   let railwayToken = 0;
   let railwayShown = false;
 
@@ -3194,7 +3271,7 @@ async function main() {
               source,
               bounds,
               railwayInstitutionTypes.length > 0 ? selectedTypes : null,
-              RAILWAY_LIMIT,
+              detail.railwayLimit,
               // 駅には段が無いので、そちらは undefined が返って条件が付かない。
               lodForZoom(source, map.getZoom()),
             ),
@@ -3232,7 +3309,7 @@ async function main() {
       railwaySummaryEl.textContent = 'この範囲に鉄道がありません';
       return;
     }
-    const capped = lines.length >= RAILWAY_LIMIT || stations.length >= RAILWAY_LIMIT;
+    const capped = lines.length >= detail.railwayLimit || stations.length >= detail.railwayLimit;
     const lineSourceInfo = railwaySources.find((source) => source.kind === 'railway');
     railwaySummaryEl.textContent =
       `路線 ${lines.length.toLocaleString()} / 駅 ${stations.length.toLocaleString()}` +
@@ -3248,8 +3325,7 @@ async function main() {
    * 全国でも高速1,360本・483KBで足りる。どのズームでどちらを引くかは
    * [`lodForZoom`] がデータの許容誤差から決める。
    */
-  /** 1回に描く上限。 */
-  const ROAD_LIMIT = 6000;
+  // 1回に描く上限は `detail.roadLimit`。
   let roadToken = 0;
   let roadShown = false;
 
@@ -3261,6 +3337,7 @@ async function main() {
    * ツールチップも拾うたびに移り変わる。**引いたら幹線だけにする。**
    *
    * 高速はズーム0から出す (全国の骨格として読めるし、1,360本しかない)。
+   * これは標準の値で、表示量の設定 (`detail.roadClassZoomShift`) でずらす。
    */
   const ROAD_CLASS_MIN_ZOOM: Record<string, number> = {
     motorway: 0,
@@ -3268,9 +3345,13 @@ async function main() {
     primary: 10,
   };
 
+  /** 表示量の設定を反映した、その等級が出るズーム。0より下げない。 */
+  const roadClassMinZoom = (cls: string): number =>
+    Math.max(0, (ROAD_CLASS_MIN_ZOOM[cls] ?? 0) - detail.roadClassZoomShift);
+
   /** このズームで出す等級。選ばれているもののうち、出してよいものだけ。 */
   const roadClassesForZoom = (selected: string[], zoom: number): string[] =>
-    selected.filter((cls) => zoom >= (ROAD_CLASS_MIN_ZOOM[cls] ?? 0));
+    selected.filter((cls) => zoom >= roadClassMinZoom(cls));
 
   const refreshRoads = async () => {
     const source = map.getSource('road') as GeoJSONSource | undefined;
@@ -3316,7 +3397,7 @@ async function main() {
           centerLat: c.lat,
         },
         shownClasses,
-        ROAD_LIMIT,
+        detail.roadLimit,
         lod,
       );
     });
@@ -3349,7 +3430,7 @@ async function main() {
       const next = Math.min(
         ...selectedClasses
           .filter((cls) => !shownClasses.includes(cls))
-          .map((cls) => ROAD_CLASS_MIN_ZOOM[cls] ?? 0),
+          .map(roadClassMinZoom),
       );
       return ` · ${heldBack}種別はズーム${next}から`;
     };
@@ -3360,7 +3441,7 @@ async function main() {
         heldBackNote();
       return;
     }
-    const capped = features.length >= ROAD_LIMIT;
+    const capped = features.length >= detail.roadLimit;
     roadSummaryEl.textContent =
       `${features.length.toLocaleString()} ${lod === COARSE_LOD ? '本' : '区間'}` +
       lodNote(roadSource, lod) +
@@ -3497,7 +3578,7 @@ async function main() {
       bbox: unionBbox(buildingCollections.map((c) => c.bbox).filter((b): b is Bbox => b !== null)),
       // 建物はこのアプリの出発点なので既定で出す。
       visible: true,
-      minZoom: BUILDINGS_MIN_ZOOM,
+      minZoom: detail.buildingsMinZoom,
       settings: buildingsSection,
       refresh: requestRefresh,
     });
@@ -3710,6 +3791,33 @@ async function main() {
     map.on('moveend', renderLayerList);
   }
 
+  // ---- 表示量 ---------------------------------------------------------------
+  //
+  // **全レイヤーに一度に効く。** 建物だけ上げて道路はそのまま、という使い方は
+  // 想定しない — 重いかどうかは端末で決まり、レイヤーごとには決まらないため。
+  const detailSelect = document.querySelector<HTMLSelectElement>('#detail-level')!;
+  for (const [level, { label }] of Object.entries(DETAIL_LEVELS)) {
+    const option = document.createElement('option');
+    option.value = level;
+    option.textContent = label;
+    detailSelect.append(option);
+  }
+  detailSelect.value = loadDetailLevel();
+  detailSelect.addEventListener('change', () => {
+    const level = detailSelect.value as DetailLevel;
+    detail = DETAIL_LEVELS[level];
+    saveDetailLevel(level);
+
+    // 「寄る」ボタンの行き先は建物のズームで決まる。行は作り直すので値だけ差し替える。
+    const buildingsLayer = layers.find((layer) => layer.id === 'buildings');
+    if (buildingsLayer) buildingsLayer.minZoom = detail.buildingsMinZoom;
+    if (layers.length > 0) renderLayerList();
+
+    requestRefresh();
+    requestRailwayRefresh();
+    requestRoadRefresh();
+  });
+
   // 裏方は種別から引く。**一覧に出すが切らせない** (外すと検索が壊れる)。
   const supportKinds: [DatasetKind, string][] = [
     // **打つ言葉で書く。** データセット名 (「位置参照情報」) では、
@@ -3829,11 +3937,11 @@ async function main() {
           () => new Promise<void>((resolve) => map.once('moveend', () => resolve())),
         );
         // 収録範囲の全体を映すのではなく、その中心に寄る。
-        // fitBounds だと範囲が広いときに BUILDINGS_MIN_ZOOM を下回り、
+        // fitBounds だと範囲が広いときに detail.buildingsMinZoom を下回り、
         // 移動した先で建物が出ないという逆の結果になる。
         map.flyTo({
           center: [(west + east) / 2, (south + north) / 2],
-          zoom: BUILDINGS_MIN_ZOOM + 1,
+          zoom: detail.buildingsMinZoom + 1,
           // 立体で見せたいので傾ける。真上に戻したいときはコンパスを押す。
           pitch: BUILDINGS_PITCH,
           duration: 1500,

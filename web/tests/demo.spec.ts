@@ -2218,6 +2218,56 @@ test('引いた表示では高速道路だけにして、出していない等�
 });
 
 /**
+ * **表示量は、同じ表示のまま出るものを変える。**
+ *
+ * 件数で比べると表示範囲に左右される (過去に何度も踏んだ) ので、
+ * **ズームを動かさずに設定だけ変え**、閾値をまたいだことで確かめる。
+ *
+ * | ズーム9の道路 | 国道 | 都道府県道 |
+ * | --- | --- | --- |
+ * | 控えめ (-2) | 10から | 12から |
+ * | 標準 | 8から | 10から |
+ * | 多め (+2) | 6から | 8から |
+ */
+test('表示量を上げると、同じ表示のまま閾値の手前のものが出る', async ({ page }) => {
+  test.skip(!(await hasRoads(page)), '道路のデータが無い');
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  const detail = page.locator('#detail-level');
+  // 既定は標準。**標準は従来の値と一致させてある** ので、他のテストの基準は動かない。
+  await expect(detail).toHaveValue('medium');
+
+  await showRoads(page, 9);
+  const summary = page.locator('#road-summary');
+  await expect(summary).toContainText('1種別はズーム10から');
+
+  await detail.selectOption('high');
+  await expect(summary).not.toContainText('種別はズーム');
+
+  await detail.selectOption('low');
+  await expect(summary).toContainText('2種別はズーム10から');
+
+  // 建物。標準だとズーム15から原寸なので、14.5では整備範囲が出る。
+  await detail.selectOption('medium');
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7671, 35.6812], zoom: 14.5 });
+  });
+  const count = page.locator('#building-count');
+  await expect(count).toContainText('整備範囲');
+
+  // 多めは14から原寸。**同じ場所・同じズームのまま**建物そのものに切り替わる。
+  await detail.selectOption('high');
+  await expect(count).not.toContainText('整備範囲');
+  await expect(count).toContainText(/\d件/);
+
+  // **覚えていること。** 端末で決まる設定なので、開くたびに選び直させない。
+  await page.reload();
+  await waitForReady(page);
+  await expect(detail).toHaveValue('high');
+});
+
+/**
  * 寄れば原寸に切り替わる。粗い段に留まると、細部が出ないまま気付けない。
  *
  * **件数では比べられない。** ズームを変えると表示範囲も変わるので、

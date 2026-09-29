@@ -693,14 +693,17 @@ body,
   color: #14508c;
 }
 
-/* 背景地図。データ一覧の最後に置く (QGISでもレイヤーの1つ)。 */
-#basemap-section {
+/* 背景地図と表示量。データ一覧の最後に置く (QGISでも背景はレイヤーの1つ)。
+   どちらもレイヤーをまたぐ設定なので、同じ見た目で並べる。 */
+#basemap-section,
+#detail-section {
   margin-top: 0.4rem;
   padding-top: 0.4rem;
   border-top: 1px solid #eee;
 }
 
-#basemap-section select {
+#basemap-section select,
+#detail-section select {
   width: 100%;
   padding: 0.25rem;
   border: 1px solid #ccc;

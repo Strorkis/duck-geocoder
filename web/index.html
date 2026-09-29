@@ -76,6 +76,12 @@
               <p class="layer-heading">背景地図</p>
               <select id="basemap"></select>
             </div>
+            <!-- 表示量もレイヤーをまたぐ設定なので、個別の⚙ではなくここに置く。
+                 背景地図と同じくselect1つなので、たたまず常時出す。 -->
+            <div id="detail-section">
+              <p class="layer-heading">表示量</p>
+              <select id="detail-level" title="上限に当たったら上げる。重ければ下げる"></select>
+            </div>
           </div>
           <div id="layer-settings" hidden>
             <button id="layer-back" type="button">← 一覧へ</button>
