@@ -40,6 +40,7 @@ fn main() -> Result<()> {
                 geometry: coverage::polygon(&cell.mesh_code)?,
                 mesh_code: cell.mesh_code,
                 buildings: cell.buildings,
+                cities: cell.cities,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -66,6 +67,8 @@ fn main() -> Result<()> {
 struct Cell {
     mesh_code: String,
     buildings: i32,
+    /// このセルにかかる自治体。**境界をまたぐセルがあるのでリスト。**
+    cities: Vec<String>,
 }
 
 fn query(sql: &str) -> Result<Vec<Cell>> {

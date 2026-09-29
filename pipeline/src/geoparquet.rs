@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use arrow::array::{ArrayRef, BinaryArray, Float64Array, RecordBatch, StructArray};
+use arrow::array::{Array, ArrayRef, BinaryArray, Float64Array, RecordBatch, StructArray};
 use arrow::datatypes::{DataType, Field, Fields, Schema};
 use geo_traits::GeometryTrait;
 use parquet::arrow::arrow_writer::ArrowWriter;
@@ -176,6 +176,27 @@ pub fn geoparquet_geometry_type(duckdb_name: &str) -> Result<&'static str> {
 pub fn utf8_column(name: &str, values: impl Iterator<Item = String>) -> (Field, ArrayRef) {
     let array: ArrayRef = Arc::new(arrow::array::StringArray::from_iter_values(values));
     (Field::new(name, DataType::Utf8, false), array)
+}
+
+/// 文字列のリスト1列分。
+///
+/// **1つに潰さない。** 地域メッシュは自治体の境界をまたぐので、1つのセルが
+/// 複数の自治体にかかる (実測で全国35,645セルのうち3,512セル・約10%、最大4つ)。
+/// 代表値を1つ選ぶと、境界のセルで**どちらか一方が消える**。
+pub fn utf8_list_column(
+    name: &str,
+    values: impl Iterator<Item = Vec<String>>,
+) -> (Field, ArrayRef) {
+    let mut builder = arrow::array::ListBuilder::new(arrow::array::StringBuilder::new());
+    for list in values {
+        for value in list {
+            builder.values().append_value(value);
+        }
+        builder.append(true);
+    }
+    let array = builder.finish();
+    let field = Field::new(name, Array::data_type(&array).clone(), false);
+    (field, Arc::new(array) as ArrayRef)
 }
 
 /// 文字列1列分。NULLを許す (N03の支庁・郡・行政区名など、無い自治体があるため)。

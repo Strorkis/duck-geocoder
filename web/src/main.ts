@@ -392,17 +392,20 @@ function once(run: () => Promise<void>): () => Promise<void> {
  * ジオメトリを使わないのは、コードを前から切って束ねたあとの大きさで
  * 描きたいため。
  *
- * 濃淡は建物の数で付ける。**整備の厚みが分かる** — 同じ「入っている」でも
- * 都心と郊外で桁が違う。
+ * **濃淡は付けない。** 建物の数で濃くすると人口密集部が濃くなるだけで、
+ * 「整備されているか」とは別のものを見せてしまう。ここで見せたいのは
+ * **入っているかどうか**なので、一様に塗る。
  */
 function coverageFeatureCollection(cells: CoverageCell[]): GeoJSON.FeatureCollection {
   return {
     type: 'FeatureCollection',
-    features: cells.map(({ code, buildings }) => {
+    features: cells.map(({ code, buildings, cities }) => {
       const [west, south, east, north] = meshBounds(code);
       return {
         type: 'Feature',
-        properties: { buildings, opacity: coverageOpacity(buildings) },
+        // **メッシュだと分かる印を持たせる。** 収録範囲の枠も同じソースを
+        // 使い回しているので、描き分けと当たり判定をこれで見分ける。
+        properties: { mesh: true, code, buildings, cities: cities.join('、') },
         geometry: {
           type: 'Polygon',
           coordinates: [
@@ -418,18 +421,6 @@ function coverageFeatureCollection(cells: CoverageCell[]): GeoJSON.FeatureCollec
       };
     }),
   };
-}
-
-/**
- * 建物の数から塗りの濃さを決める。
- *
- * **桁で見る。** 1棟のセルと1万棟のセルを線形に並べると、ほとんどが
- * 最も薄い側に潰れて「入っているかどうか」しか読めなくなる。
- */
-function coverageOpacity(buildings: number): number {
-  if (buildings <= 0) return 0;
-  // 1棟で0.15、10棟で0.3、100棟で0.45、1,000棟で0.6、10,000棟以上で0.6。
-  return Math.min(0.6, 0.15 * (1 + Math.log10(buildings)));
 }
 
 function bboxFeatureCollection([west, south, east, north]: Bbox): GeoJSON.FeatureCollection {
@@ -1484,8 +1475,14 @@ interface BuildingFilter {
 /** 整備範囲のセル1つ。 */
 interface CoverageCell {
   code: string;
-  /** このセルの中にある建物の数。濃淡に使う。 */
+  /** このセルの中にある建物の数。 */
   buildings: number;
+  /**
+   * このセルにかかる自治体。**1つに潰さない** — メッシュは境界をまたぐので、
+   * 全国35,645セルのうち約10%が複数にかかる (最大4つ)。
+   * 束ねて粗くすると当然もっと増える。
+   */
+  cities: string[];
 }
 
 /**
@@ -1507,15 +1504,27 @@ async function fetchCoverageInView(
   const result = await conn.query(`
     SELECT
       substr(mesh_code, 1, ${digits}) AS code,
-      sum(buildings) AS buildings
+      sum(buildings) AS buildings,
+      -- 束ねると自治体も混ざる。**並べて重複を落とす**ので、
+      -- 同じ顔ぶれなら並びも同じになる。
+      list_sort(list_distinct(flatten(list(cities)))) AS cities
     FROM read_parquet([${list}])
     WHERE bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}
       AND bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}
     GROUP BY code;
   `);
   return result.toArray().map((row) => {
-    const r = row.toJSON() as unknown as { code: string; buildings: number | bigint };
-    return { code: r.code, buildings: Number(r.buildings) };
+    const r = row.toJSON() as unknown as {
+      code: string;
+      buildings: number | bigint;
+      cities: unknown;
+    };
+    return {
+      code: r.code,
+      buildings: Number(r.buildings),
+      // リスト列はArrowのVectorで返るので、素の配列に均す。
+      cities: Array.from((r.cities ?? []) as ArrayLike<unknown>, String),
+    };
   });
 }
 
@@ -2321,10 +2330,9 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
         source: 'buildings-coverage',
         paint: {
           'fill-color': '#4a6785',
-          // **濃さは引くときに決めてしまう** (`coverageOpacity`)。整備範囲の
-          // メッシュは建物の数で濃淡を付け、収録範囲の枠 (`opacity` を持たない)
-          // はこれまでと同じ薄さにする。
-          'fill-opacity': ['coalesce', ['get', 'opacity'], 0.08],
+          // **一様に塗る。** 建物の数で濃淡を付けると人口密集部が濃くなるだけで、
+          // 「整備されているか」とは別のものを見せてしまう。
+          'fill-opacity': ['case', ['has', 'mesh'], 0.22, 0.08],
         },
       });
       map.addLayer({
@@ -2336,8 +2344,8 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
           'line-width': 1.5,
           // **メッシュには破線を引かない。** 3万セルの縁を破線にすると
           // 網目が潰れて塗りが読めない。枠 (1つだけ) のときは破線のままにする。
-          'line-dasharray': ['case', ['has', 'opacity'], ['literal', [1, 0]], ['literal', [3, 2]]],
-          'line-opacity': ['case', ['has', 'opacity'], 0.25, 1],
+          'line-dasharray': ['case', ['has', 'mesh'], ['literal', [1, 0]], ['literal', [3, 2]]],
+          'line-opacity': ['case', ['has', 'mesh'], 0.3, 1],
         },
       });
 
@@ -2590,7 +2598,10 @@ async function main() {
   // closeOnClick を切ってあるのは、建物を見るつもりのクリックで結果が消えると、
   // 📍ボタン化して消したはずの「勝手に変わる」感覚が戻ってくるため。
   // 消すのは×かEscだけにする。
-  const popup = new Popup({ closeButton: true, closeOnClick: false });
+  // **判定の結果はホバーと見分けられるようにする。** 2つとも吹き出しなので、
+  // クラスが無いと「どちらが押した場所のものか」が中身を読むまで分からない
+  // (テストからも区別できない)。
+  const popup = new Popup({ closeButton: true, closeOnClick: false, className: 'result-popup' });
 
   // ハイライトとポップアップは1つの結果なので、片方を閉じたら両方消す。
   const clearHighlight = () => {
@@ -3824,6 +3835,7 @@ async function main() {
     closeButton: false,
     closeOnClick: false,
     offset: 12,
+    className: 'hover-popup',
   });
 
   /**
@@ -3878,6 +3890,49 @@ async function main() {
 
     map.on('mouseleave', 'buildings-3d', () => {
       hoveringBuilding = false;
+      updateCursor();
+      hoverPopup.remove();
+    });
+
+    // 整備範囲のメッシュ。**どのメッシュか、どの自治体かが読めること。**
+    // 塗りに濃淡を付けていないので、中身はここでしか分からない。
+    //
+    // 道路と同じく、**同じセルの上を動いている間は作り直さない**
+    // (セルは1km四方あるので滅多に変わらないが、境目でちらつく)。
+    let hoveredCell = '';
+
+    map.on('mousemove', 'buildings-coverage-fill', (e) => {
+      // **判定中はホバーを出さない。** 判定の結果も吹き出しで出すので、
+      // 2つ並ぶとどちらが押した場所のものか分からなくなる。
+      if (picking) return;
+      const cell = e.features?.[0];
+      // 収録範囲の枠 (メッシュではない) には何も出さない。中身が無いため。
+      if (!cell?.properties.mesh) return;
+      hoveringBuilding = true;
+      updateCursor();
+
+      hoverPopup.setLngLat(e.lngLat).addTo(map);
+
+      const code = cell.properties.code as string;
+      if (code === hoveredCell) return;
+      hoveredCell = code;
+
+      const cities = (cell.properties.cities as string) || '(不明)';
+      hoverPopup.setDOMContent(
+        hoverContent([
+          ['', `${MESH_SIZE_LABELS[code.length] ?? `${code.length}桁`}メッシュ`],
+          ['メッシュコード', code],
+          // **束ねると自治体が増える。** 80kmまで引くと何十も並ぶので、
+          // 多いときは数だけにする (全部出すとポップアップが画面を覆う)。
+          ['自治体', cities.split('、').length > 6 ? `${cities.split('、').length} 市区町村` : cities],
+          ['建物', `${(cell.properties.buildings as number).toLocaleString()} 棟`],
+        ]),
+      );
+    });
+
+    map.on('mouseleave', 'buildings-coverage-fill', () => {
+      hoveringBuilding = false;
+      hoveredCell = '';
       updateCursor();
       hoverPopup.remove();
     });
@@ -3974,6 +4029,10 @@ async function main() {
     setPicking(false);
 
     const { lng, lat } = e.lngLat;
+    // **ホバーの吹き出しを先に片付ける。** 判定の結果も吹き出しで出すので、
+    // 残っていると2つ並んでどちらが押した場所のものか分からない。
+    // 整備範囲のメッシュは引いた表示で常に出ているぶん、ここに必ず当たる。
+    hoverPopup.remove();
     popup.setLngLat(e.lngLat).setText('判定中…').addTo(map);
 
     busy('地点を判定中…', async () => {

@@ -54,8 +54,11 @@ pub const COVERS_KEY: &str = "duck:covers";
 /// メッシュ1つ分。
 pub struct Row {
     pub mesh_code: String,
-    /// この中にある建物の数。**濃淡を付けるために持つ** (整備の厚みが分かる)。
+    /// この中にある建物の数。
     pub buildings: i32,
+    /// このセルにかかる自治体 (`"東京都港区"`)。**1つに潰さない** —
+    /// メッシュは境界をまたぐので、実測で約10%のセルが複数にかかる (最大4つ)。
+    pub cities: Vec<String>,
     pub geometry: Polygon<f64>,
 }
 
@@ -104,13 +107,17 @@ SET preserve_insertion_order = false;
 WITH points AS (
   SELECT
     (bbox.xmin + bbox.xmax) / 2 AS lon,
-    (bbox.ymin + bbox.ymax) / 2 AS lat
+    (bbox.ymin + bbox.ymax) / 2 AS lat,
+    city
   FROM read_parquet('{input_glob}', filename = true)
   WHERE {CITY_FILES_ONLY}
 )
 SELECT
   {code} AS mesh_code,
-  count(*) AS buildings
+  count(*) AS buildings,
+  -- **並べてから畳む。** 順が揺れると、作り直すたびに中身が同じでも
+  -- ファイルが変わって上げ直しになる。
+  list_sort(list_distinct(list(city) FILTER (city IS NOT NULL))) AS cities
 FROM points
 GROUP BY mesh_code
 ORDER BY mesh_code;"
@@ -124,10 +131,12 @@ ORDER BY mesh_code;"
 pub fn write_geoparquet(rows: Vec<Row>, output: &Path, covers: &str) -> Result<()> {
     let mut mesh_code = Vec::with_capacity(rows.len());
     let mut buildings = Vec::with_capacity(rows.len());
+    let mut cities = Vec::with_capacity(rows.len());
     let mut geometries = Vec::with_capacity(rows.len());
     for row in rows {
         mesh_code.push(row.mesh_code);
         buildings.push(Some(row.buildings));
+        cities.push(row.cities);
         geometries.push(row.geometry);
     }
 
@@ -135,6 +144,7 @@ pub fn write_geoparquet(rows: Vec<Row>, output: &Path, covers: &str) -> Result<(
     let columns = vec![
         geoparquet::utf8_column("mesh_code", mesh_code.into_iter()),
         geoparquet::i32_nullable_column("buildings", buildings.into_iter()),
+        geoparquet::utf8_list_column("cities", cities.into_iter()),
     ];
 
     geoparquet::write(
@@ -212,6 +222,16 @@ mod tests {
         assert!(sql.contains("plateau_bldg_*.parquet"), "{sql}");
         assert!(sql.contains("GROUP BY mesh_code"), "{sql}");
         assert!(sql.contains("count(*) AS buildings"), "{sql}");
+    }
+
+    /// **自治体を1つに潰さない。** メッシュは境界をまたぐので、代表値を選ぶと
+    /// 境界のセルでどちらかが消える (実測で約10%のセルが複数にかかる)。
+    /// 並べてから畳むのは、作り直すたびに順が揺れてファイルが変わるのを防ぐため。
+    #[test]
+    fn keeps_every_municipality_touching_a_cell() {
+        let sql = build_coverage_sql("plateau_bldg_*.parquet");
+        assert!(sql.contains("list_sort(list_distinct(list(city)"), "{sql}");
+        assert!(sql.contains("AS cities"), "{sql}");
     }
 
     /// **自分の出力を読み込まないこと。** 出力名は素直なglobに引っかかるうえ、

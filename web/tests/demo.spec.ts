@@ -254,7 +254,7 @@ test('📍を押してから地図をクリックすると逆ジオコーディ�
 
   await pickOnMap(page, { x: 400, y: 300 });
 
-  const popup = page.locator('.maplibregl-popup-content');
+  const popup = page.locator('.result-popup .maplibregl-popup-content');
   await expect(popup).toBeVisible();
   // 「判定中…」から確定した地名に変わることを確認する。
   await expect(popup).toContainText('東京都', { timeout: 30_000 });
@@ -278,7 +278,7 @@ test('📍を押さずに地図をクリックしても何も起きない', asyn
 
   await page.locator('#map canvas').click({ position: { x: 400, y: 300 } });
 
-  await expect(page.locator('.maplibregl-popup-content')).toHaveCount(0);
+  await expect(page.locator('.result-popup .maplibregl-popup-content')).toHaveCount(0);
   expect(await page.evaluate(() => (window as unknown as TestWindow).__map!.getZoom())).toBe(before);
   expect(await highlightFeatureCount(page)).toBe(0);
 });
@@ -307,7 +307,7 @@ for (const how of ['close-button', 'escape'] as const) {
       map.jumpTo({ center: [139.7671, 35.6812], zoom: 13 });
     });
     await pickOnMap(page, { x: 400, y: 300 });
-    await expect(page.locator('.maplibregl-popup-content')).toContainText('東京都', {
+    await expect(page.locator('.result-popup .maplibregl-popup-content')).toContainText('東京都', {
       timeout: 30_000,
     });
     await expect.poll(() => highlightFeatureCount(page)).toBe(1);
@@ -318,7 +318,7 @@ for (const how of ['close-button', 'escape'] as const) {
       await page.keyboard.press('Escape');
     }
 
-    await expect(page.locator('.maplibregl-popup-content')).toHaveCount(0);
+    await expect(page.locator('.result-popup .maplibregl-popup-content')).toHaveCount(0);
     await expect.poll(() => highlightFeatureCount(page)).toBe(0);
   });
 }
@@ -331,7 +331,7 @@ test('地図をクリックしても判定結果は消えない', async ({ page 
     map.jumpTo({ center: [139.7671, 35.6812], zoom: 13 });
   });
   await pickOnMap(page, { x: 400, y: 300 });
-  await expect(page.locator('.maplibregl-popup-content')).toContainText('東京都', {
+  await expect(page.locator('.result-popup .maplibregl-popup-content')).toContainText('東京都', {
     timeout: 30_000,
   });
   // ポップアップの文字はポリゴンの取得より先に出る。揃うまで待ってから押す。
@@ -339,7 +339,7 @@ test('地図をクリックしても判定結果は消えない', async ({ page 
 
   await page.locator('#map canvas').click({ position: { x: 200, y: 200 } });
 
-  await expect(page.locator('.maplibregl-popup-content')).toBeVisible();
+  await expect(page.locator('.result-popup .maplibregl-popup-content')).toBeVisible();
   expect(await highlightFeatureCount(page)).toBe(1);
 });
 
@@ -355,7 +355,7 @@ test('海上を指しても自治体は返らない', async ({ page }) => {
   // 狙った1点を判定させたいので、中央を押す。
   await pickOnMap(page);
 
-  await expect(page.locator('.maplibregl-popup-content')).toContainText('該当する行政区域', {
+  await expect(page.locator('.result-popup .maplibregl-popup-content')).toContainText('該当する行政区域', {
     timeout: 30_000,
   });
 });
@@ -396,7 +396,7 @@ test('逆ジオコーディングはファイル全体のごく一部しか読�
     map.jumpTo({ center: [139.7671, 35.6812], zoom: 13 });
   });
   await pickOnMap(page, { x: 400, y: 300 });
-  await expect(page.locator('.maplibregl-popup-content')).toContainText('東京都', {
+  await expect(page.locator('.result-popup .maplibregl-popup-content')).toContainText('東京都', {
     timeout: 30_000,
   });
 
@@ -422,7 +422,7 @@ test('extensions.duckdb.org を遮断しても逆ジオコーディングでき�
     map.jumpTo({ center: [139.7671, 35.6812], zoom: 13 });
   });
   await pickOnMap(page, { x: 400, y: 300 });
-  await expect(page.locator('.maplibregl-popup-content')).toContainText('東京都', {
+  await expect(page.locator('.result-popup .maplibregl-popup-content')).toContainText('東京都', {
     timeout: 30_000,
   });
 });
@@ -858,6 +858,45 @@ test('引くと整備範囲がメッシュで出て、寄ると建物に切り�
 });
 
 /**
+ * **メッシュの中身はホバーでしか分からない。** 塗りに濃淡を付けていない
+ * (建物の数で濃くすると人口密集部が濃くなるだけで、整備されているかとは
+ * 別のものを見せてしまう) ので、どのメッシュでどの自治体かはここで読む。
+ */
+test('整備範囲はホバーでメッシュコードと自治体が出る', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  // 東京駅あたり。**1kmメッシュが出るズーム**で、確実にセルがある場所。
+  await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    map.jumpTo({ center: [139.7671, 35.6812], zoom: 12 });
+  });
+  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBeGreaterThan(0);
+
+  // セルが描かれるまで待ってから、そこをなぞる。
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as unknown as TestWindow).__map!.queryRenderedFeatures(
+            { x: 400, y: 300 } as unknown as never,
+            { layers: ['buildings-coverage-fill'] },
+          ).length,
+      ),
+    )
+    .toBeGreaterThan(0);
+  await page.locator('#map canvas').hover({ position: { x: 400, y: 300 } });
+
+  const info = page.locator('.hover-info');
+  await expect(info).toBeVisible();
+  // **メッシュコードそのものが読めること。** 3次メッシュは8桁。
+  await expect(info).toContainText(/\d{8}/);
+  await expect(info).toContainText('メッシュコード');
+  // **どの自治体が整備されているかが読めること。**
+  await expect(info).toContainText('自治体');
+  await expect(info).toContainText('都');
+});
+
+/**
  * **整備範囲は起動時に読まれるので、転送量に効く。**
  *
  * ファイルは0.71MBだが、UIが要るのは `mesh_code` と `buildings` と `bbox` だけで、
@@ -1003,7 +1042,9 @@ test('建物はホバーで情報が出て、地図は動かない', async ({ pa
   const box = (await canvas.boundingBox())!;
   await canvas.hover({ position: { x: box.width / 2, y: box.height / 2 } });
 
-  await expect(page.locator('.maplibregl-popup-content')).toBeVisible();
+  // **ホバーの吹き出し。** 判定の結果 (`.result-popup`) とは別物で、
+  // 整備範囲のメッシュを足してから両方が同時に出る場面ができた。
+  await expect(page.locator('.hover-popup .maplibregl-popup-content')).toBeVisible();
 
   // ホバーは「調べる」だけなので、地図は動かない。
   const zoomAfter = await page.evaluate(
@@ -1567,7 +1608,8 @@ test('鉄道はホバーで路線名と事業者が出る', async ({ page }) => 
   expect(point, '路線が1本も描かれていない').not.toBeNull();
 
   await page.locator('#map canvas').hover({ position: point! });
-  const popup = page.locator('.maplibregl-popup-content');
+  // **ホバーの吹き出し** (判定の結果とは別物)。
+  const popup = page.locator('.hover-popup .maplibregl-popup-content');
   await expect(popup).toBeVisible();
   // 項目名は値と分かれた列になっている (`setText` の改行は潰れるので要素で組んでいる)。
   await expect(popup).toContainText('事業者');
