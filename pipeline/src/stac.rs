@@ -138,27 +138,27 @@ const SUB_CATALOGS: &[SubCatalog] = &[
     SubCatalog {
         dir: "plateau",
         title: "PLATEAU",
-        description: "国土交通省の3D都市モデル。建物の高さ・用途・階数がほぼ全件に入っている。",
+        description: "国土交通省が整備する3D都市モデル。",
     },
     SubCatalog {
         dir: "overture",
         title: "Overture Maps",
-        description: "Overture Maps Foundation のデータ。OpenStreetMapを含む複数の出所を統合したもの。",
+        description: "Overture Maps Foundation が公開する地図データ。OpenStreetMapなど複数の出所をまとめたもの。",
     },
     SubCatalog {
         dir: "ksj",
         title: "国土数値情報",
-        description: "国土交通省の国土数値情報。",
+        description: "国土交通省が整備する国土数値情報。",
     },
     SubCatalog {
         dir: "estat",
         title: "国勢調査",
-        description: "総務省統計局の地域メッシュ統計。",
+        description: "総務省統計局の国勢調査。地域メッシュごとの集計。",
     },
     SubCatalog {
         dir: "isj",
         title: "位置参照情報",
-        description: "国土交通省の位置参照情報。住所検索に使う代表点。",
+        description: "国土交通省の位置参照情報。住所の代表点。",
     },
 ];
 

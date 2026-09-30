@@ -98,21 +98,10 @@
         </div>
         <!-- 建物の設定。レイヤー一覧から開かれたときに #layer-settings-body へ移す。 -->
         <div id="buildings-section" hidden>
-          <!-- 建物は一部の範囲しか収録していない。偶然そこへ行かないと
-               機能があること自体に気づけないので、移動する手段を置く。
-               データが無いときはJavaScript側で隠したままにする。 -->
-          <button id="goto-buildings" type="button" hidden>建物のある範囲へ移動</button>
           <!-- 出所 (PLATEAU / Overture) の選択欄はもう無い。一覧で出所ごとに
-               行が分かれ、どちらの ⚙ から開いたかでこのパネルの向き先が決まる。 -->
-          <!-- 収録範囲の枠。**既定は切ってある。** 整備範囲のメッシュを持つ出所
-               (PLATEAU) では引いた表示にメッシュが出るので、枠は要らない。
-               メッシュを持たない出所 (Overture) ではまだ役に立つので残す。 -->
-          <div class="field">
-            <label class="toggle">
-              <input id="coverage-toggle" type="checkbox" />
-              収録範囲を枠で示す
-            </label>
-          </div>
+               行が分かれ、どちらの ⚙ から開いたかでこのパネルの向き先が決まる。
+               「建物のある範囲へ移動」と「収録範囲を枠で示す」もやめた。どこに
+               あるかは整備範囲のメッシュと一覧の「この範囲には無い」が示す。 -->
           <!-- 絞り込みは属性が揃っている出所 (PLATEAU) でだけ出す。 -->
           <div id="building-filters" hidden>
             <div class="field" id="height-field">
@@ -215,12 +204,39 @@
           <summary>出典</summary>
           <dl id="credits"></dl>
         </details>
+        <!-- 使っている技術への謝辞。データの出典と並べる。**ライブラリとして
+             使っているもの**と、**考え方・仕様だけ借りているもの**を分けて書く
+             (後者はコードの依存に現れないので、ここに書かないと見えない)。 -->
+        <details id="tech-section">
+          <summary>使っている技術</summary>
+          <div id="tech-credits"></div>
+        </details>
       </div>
       <div id="loading">
         <div class="spinner"></div>
         <p id="loading-message">読み込み中…</p>
       </div>
     </div>
+    <!-- STACの文書をページの中で見せる。生のJSONへ飛ばすと地図から離れてしまい、
+         そこから先 (親・子・Item) へも辿れない。ここではリンクを押すと次の文書に
+         進めるので、**カタログを歩ける**。 -->
+    <dialog id="stac-viewer">
+      <div class="stac-viewer-body">
+        <div class="stac-viewer-head">
+          <button type="button" id="stac-back" title="前の文書へ戻る">←</button>
+          <div class="stac-viewer-title">
+            <span id="stac-type"></span>
+            <strong id="stac-title"></strong>
+            <code id="stac-path"></code>
+          </div>
+          <button type="button" id="stac-close" title="閉じる">×</button>
+        </div>
+        <dl id="stac-links"></dl>
+        <p id="stac-note" hidden></p>
+        <pre id="stac-json"></pre>
+        <a id="stac-raw" target="_blank" rel="noopener">JSONをそのまま開く ↗</a>
+      </div>
+    </dialog>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

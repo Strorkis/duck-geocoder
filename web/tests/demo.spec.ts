@@ -575,6 +575,34 @@ test('出典はパネルにデータごとの一覧として出る', async ({ pa
  * メタデータ/データ」) として持っている。出典表示のリンク先とは別物で、
  * 例えばOvertureは出典がガイドページを指すのに対し、配布元はデータのページ。
  */
+/**
+ * **使っている技術にも、データと同じように謝辞を出す。**
+ *
+ * ライブラリは依存を見れば分かるが、考え方や仕様だけを借りたもの
+ * (STRの並べ替え、COGPの段の並び) はコードのどこにも名前が出ない。
+ * 両方が、どこで使っているかと一緒に出ること。
+ */
+test('使っている技術は、ライブラリと借りた考え方を分けて謝辞を出す', async ({ page }) => {
+  await openSection(page, 'tech-section');
+  const credits = page.locator('#tech-credits');
+
+  await expect(credits.locator('.tech-heading')).toHaveCount(3);
+  await expect(credits).toContainText('ライブラリ');
+  await expect(credits).toContainText('ライブラリは使っていない');
+
+  // 実際に使っているライブラリと、借りただけの考え方の両方がある。
+  for (const name of ['DuckDB-WASM', 'MapLibre GL JS', 'PLATEAU GIS Converter', 'STR', 'Cloud Optimized GeoParquet']) {
+    await expect(credits.locator('dt', { hasText: name }).first()).toBeVisible();
+  }
+  // **名前を並べるだけにしない。** どれにも「どこで使っているか」が付く。
+  const terms = await credits.locator('dt').count();
+  const uses = await credits.locator('dd').allTextContents();
+  expect(uses).toHaveLength(terms);
+  expect(uses.every((use) => use.trim().length > 0)).toBe(true);
+  // 名前は出典へのリンク。
+  expect(await credits.locator('dt a[href^="http"]').count()).toBe(terms);
+});
+
 test('出典に配布元へのリンクが出る', async ({ page }) => {
   await openSection(page, 'credits-section');
 
@@ -604,13 +632,13 @@ test('できることは開かなくても分かる', async ({ page }) => {
   // 背景地図もレイヤーの1つ。**たたまない** (selectが1つあるだけ)。
   await expect(panel.locator('#basemap-section')).toContainText('背景地図');
   // 使い方と出典だけが節のまま。右下 (MapLibreの ⓘ と同じ性格なので同じ側)。
-  for (const heading of ['使い方', '出典']) {
+  for (const heading of ['使い方', '出典', '使っている技術']) {
     await expect(
       page.locator('#info-panel summary', { hasText: heading }).first(),
     ).toBeVisible();
   }
   // 節の中身は既定でたたんである。
-  for (const id of ['help', 'credits-section']) {
+  for (const id of ['help', 'credits-section', 'tech-section']) {
     await expect(page.locator(`#${id}`)).not.toHaveAttribute('open', '');
   }
   // レイヤーの設定も既定では出さない (一覧が先)。
@@ -660,60 +688,35 @@ test('出典が何行になってもパネルは覆われない', async ({ page 
   expect(overlap).toEqual([]);
 });
 
-// 建物は一部の範囲しか収録しておらず、しかも寄らないと出てこない。
-// 偶然そこへ行かないと機能に気づけないので、移動する手段を用意してある。
-// 移動先はカタログの収録範囲から決まるため、データを差し替えても追随する。
-test('ボタンを押すと建物のある範囲へ移動する', async ({ page }) => {
-  test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
-
-  // **件数で前後を比べない。** 引いた表示でも高い建物が出るので、押す前から0ではない。
-  // 見たいのは「原寸が出るところまで寄る」こと。
-  const zoom = () => page.evaluate(() => (window as unknown as TestWindow).__map!.getZoom());
-  expect(await zoom()).toBeLessThan(15);
-
-  await openLayerSettings(page, LAYER.plateauBuildings);
-  await page.locator('#goto-buildings').click();
-
-  await expect.poll(zoom).toBeGreaterThanOrEqual(15);
-  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
-  // 建物は立体で描くので、移動と同時に傾ける。傾き0のままだと真上から見ることになり、
-  // 立体にした意味が伝わらない。真上に戻したいときはコンパスを押す。
-  await expect
-    .poll(() => page.evaluate(() => (window as unknown as TestWindow).__map!.getPitch()))
-    .toBeGreaterThan(0);
-});
-
-/**
- * **飛び先は選んでいる出所の範囲。** 出所全部の和にすると、収録範囲の広さが
- * 違うときに外れる。PLATEAUを306都市に広げたら和が日本全体になり、その中心
- * (岡山付近) にはOvertureの建物が1棟も無かった — 押しても「0件」に着いた。
- */
-test('移動ボタンは選んでいる出所の範囲へ飛ぶ', async ({ page }) => {
-  test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
-  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
-
-  await useOvertureBuildings(page);
-  await page.locator('#goto-buildings').click();
-
-  // 着いた先に実際に建物があること。**0件に着いたら意味が無い。**
-  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
-  await expect(page.locator('#building-count')).not.toHaveText('0件');
-});
-
 /**
  * 初期化のオーバーレイが消えたあとの待ち時間には、以前は合図が何も無かった。
- * 建物のある範囲へ移動しても、数秒のあいだ「空の地図」と見分けがつかない。
+ * 寄っても、数秒のあいだ「空の地図」と見分けがつかない。
+ *
+ * **取得を止めて観察する。** 手元はデータの取得が速すぎて、合図が一瞬で消える。
+ * (以前は「建物のある範囲へ移動」ボタンで寄せていたが、ボタンはやめた。)
  */
 test('建物を読み込んでいる間は合図が出る', async ({ page }) => {
-  test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
 
   await expect(page.locator('#busy')).toBeHidden();
 
-  await openLayerSettings(page, LAYER.plateauBuildings);
-  await page.locator('#goto-buildings').click();
-  // flyTo に1.5秒かかるので、押した直後から出ていること。
-  await expect(page.locator('#busy')).toBeVisible();
+  // 合図を確かめるまでデータを渡さない。
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route('**/*.parquet', async (route) => {
+    await held;
+    await route.continue();
+  });
 
+  // 港区で、原寸が出るところまで寄る。
+  await page.evaluate(() => {
+    (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7454, 35.6586], zoom: 16 });
+  });
+  await expect(page.locator('#busy')).toContainText('建物を読み込み中…');
+
+  release();
   await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
   await expect(page.locator('#busy')).toBeHidden();
 });
@@ -728,11 +731,11 @@ test('建物を読み込んでいる間は合図が出る', async ({ page }) => 
 test('建物を読み込んでいる間は「寄ると出ます」と言わない', async ({ page }) => {
   test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
 
-  // **Overtureに切り替えて観察する。** PLATEAUは引いた表示でも全国の高い建物が
-  // 出るのでこの文言が出ない。全国版を持たない出所ではまだ出る。
+  // **Overtureで観察する。** PLATEAUは引いた表示でも整備範囲が出るので
+  // この文言が出ない。整備範囲を持たない出所ではまだ出る。
   await useOvertureBuildings(page);
 
-  // **どこまで寄れば出るかを数字で言う。**文言は BUILDINGS_MIN_ZOOM から作られる。
+  // **どこまで寄れば出るかを数字で言う。**文言は表示量の設定から作られる。
   const zoomedOutMessage = /ズーム\d+まで寄ると出ます/;
   await expect(page.locator('#building-count')).toHaveText(zoomedOutMessage);
 
@@ -746,8 +749,10 @@ test('建物を読み込んでいる間は「寄ると出ます」と言わな�
     await route.continue();
   });
 
-  await page.locator('#goto-buildings').click();
-  // 取得に入ったことは合図の文言で見分ける (移動中とは別の文言にしてある)。
+  // Overtureが収録している港区で、原寸が出るところまで寄る。
+  await page.evaluate(() => {
+    (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7454, 35.6586], zoom: 16 });
+  });
   await expect(page.locator('#busy')).toContainText('建物を読み込み中…');
 
   await expect(page.locator('#building-count')).not.toHaveText(zoomedOutMessage);
@@ -1254,34 +1259,6 @@ test('用途は一括で切り替えられる', async ({ page }) => {
 });
 
 /**
- * 引くと建物は消えるので、どこにデータがあるかを枠で示す。
- * 偶然その場所へ行かないと機能に気づけない、という状態を避けるため。
- *
- * **整備範囲のメッシュを持たない出所だけの話。** PLATEAUはメッシュが出るので
- * 枠は使わない。枠は「範囲しか分からない出所」への当て木。
- */
-test('整備範囲を持たない出所は収録範囲を枠で出す', async ({ page }) => {
-  test.skip(!(await hasBuildings(page)), '建物データ (Overture) が無い');
-
-  await useOvertureBuildings(page);
-  // **枠は既定で切ってある。** 見たい人だけが入れる。
-  await page.locator('#coverage-toggle').check();
-
-  await page.evaluate(() => {
-    const map = (window as unknown as TestWindow).__map!;
-    map.jumpTo({ center: [139.7454, 35.6586], zoom: 10 });
-  });
-  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBe(1);
-
-  // 寄れば建物が出て、枠は消える。
-  await page.evaluate(() => {
-    const map = (window as unknown as TestWindow).__map!;
-    map.jumpTo({ center: [139.7454, 35.6586], zoom: 16 });
-  });
-  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBe(0);
-});
-
-/**
  * 傾けると `getBounds()` は地平線方向へ広がる (実測でpitch 50度のとき面積3.1倍)。
  * そのぶん読む量が増えないことを確かめる。
  *
@@ -1782,31 +1759,6 @@ test('鉄道はホバーで路線名と事業者が出る', async ({ page }) => 
 });
 
 /**
- * 収録範囲の枠は、建物が一部の都市にしか無いことを示すためのもの。
- * **全国に広がれば日本を囲む箱になって意味を失う**ので、切れるようにしてある。
- */
-test('収録範囲の枠は切り替えられる', async ({ page }) => {
-  test.skip(!(await hasBuildings(page)), '建物データが無い');
-
-  // **整備範囲のメッシュを持たない出所で見る。** PLATEAUはメッシュが出るので、
-  // この切り替えの対象にならない。
-  await useOvertureBuildings(page);
-  await page.evaluate(() => {
-    const map = (window as unknown as TestWindow).__map!;
-    map.jumpTo({ center: [139.7454, 35.6586], zoom: 10 });
-  });
-  // **既定は切ってある。**
-  await expect(page.locator('#coverage-toggle')).not.toBeChecked();
-  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBe(0);
-
-  await page.locator('#coverage-toggle').check();
-  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBe(1);
-
-  await page.locator('#coverage-toggle').uncheck();
-  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBe(0);
-});
-
-/**
  * **一覧はカタログの階層そのもの。** サブカタログ (PLATEAU / Overture Maps …) が
  * 見出しで、Collectionが行。以前は「建物」「道路」のように使う側のまとまりで
  * 組んでいて、画面からカタログが見えなかった。
@@ -1856,16 +1808,53 @@ test('設定を開くとCollectionの中身とJSONへのリンクが出る', asy
   // **ファイル数はItemCollectionを開いたときに読む。** 起動時には読まない約束。
   await expect(card.locator('.collection-item-count')).toHaveText(/^[\d,]+ 件$/);
 
-  // JSONへのリンクが、実際に配信されているCollection文書を指していること。
-  const href = await card.locator('.collection-head .json-link').getAttribute('href');
-  expect(href).toBeTruthy();
-  const collection = (await (await page.request.get(href!)).json()) as { id: string; type: string };
-  expect(collection.type).toBe('Collection');
-  expect(collection.id).toBe(LAYER.plateauBuildings);
-
   // **整備範囲は建物の行の中に出る** (`duck:covers` で結ばれている)。行にはしない。
   await expect(page.locator('.collection-card[data-collection="plateau-buildings-coverage"]')).toBeVisible();
   await expect(page.locator('[data-layer="plateau-buildings-coverage"]')).toHaveCount(0);
+});
+
+/**
+ * **STACの文書はページの中で開き、リンクを辿って歩ける。**
+ *
+ * 以前は生のJSONを別タブで開いていた。地図から離れるうえ、そこから先
+ * (親・子・Item) へは自分でURLを組み立てないと行けなかった。
+ * 中身はカタログから読んで突き合わせる (画面の文言を書き写さない)。
+ */
+test('STACの文書はページの中で開いて、リンクを辿れる', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  const viewer = page.locator('#stac-viewer');
+  const type = page.locator('#stac-type');
+  const json = page.locator('#stac-json');
+  /** 表示中の文書から `rel` のリンクを押す。 */
+  const follow = (rel: string) =>
+    page.locator('#stac-links dt', { hasText: new RegExp(`^${rel}$`) }).locator('+ dd button').first().click();
+
+  await openLayerSettings(page, LAYER.plateauBuildings);
+  await page
+    .locator(`.collection-card[data-collection="${LAYER.plateauBuildings}"] .collection-head .json-link`)
+    .click();
+
+  // **別タブではなく、ページの中に出る。**
+  await expect(viewer).toBeVisible();
+  await expect(type).toHaveText('Collection');
+  await expect(json).toContainText(`"id": "${LAYER.plateauBuildings}"`);
+
+  // Item (ファイル) の一覧へ進む。306件あるので、全部は整形して出さない。
+  await follow('items');
+  await expect(type).toHaveText('FeatureCollection');
+  await expect(page.locator('#stac-note')).toContainText('件のうち先頭');
+
+  // 戻って、親 (サブカタログ) へ。**見出しと同じ題名**であること。
+  await page.locator('#stac-back').click();
+  await expect(type).toHaveText('Collection');
+  await follow('parent');
+  await expect(type).toHaveText('Catalog');
+  await expect(page.locator('#stac-title')).toHaveText('PLATEAU');
+
+  // 閉じれば地図に戻る。
+  await page.locator('#stac-close').click();
+  await expect(viewer).toBeHidden();
 });
 
 /**

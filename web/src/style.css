@@ -142,25 +142,6 @@ body,
   line-height: 1.6;
 }
 
-#goto-buildings {
-  width: 100%;
-  margin-bottom: 0.6rem;
-  padding: 0.35rem 0.7rem;
-  font-size: 0.85rem;
-  border: 1px solid #ccc;
-  border-radius: 0.3rem;
-  background: white;
-  cursor: pointer;
-}
-
-#goto-buildings:hover {
-  background: #f0f4ff;
-}
-
-#goto-buildings[hidden] {
-  display: none;
-}
-
 /* 出典。地図右下の ⓘ は1行に詰まって読みにくいので、こちらで読ませる。 */
 #credits {
   margin: 0.2rem 0 0.4rem;
@@ -176,6 +157,50 @@ body,
 #credits dd {
   margin: 0 0 0.4rem;
   color: #555;
+}
+
+/* 使っている技術の謝辞。**出典と同じ見た目**にする (データと同じ扱いの謝辞なので)。 */
+#tech-credits {
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.tech-heading {
+  margin: 0.4rem 0 0.2rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #14508c;
+}
+
+.tech-list {
+  margin: 0 0 0.3rem;
+}
+
+.tech-list dt {
+  font-weight: 600;
+  color: #333;
+}
+
+/* 名前はリンクだが、出典の見出しと同じ重さに抑える。 */
+.tech-list dt a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.tech-list dt a:hover {
+  color: #14508c;
+  text-decoration: underline;
+}
+
+.tech-list dd {
+  margin: 0 0 0.35rem;
+  color: #555;
+}
+
+.tech-list .vintage {
+  color: #777;
+  font-size: 0.7rem;
+  font-weight: normal;
 }
 
 /* 配布元。ここにあるのは変換した複製なので、原典へ辿れるようにする。 */
@@ -678,17 +703,145 @@ body,
   color: #14508c;
 }
 
-/* 配信しているJSONそのものへのリンク。目立たせない — 読む人は読む。 */
+/* STACの文書を開くボタン。目立たせない — 読む人は読む。見た目はリンクに寄せる。 */
 .json-link {
   flex: none;
+  border: none;
+  background: transparent;
+  padding: 0;
   font-size: 0.65rem;
   color: #999;
-  text-decoration: none;
+  cursor: pointer;
 }
 
-.json-link[href]:hover {
+.json-link:not(:disabled):hover {
   color: #14508c;
   text-decoration: underline;
+}
+
+/* STACの文書を見るダイアログ。**中身は内側の要素に入れ、dialog 自身の余白は0。**
+   こうしておくと dialog がクリックの的になるのは背景を押したときだけになる。 */
+#stac-viewer {
+  width: min(46rem, 92vw);
+  max-height: 85vh;
+  padding: 0;
+  border: 1px solid #ccd;
+  border-radius: 0.5rem;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+}
+
+#stac-viewer::backdrop {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.stac-viewer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: calc(85vh - 2px);
+  padding: 0.8rem 1rem;
+  box-sizing: border-box;
+  font-size: 0.8rem;
+}
+
+.stac-viewer-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.stac-viewer-head button {
+  flex: none;
+  border: 1px solid #ccc;
+  border-radius: 0.3rem;
+  background: white;
+  cursor: pointer;
+  padding: 0.1rem 0.5rem;
+}
+
+.stac-viewer-head button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.stac-viewer-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.5rem;
+}
+
+#stac-type {
+  font-size: 0.7rem;
+  color: #14508c;
+  font-weight: 600;
+}
+
+#stac-path {
+  width: 100%;
+  font-size: 0.7rem;
+  color: #888;
+  overflow-wrap: anywhere;
+}
+
+/* リンク (rel と行き先) の2列。行き先を押すと次の文書へ進む。 */
+#stac-links {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.15rem 0.6rem;
+  margin: 0;
+}
+
+#stac-links dt {
+  color: #888;
+}
+
+#stac-links dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.stac-link {
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: #14508c;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.stac-link:hover {
+  text-decoration: underline;
+}
+
+#stac-note {
+  margin: 0;
+  color: #886;
+  font-size: 0.75rem;
+}
+
+/* 本体。ここだけが伸び縮みしてスクロールする。 */
+#stac-json {
+  flex: 1;
+  min-height: 6rem;
+  margin: 0;
+  padding: 0.5rem;
+  overflow: auto;
+  background: #f7f9fb;
+  border: 1px solid #e3e8ee;
+  border-radius: 0.3rem;
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+#stac-raw {
+  align-self: flex-end;
+  font-size: 0.7rem;
+  color: #888;
 }
 
 /* 設定の上に出す「この行はカタログのどこから来ているか」。 */

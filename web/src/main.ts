@@ -294,6 +294,135 @@ async function fetchStac<T>(path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+/** STACの文書のうち、見せるのに要るところだけ。種類を問わず読む。 */
+interface StacDocument {
+  type?: string;
+  id?: string;
+  title?: string;
+  links?: StacLink[];
+  features?: unknown[];
+}
+
+/**
+ * ItemCollectionの `features` を見せる件数。PLATEAUは306件・595KBあり、
+ * 全部を整形して出すと1MBを超えて画面が固まる。**全体は生のJSONで見られる。**
+ */
+const STAC_FEATURE_PREVIEW = 20;
+
+/**
+ * STACの文書をページの中で見せる。**リンクを押すと次の文書へ進める。**
+ *
+ * 以前は生のJSONを別タブで開いていた。それだと地図から離れるうえ、
+ * そこから先 (親・子・Item) へは自分でURLを組み立てないと辿れない。
+ * ここでは `links` をボタンにしてあるので、**画面の中でカタログを歩ける**。
+ *
+ * リンクの解決はアプリ本体と同じ規則 ([`resolveHref`] — その文書からの相対)。
+ * 実データ (parquet) は開かない。数十MBあり、開いても読めないため。
+ */
+function createStacViewer(dialog: HTMLDialogElement): (path: string) => void {
+  const pick = <T extends Element>(selector: string) => dialog.querySelector<T>(selector)!;
+  const backButton = pick<HTMLButtonElement>('#stac-back');
+  const typeEl = pick<HTMLSpanElement>('#stac-type');
+  const titleEl = pick<HTMLElement>('#stac-title');
+  const pathEl = pick<HTMLElement>('#stac-path');
+  const linksEl = pick<HTMLDListElement>('#stac-links');
+  const noteEl = pick<HTMLParagraphElement>('#stac-note');
+  const jsonEl = pick<HTMLPreElement>('#stac-json');
+  const rawLink = pick<HTMLAnchorElement>('#stac-raw');
+
+  /** 辿ってきた文書 (配信の起点からのパス)。末尾がいま見ているもの。 */
+  const trail: string[] = [];
+
+  const linkTarget = (link: StacLink, base: string): Node => {
+    // 配布元など、カタログの外を指すもの。
+    if (/^[a-z][a-z0-9+.-]*:/i.test(link.href)) return externalLink(link.href, link.title ?? link.href);
+    const path = resolveHref(link.href, base);
+    if (!path.endsWith('.json')) {
+      const code = document.createElement('code');
+      code.textContent = path;
+      return code;
+    }
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'stac-link';
+    button.textContent = link.title ? `${link.title} (${path})` : path;
+    button.addEventListener('click', () => go(path));
+    return button;
+  };
+
+  const render = async (path: string) => {
+    backButton.disabled = trail.length < 2;
+    typeEl.textContent = '';
+    titleEl.textContent = '読み込み中…';
+    pathEl.textContent = path;
+    linksEl.replaceChildren();
+    noteEl.hidden = true;
+    jsonEl.textContent = '';
+    rawLink.href = dataUrl(path);
+
+    let document_: StacDocument;
+    try {
+      document_ = await fetchStac<StacDocument>(path);
+    } catch (e) {
+      titleEl.textContent = '読めませんでした';
+      jsonEl.textContent = String(e);
+      return;
+    }
+    // 読んでいる間に別の文書へ進んでいたら、古い方は捨てる。
+    if (trail.at(-1) !== path) return;
+
+    typeEl.textContent = document_.type ?? '';
+    titleEl.textContent = document_.title ?? document_.id ?? path;
+
+    // `self` は今いる文書なので並べない。
+    for (const link of document_.links ?? []) {
+      if (link.rel === 'self') continue;
+      const dt = document.createElement('dt');
+      dt.textContent = link.rel;
+      const dd = document.createElement('dd');
+      dd.append(linkTarget(link, path));
+      linksEl.append(dt, dd);
+    }
+
+    const features = document_.features;
+    const shown =
+      Array.isArray(features) && features.length > STAC_FEATURE_PREVIEW
+        ? { ...document_, features: features.slice(0, STAC_FEATURE_PREVIEW) }
+        : document_;
+    if (shown !== document_) {
+      noteEl.textContent =
+        `features は ${features!.length.toLocaleString()} 件のうち先頭 ` +
+        `${STAC_FEATURE_PREVIEW} 件だけ表示しています。全体は下のリンクから。`;
+      noteEl.hidden = false;
+    }
+    jsonEl.textContent = JSON.stringify(shown, null, 2);
+    jsonEl.scrollTop = 0;
+  };
+
+  const go = (path: string) => {
+    trail.push(path);
+    void render(path);
+  };
+
+  backButton.addEventListener('click', () => {
+    if (trail.length < 2) return;
+    trail.pop();
+    void render(trail.at(-1)!);
+  });
+  pick<HTMLButtonElement>('#stac-close').addEventListener('click', () => dialog.close());
+  // **背景を押したら閉じる。** 中身は内側の要素に入れてあるので、
+  // dialog 自身がクリックの的になるのは背景 (::backdrop) を押したときだけ。
+  dialog.addEventListener('click', (e) => {
+    if (e.target === dialog) dialog.close();
+  });
+
+  return (path: string) => {
+    trail.length = 0;
+    go(path);
+    if (!dialog.open) dialog.showModal();
+  };
+}
+
 /**
  * Catalogから全Collectionを読む。**カタログに書かれた順に返す** (一覧の並びになる)。
  *
@@ -499,10 +628,7 @@ function coverageFeatureCollection(cells: CoverageCell[]): GeoJSON.FeatureCollec
       const total = meshCellCapacity(code.length);
       return {
         type: 'Feature',
-        // **メッシュだと分かる印を持たせる。** 収録範囲の枠も同じソースを
-        // 使い回しているので、描き分けと当たり判定をこれで見分ける。
         properties: {
-          mesh: true,
           code,
           buildings,
           filled,
@@ -524,30 +650,6 @@ function coverageFeatureCollection(cells: CoverageCell[]): GeoJSON.FeatureCollec
         },
       };
     }),
-  };
-}
-
-function bboxFeatureCollection([west, south, east, north]: Bbox): GeoJSON.FeatureCollection {
-  return {
-    type: 'FeatureCollection',
-    features: [
-      {
-        type: 'Feature',
-        properties: {},
-        geometry: {
-          type: 'Polygon',
-          coordinates: [
-            [
-              [west, south],
-              [east, south],
-              [east, north],
-              [west, north],
-              [west, south],
-            ],
-          ],
-        },
-      },
-    ],
   };
 }
 
@@ -2372,6 +2474,166 @@ function renderCredits(container: HTMLElement, collections: Collection[]): void 
   }
 }
 
+/** 使っている技術1つ分。 */
+interface TechCredit {
+  name: string;
+  /** 誰のものか・何者か。ライセンスが分かっていれば添える。 */
+  who: string;
+  /** **このアプリのどこで使っているか。** 名前を並べるだけだと謝辞にならない。 */
+  use: string;
+  url: string;
+}
+
+/**
+ * 使っている技術への謝辞。**データの出典と同じ扱いにする。**
+ *
+ * 3つに分けるのは、**依存に現れるかどうか**が違うため。ライブラリは
+ * `package.json` / `Cargo.toml` を見れば分かるが、考え方や仕様だけを借りたもの
+ * (STRの並べ替え、COGPの段の並びなど) はコードのどこにも名前が出ない。
+ * ここに書かないと、借りたことが誰にも見えない。
+ *
+ * 仕様や論文への参照は、実際に設計を左右したものだけを載せる。
+ * PLATEAU GIS Converter の README の謝辞 (Planetiler の手法を参考にした旨)
+ * に倣った。
+ */
+const TECH_CREDITS: { heading: string; items: TechCredit[] }[] = [
+  {
+    heading: '画面で使っているライブラリ',
+    items: [
+      {
+        name: 'DuckDB-WASM',
+        who: 'DuckDB · MIT',
+        use: 'ブラウザの中でGeoParquetをSQLで読む。HTTPの部分取得で、要る行グループだけを取りに行く',
+        url: 'https://github.com/duckdb/duckdb-wasm',
+      },
+      {
+        name: 'DuckDB spatial',
+        who: 'DuckDB · MIT',
+        use: '指した場所がどの市区町村かを調べる空間関数',
+        url: 'https://github.com/duckdb/duckdb-spatial',
+      },
+      {
+        name: 'MapLibre GL JS',
+        who: 'MapLibre · BSD-3-Clause',
+        use: '地図と建物の立体の描画',
+        url: 'https://github.com/maplibre/maplibre-gl-js',
+      },
+    ],
+  },
+  {
+    heading: 'データの変換で使っているライブラリ',
+    items: [
+      {
+        name: 'PLATEAU GIS Converter (nusamai)',
+        who: 'MIERUNE · MIT',
+        use: 'PLATEAUのCityGMLを読む。用途などのコードを日本語に解決するところまで任せている',
+        url: 'https://github.com/MIERUNE/plateau-gis-converter',
+      },
+      {
+        name: 'DuckDB',
+        who: 'DuckDB · MIT',
+        use: 'Overtureの取り出しと、道路・鉄道の簡略化 (粗い段) の作成',
+        url: 'https://duckdb.org/',
+      },
+      {
+        name: 'Apache Arrow / Parquet (arrow-rs)',
+        who: 'Apache Software Foundation · Apache-2.0',
+        use: 'GeoParquetの書き出し',
+        url: 'https://github.com/apache/arrow-rs',
+      },
+      {
+        name: 'PROJ',
+        who: 'OSGeo · MIT',
+        use: '座標系の変換',
+        url: 'https://proj.org/',
+      },
+      {
+        name: 'GeoRust (geo-types / wkb / geojson)',
+        who: 'GeoRust · MIT / Apache-2.0',
+        use: 'ジオメトリの扱いとWKBの書き出し',
+        url: 'https://github.com/georust',
+      },
+    ],
+  },
+  {
+    heading: '考え方・仕様を借りているもの (ライブラリは使っていない)',
+    items: [
+      {
+        name: 'STAC',
+        who: '仕様',
+        use: 'データの目録の形 (Catalog → Collection → Item)。一覧の見出しと行はこの階層そのもの',
+        url: 'https://stacspec.org/',
+      },
+      {
+        name: 'GeoParquet',
+        who: '仕様 (OGC)',
+        use: '配るファイルの形。bboxの列で、表示範囲の外の行グループを読み飛ばす',
+        url: 'https://geoparquet.org/',
+      },
+      {
+        name: 'STR (Sort-Tile-Recursive)',
+        who: 'Leutenegger, Lopez, Edgington (ICDE 1997)',
+        use: '空間的に近い地物を同じ行グループに詰める並べ替え。論文を読んで自前で実装した',
+        url: 'https://doi.org/10.1109/ICDE.1997.582015',
+      },
+      {
+        name: 'Cloud Optimized GeoParquet (COGP)',
+        who: 'Kanahiro',
+        use: '粗い段を行グループの先頭に置き、細かい段を後ろに続ける並び。将来乗り換えられるよう、配置を合わせてある',
+        url: 'https://github.com/Kanahiro/cloud-optimized-geoparquet',
+      },
+      {
+        name: 'PMTiles',
+        who: 'Protomaps',
+        use: '解像度ごとにファイルを分けず、1つのファイルに収める考え方。粗い段を別ファイルにしなかったのはこれに倣った',
+        url: 'https://github.com/protomaps/PMTiles',
+      },
+      {
+        name: 'Portolan',
+        who: '仕様',
+        use: 'オブジェクトストレージにSTACとGeoParquetを置くだけで配る構成。項目名を借りている (準拠はまだ)',
+        url: 'https://www.portolan-sdi.org/',
+      },
+      {
+        name: '地域メッシュ (JIS X 0410)',
+        who: '日本産業規格',
+        use: '整備範囲と人口メッシュのセル。緯度経度から計算で決まるので境界データが要らない',
+        url: 'https://www.stat.go.jp/data/mesh/m_tuite.html',
+      },
+      {
+        name: 'SORA 2.5',
+        who: 'JARUS',
+        use: '人口密度の凡例 (地上リスクの区分)',
+        url: 'http://jarus-rpas.org/',
+      },
+    ],
+  },
+];
+
+/** 使っている技術の謝辞を出す。出典 (`renderCredits`) と同じ見た目にする。 */
+function renderTechCredits(container: HTMLElement): void {
+  container.replaceChildren();
+  for (const { heading, items } of TECH_CREDITS) {
+    const title = document.createElement('p');
+    title.className = 'tech-heading';
+    title.textContent = heading;
+    const list = document.createElement('dl');
+    list.className = 'tech-list';
+    for (const { name, who, use, url } of items) {
+      const term = document.createElement('dt');
+      term.append(externalLink(url, name));
+      const by = document.createElement('span');
+      by.className = 'vintage';
+      by.textContent = who;
+      term.append(' ', by);
+      const detail = document.createElement('dd');
+      detail.textContent = use;
+      list.append(term, detail);
+    }
+    container.append(title, list);
+  }
+}
+
 function initMap(collections: Collection[]): Promise<MapLibreMap> {
   const map = new MapLibreMap({
     container: 'map',
@@ -2562,8 +2824,8 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
         },
       });
 
-      // 建物の収録範囲。引くと建物そのものは消えるので、どこにデータがあるかを
-      // 枠で示す。偶然その場所へ行かないと機能に気づけない、という状態を避ける。
+      // 建物の整備範囲。引くと建物そのものは消えるので、どこにデータがあるかを
+      // 1kmのメッシュで示す。偶然その場所へ行かないと機能に気づけない、という状態を避ける。
       map.addSource('buildings-coverage', {
         type: 'geojson',
         data: EMPTY_FEATURE_COLLECTION,
@@ -2583,10 +2845,17 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
           // 「少しはある」と「全く無い」は別物なので、**描かれる限り必ず見える**
           // 0.12を下限にする。8桁 (1km) では必ず1なので一様に塗られる。
           'fill-opacity': [
-            'case',
-            ['has', 'mesh'],
-            ['interpolate', ['linear'], ['get', 'ratio'], 0, 0.12, 0.05, 0.18, 0.25, 0.26, 1, 0.36],
-            0.08,
+            'interpolate',
+            ['linear'],
+            ['get', 'ratio'],
+            0,
+            0.12,
+            0.05,
+            0.18,
+            0.25,
+            0.26,
+            1,
+            0.36,
           ],
         },
       });
@@ -2597,10 +2866,8 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
         paint: {
           'line-color': '#4a6785',
           'line-width': 1.5,
-          // **メッシュには破線を引かない。** 3万セルの縁を破線にすると
-          // 網目が潰れて塗りが読めない。枠 (1つだけ) のときは破線のままにする。
-          'line-dasharray': ['case', ['has', 'mesh'], ['literal', [1, 0]], ['literal', [3, 2]]],
-          'line-opacity': ['case', ['has', 'mesh'], 0.3, 1],
+          // 縁は薄く。3万セルの縁を濃く引くと網目が潰れて塗りが読めない。
+          'line-opacity': 0.3,
         },
       });
 
@@ -2672,10 +2939,8 @@ async function main() {
   const loadingMessageEl = document.querySelector<HTMLParagraphElement>('#loading-message')!;
   const busyEl = document.querySelector<HTMLDivElement>('#busy')!;
   const busyLabelEl = document.querySelector<HTMLSpanElement>('#busy-label')!;
-  const gotoBuildingsButton = document.querySelector<HTMLButtonElement>('#goto-buildings')!;
   const basemapSelect = document.querySelector<HTMLSelectElement>('#basemap')!;
   const buildingsSection = document.querySelector<HTMLDivElement>('#buildings-section')!;
-  const coverageToggle = document.querySelector<HTMLInputElement>('#coverage-toggle')!;
   const filtersEl = document.querySelector<HTMLDivElement>('#building-filters')!;
   const heightField = document.querySelector<HTMLDivElement>('#height-field')!;
   const usageField = document.querySelector<HTMLDivElement>('#usage-field')!;
@@ -2714,11 +2979,14 @@ async function main() {
   )!;
   const layerSettingsBodyEl = document.querySelector<HTMLDivElement>('#layer-settings-body')!;
   const layerCatalogEl = document.querySelector<HTMLDivElement>('#layer-catalog')!;
+  const openStac = createStacViewer(document.querySelector<HTMLDialogElement>('#stac-viewer')!);
   const layerBackButton = document.querySelector<HTMLButtonElement>('#layer-back')!;
   const aircraftSelect = document.querySelector<HTMLSelectElement>('#aircraft-class')!;
   const meshLegendBody = document.querySelector<HTMLTableSectionElement>('#mesh-legend tbody')!;
   const meshSummaryEl = document.querySelector<HTMLParagraphElement>('#mesh-summary')!;
   const creditsEl = document.querySelector<HTMLDListElement>('#credits')!;
+  // 技術の謝辞はカタログに依らないので、初期化を待たずに出す (失敗しても読める)。
+  renderTechCredits(document.querySelector<HTMLDivElement>('#tech-credits')!);
 
   // DuckDB-WASMの初期化とParquetの読み込みには数秒かかるので、
   // 準備が終わるまでは操作できないことが分かるようにしておく。
@@ -3107,10 +3375,6 @@ async function main() {
    * **これより引いても隠さない** — 整備範囲をメッシュで出す。
    */
   let detail: DetailSettings = DETAIL_LEVELS[loadDetailLevel()];
-  // 高さを持つ建物を表示するときの傾き。
-  // 60度まで倒せるが、そこまでいくと表示範囲 (getBounds) が真上から見たときの
-  // 7.1倍まで広がる。50度なら3.1倍で、立体感は十分に出る。
-  const BUILDINGS_PITCH = 50;
   let buildingsToken = 0;
 
   /**
@@ -3186,9 +3450,10 @@ async function main() {
       const features: GeoJSON.Feature[] = [];
       for (const source of visible) {
         if (!source.coverage) {
-          if (coverageToggle.checked && source.bbox) {
-            features.push(...bboxFeatureCollection(source.bbox).features);
-          }
+          // 整備範囲を持たない出所 (Overture) は、引いた表示では何も描かない。
+          // 以前は収録範囲を枠で示せたが、やめた — どこにあるかは一覧の
+          // 「この範囲には無い」が言う。
+          //
           // **どこまで寄れば出るかを数字で言う。**「拡大すると」だけだと、
           // どれだけ動かせばいいのか分からない。
           statuses.push([source, `ズーム${detail.buildingsMinZoom}まで寄ると出ます`]);
@@ -3885,15 +4150,15 @@ async function main() {
 
   /** 配信しているJSONそのものへのリンク。**カタログが実在することを見せる。** */
   const jsonLink = (path: string | undefined, label: string): HTMLElement => {
-    const link = document.createElement('a');
-    link.className = 'json-link';
-    link.textContent = `${label} ↗`;
-    if (path) {
-      link.href = dataUrl(path);
-      link.target = '_blank';
-      link.rel = 'noopener';
-    }
-    return link;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'json-link';
+    button.textContent = label;
+    button.title = 'STACの文書を見る';
+    button.disabled = !path;
+    // **ページの中で開く** (`openStac`)。生のJSONへ飛ばすと地図から離れる。
+    if (path) button.addEventListener('click', () => openStac(path));
+    return button;
   };
 
   const formatBbox = ([west, south, east, north]: Bbox) =>
@@ -4283,8 +4548,6 @@ async function main() {
       usageNoneButton.onclick = () => setAll(false);
     };
 
-    coverageToggle.addEventListener('change', requestRefresh);
-
     // **どちらかの ⚙ を押したら、共有しているパネルをその出所に向ける。**
     // 描く出所は変えない (それは一覧のチェックが決める)。
     pointBuildingSettings = (source) => {
@@ -4293,8 +4556,8 @@ async function main() {
       buildingCountEl.textContent = layerStatus.get(source.id) ?? '';
     };
     showFilters(settingsSource);
-    // 収録範囲の枠は refreshBuildings が出すが、その呼び出しは moveend でしか
-    // 起きない。起動直後にも一度呼んでおかないと、地図を動かすまで枠が出ない。
+    // 整備範囲は refreshBuildings が出すが、その呼び出しは moveend でしか
+    // 起きない。起動直後にも一度呼んでおかないと、地図を動かすまで出ない。
     requestRefresh();
 
     // スライダーは動かすたびにイベントが飛ぶので、少し待ってからクエリする。
@@ -4307,45 +4570,6 @@ async function main() {
       clearTimeout(heightTimer);
       heightTimer = setTimeout(requestRefresh, 200);
     });
-
-    // 建物は一部の範囲しか収録していないうえ、寄らないと出てこない。
-    // 偶然そこへ行かないと機能に気づけないので、移動する手段を出しておく。
-    //
-    // **パネルを向けている出所の範囲へ飛ぶ。** 出所全部の和にすると、収録範囲の
-    // 広さが違うときに外れる — PLATEAUを306都市に広げたら和は日本全体になり、
-    // その中心 (岡山付近) にはOvertureの建物が1棟も無かった。
-    if (buildingSources.some((source) => source.bbox)) {
-      gotoBuildingsButton.hidden = false;
-      gotoBuildingsButton.addEventListener('click', () => {
-        const source = settingsSource;
-        const bbox = source?.bbox;
-        if (!source || !bbox) return;
-        // 出していなければ一緒に出す。飛んだ先で何も出ないのは分かりにくい。
-        const layer = layers.find((l) => l.id === source.id);
-        if (layer && !layer.visible) {
-          layer.visible = true;
-          renderLayerList();
-        }
-        const [west, south, east, north] = bbox;
-        // flyTo に1.5秒かかり、その後の moveend まで refreshBuildings は始まらない。
-        // 押した感触が無いと二度押しされるので、移動そのものを合図の対象にする。
-        // 続けて refreshBuildings 側の合図が立つので、表示は途切れない。
-        void busy(
-          '建物のある範囲へ移動中…',
-          () => new Promise<void>((resolve) => map.once('moveend', () => resolve())),
-        );
-        // 収録範囲の全体を映すのではなく、その中心に寄る。
-        // fitBounds だと範囲が広いときに detail.buildingsMinZoom を下回り、
-        // 移動した先で建物が出ないという逆の結果になる。
-        map.flyTo({
-          center: [(west + east) / 2, (south + north) / 2],
-          zoom: detail.buildingsMinZoom + 1,
-          // 立体で見せたいので傾ける。真上に戻したいときはコンパスを押す。
-          pitch: BUILDINGS_PITCH,
-          duration: 1500,
-        });
-      });
-    }
   }
 
   // 操作の役割分担:
@@ -4464,8 +4688,7 @@ async function main() {
       // 2つ並ぶとどちらが押した場所のものか分からなくなる。
       if (picking) return;
       const cell = e.features?.[0];
-      // 収録範囲の枠 (メッシュではない) には何も出さない。中身が無いため。
-      if (!cell?.properties.mesh) return;
+      if (!cell) return;
       hoveringBuilding = true;
       updateCursor();
 
