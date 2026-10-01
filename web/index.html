@@ -102,23 +102,33 @@
                行が分かれ、どちらの ⚙ から開いたかでこのパネルの向き先が決まる。
                「建物のある範囲へ移動」と「収録範囲を枠で示す」もやめた。どこに
                あるかは整備範囲のメッシュと一覧の「この範囲には無い」が示す。 -->
+          <!-- **重要度の段。** 用途 (十数個) を3段にまとめたもの。段の規則はカタログの
+               `duck:tiers` から来る。出所が段を持たなければ隠したままにする。 -->
+          <div class="field" id="tier-field" hidden>
+            <label>重要度</label>
+            <div id="tier-options"></div>
+            <label class="toggle">
+              <input id="tier-color" type="checkbox" />
+              重要度で色分けする
+            </label>
+          </div>
           <!-- 絞り込みは属性が揃っている出所 (PLATEAU) でだけ出す。 -->
           <div id="building-filters" hidden>
             <div class="field" id="height-field">
               <label for="min-height">高さ <output id="min-height-value">0 m</output> 以上</label>
               <input id="min-height" type="range" min="0" max="200" step="5" value="0" />
             </div>
-            <div class="field" id="usage-field">
+            <!-- 用途の1つ1つは**たたんでおく。** 十数個を並べて切り替えさせるのは
+                 重く、まずは重要度の段で足りる。細かく選びたい人だけが開く。 -->
+            <details class="field" id="usage-field">
+              <summary>用途で細かく選ぶ</summary>
               <!-- 1つだけ見たいときに全部外させないための一括操作。 -->
-              <label
-                >用途
-                <span class="bulk">
-                  <button id="usage-all" type="button">すべて</button>
-                  <button id="usage-none" type="button">なし</button>
-                </span>
-              </label>
+              <span class="bulk">
+                <button id="usage-all" type="button">すべて</button>
+                <button id="usage-none" type="button">なし</button>
+              </span>
               <div id="usage-options"></div>
-            </div>
+            </details>
           </div>
           <!-- 絞り込みの外に置く。中に入れると、絞り込める列を持たない出所を
                選んだときに件数ごと消えてしまう。 -->

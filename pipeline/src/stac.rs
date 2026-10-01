@@ -398,6 +398,11 @@ fn collection(id: &str, entries: &[&DatasetEntry], dir: &str) -> Result<Value> {
     if let Some(covers) = &first.covers {
         body["duck:covers"] = json!(covers);
     }
+    // **重要度の段の規則。** 段はデータの列ではなく規則として載せるので、
+    // UIはこれを読んで問い合わせの条件を組み立てる。
+    if let Some(tiers) = first.tiers {
+        body["duck:tiers"] = json!(tiers);
+    }
     // **いつ時点のデータか。** ファイルごとに違いうる (PLATEAUは都市ごとに
     // 更新年度が揃っていない) ので、**揃っているときだけ**Collectionに出す。
     // 揃っていないものを代表値で1つに丸めると、古い都市を新しいと誤解させる。
@@ -561,6 +566,7 @@ mod tests {
             source_lod: None,
             coarse_lod_tolerance_m: None,
             covers: None,
+            tiers: None,
             collection_via: "https://example.invalid/download",
         }
     }

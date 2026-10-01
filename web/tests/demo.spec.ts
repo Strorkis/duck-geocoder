@@ -1243,6 +1243,8 @@ test('用途は一括で切り替えられる', async ({ page }) => {
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
 
   await showPlateauBuildings(page);
+  // 用途の1つ1つはたたんである (まず重要度の段で足りるため)。
+  await page.locator('#usage-field > summary').click();
   const checked = () => page.locator('#usage-options input:checked').count();
   expect(await checked()).toBeGreaterThan(5);
 
@@ -1312,9 +1314,58 @@ test('用途を外すと建物が減る', async ({ page }) => {
   const before = await sourceFeatureCount(page, 'buildings');
 
   // 最も件数の多い用途 (住宅) を外す。選択肢は件数の多い順に並んでいる。
+  await page.locator('#usage-field > summary').click();
   await page.locator('#usage-options input').first().uncheck();
 
   await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeLessThan(before);
+});
+
+/**
+ * **重要度の段で絞り、色分けできる。** 用途は十数個あり、1つずつ切り替えるのは
+ * 重い。段 (公共・要配慮 / 人が集まる・業務 / 住居・不明) にまとめてある。
+ *
+ * 段の規則はカタログ (`duck:tiers`) から来る。画面の文言を書き写さず、
+ * カタログと突き合わせる。
+ */
+test('重要度の段で絞り込めて、色分けできる', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+
+  await showPlateauBuildings(page);
+
+  // 段の題名はカタログのとおりに並ぶ。
+  const collection = (await (
+    await page.request.get(await resolveDataUrl(page, 'plateau/plateau-buildings.json'))
+  ).json()) as { 'duck:tiers': { tiers: { id: string; title: string }[] } };
+  const titles = collection['duck:tiers'].tiers.map((t) => t.title);
+  await expect(page.locator('#tier-options label')).toHaveText(titles);
+
+  /** 描かれている建物の段の題名 (重複なし)。 */
+  const tiersShown = () =>
+    page.evaluate(async () => {
+      const map = (window as unknown as TestWindow).__map!;
+      const data = await (map.getSource('buildings') as GeoJSONSource).getData();
+      if (data.type !== 'FeatureCollection') return [];
+      return [...new Set(data.features.map((f) => f.properties?.tier as string))].sort();
+    });
+
+  // 港区なら3段とも出ている。
+  await expect.poll(async () => (await tiersShown()).length).toBe(titles.length);
+
+  // **いちばん重要な段だけにする。** 学校や官公庁は港区にもある。
+  const boxes = page.locator('#tier-options input');
+  for (let i = 1; i < titles.length; i++) await boxes.nth(i).uncheck();
+  await expect.poll(tiersShown).toEqual([titles[0]]);
+
+  // **重要度で色分けする。** 引き直さず塗りだけ替える。
+  const paint = () =>
+    page.evaluate(() =>
+      JSON.stringify(
+        (window as unknown as TestWindow).__map!.getPaintProperty('buildings-3d', 'fill-extrusion-color'),
+      ),
+    );
+  expect(await paint()).not.toContain('tierRank');
+  await page.locator('#tier-color').check();
+  expect(await paint()).toContain('tierRank');
 });
 
 /** 人口メッシュ (東京都)。無ければ地上リスクの表示は出ない。 */

@@ -307,8 +307,39 @@ body,
 }
 
 #height-field[hidden],
-#usage-field[hidden] {
+#usage-field[hidden],
+#tier-field[hidden] {
   display: none;
+}
+
+/* 重要度の段。3つしかないので1行に並べる。段の中身は title (ホバー) で読める。 */
+#tier-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.7rem;
+  margin: 0.15rem 0 0.3rem;
+}
+
+#tier-options label {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-weight: normal;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+/* 用途の1つ1つはたたんでおく。開いたときだけ一括操作と選択肢が出る。 */
+#usage-field > summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: #555;
+}
+
+#usage-field .bulk {
+  display: block;
+  text-align: right;
+  margin: 0.2rem 0;
 }
 
 #data-panel .note {

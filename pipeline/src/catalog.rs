@@ -67,8 +67,191 @@ pub struct DatasetEntry {
     /// 「PLATEAUのものだ」とUI側で決め打ちすると、出所が増えたときに
     /// 書き足す場所が分かれる。
     pub covers: Option<String>,
+    /// **重要度の段。** 建物を「公共・要配慮 / 人が集まる・業務 / 住居・不明」に分ける規則。
+    /// 建物のCollectionだけが持つ ([`TIERS`])。
+    pub tiers: Option<&'static Tiers>,
     /// **この出所の配布元。** 出所全体で1つ。ファイル側に `via` が無くてもこれはある。
     pub collection_via: &'static str,
+}
+
+/// 建物の重要度の段。**UIはこれを読んで問い合わせの条件を組み立てる。**
+///
+/// 段はデータに列として書き込まず、**既存の列 (用途・名前) からの規則**として
+/// カタログに載せる。規則なので変えても配信物 (3.6GB) を作り直さずに済み、
+/// 上げ直すのはJSONだけになる。用途の語彙 (`summaries`) をパイプライン側の
+/// 一か所で決めているのと同じ考え方。
+///
+/// 使い道は3つある: 一覧での絞り込み (19個の用途を3段にまとめる)、
+/// 重要なものの強調、引いた表示での間引き (重要な段から出す)。
+#[derive(Debug, Serialize)]
+pub struct Tiers {
+    /// どの列の値で分けるか (PLATEAUは `usage`、Overtureは `class`)。
+    pub column: &'static str,
+    /// **名前のある建物を先頭の段に上げるか。**
+    ///
+    /// PLATEAUは名前のある建物が2,928万棟中5.5万棟 (0.19%) しかなく、
+    /// 官公庁施設 (15.8%) と文教厚生施設 (3.4%) に偏っている。用途が「不明」でも
+    /// 名前を見ると小学校や保育園だったりする (「市立長野小学校」「大井川南幼稚園」)。
+    /// **Overtureでは上げない** — 13.6%に名前があり、大半はオフィスビルやマンション。
+    pub named_first: bool,
+    /// 段。**上ほど重要。** 最後の段は「残り全部」で、値を持たない
+    /// (どの段にも当たらない値と、値の無い行がここに入る)。
+    pub tiers: &'static [Tier],
+}
+
+#[derive(Debug, Serialize)]
+pub struct Tier {
+    /// UIとの約束に使う識別子。題名を変えても壊れないように別に持つ。
+    pub id: &'static str,
+    pub title: &'static str,
+    pub values: &'static [&'static str],
+}
+
+/// 重要度の段の規則。叩き台 (2026-10-01)。**特定の用途向けではなく、
+/// いろいろな問い合わせの部品にする** (ドローンの「落ちてはいけない場所」は
+/// 思い付いた例の1つ)。名前を用途に寄せないのはそのため。
+///
+/// 「人が集まる・業務」は当初「人が集まる・大きい」と呼んでいたが、
+/// **大きさはまだ見ていない** (用途だけで分けている) ので名前を変えた。
+/// 用途が分からない建物が36%あり (不明654万・空欄419万)、そこを大きさで
+/// 拾い直すのは次の段階。
+pub const TIERS: &[(&str, Tiers)] = &[
+    (
+        "plateau-buildings",
+        Tiers {
+            column: "usage",
+            named_first: true,
+            tiers: &[
+                Tier {
+                    id: "public",
+                    title: "公共・要配慮",
+                    values: &["文教厚生施設", "官公庁施設", "供給処理施設", "防衛施設"],
+                },
+                Tier {
+                    id: "gathering",
+                    title: "人が集まる・業務",
+                    values: &[
+                        "商業施設",
+                        "業務施設",
+                        "宿泊施設",
+                        "商業系複合施設",
+                        "運輸倉庫施設",
+                        "工場",
+                    ],
+                },
+                Tier {
+                    id: "other",
+                    title: "住居・不明",
+                    values: &[],
+                },
+            ],
+        },
+    ),
+    (
+        "overture-buildings",
+        Tiers {
+            // OpenStreetMapの `building=*` に由来する語彙。手元に無い値も、
+            // OSMで一般的なもの (police, clinic など) は先に入れてある。
+            column: "class",
+            named_first: false,
+            tiers: &[
+                Tier {
+                    id: "public",
+                    title: "公共・要配慮",
+                    values: &[
+                        "public",
+                        "civic",
+                        "government",
+                        "townhall",
+                        "school",
+                        "kindergarten",
+                        "college",
+                        "university",
+                        "hospital",
+                        "clinic",
+                        "library",
+                        "fire_station",
+                        "police",
+                        "post_office",
+                    ],
+                },
+                Tier {
+                    id: "gathering",
+                    title: "人が集まる・業務",
+                    values: &[
+                        "commercial",
+                        "office",
+                        "retail",
+                        "hotel",
+                        "industrial",
+                        "manufacture",
+                        "warehouse",
+                        "train_station",
+                        "transportation",
+                        "parking",
+                        "service",
+                        "shrine",
+                        "temple",
+                        "church",
+                    ],
+                },
+                Tier {
+                    id: "other",
+                    title: "住居・不明",
+                    values: &[],
+                },
+            ],
+        },
+    ),
+];
+
+/// そのCollectionの重要度の段。建物以外は `None`。
+fn tiers_for(collection: &str) -> Option<&'static Tiers> {
+    TIERS
+        .iter()
+        .find(|(id, _)| *id == collection)
+        .map(|(_, tiers)| tiers)
+}
+
+/// 段の規則が壊れていないか。**黙って通さずエラーにする。**
+///
+/// - 分ける列がファイルに無い (列名の打ち間違い、出所の列構成の変更)
+/// - 同じ値が2つの段に入っている (どちらになるかが並び順に依存してしまう)
+/// - 最後の段 (残り全部) が値を持っている、または最後以外が空
+fn validate_tiers(tiers: &Tiers, columns: &[ColumnEntry], collection: &str) -> Result<()> {
+    if !columns.iter().any(|c| c.name == tiers.column) {
+        bail!(
+            "{collection}: 重要度の段が列 {:?} で分けるとしているが、その列がありません",
+            tiers.column
+        );
+    }
+    if tiers.named_first && !columns.iter().any(|c| c.name == "name") {
+        bail!("{collection}: 名前で段を上げるとしているが、name 列がありません");
+    }
+    let Some((last, rest)) = tiers.tiers.split_last() else {
+        bail!("{collection}: 重要度の段が1つもありません");
+    };
+    if !last.values.is_empty() {
+        bail!(
+            "{collection}: 最後の段 {:?} は「残り全部」なので値を持てません",
+            last.id
+        );
+    }
+    let mut seen = HashMap::new();
+    for tier in rest {
+        if tier.values.is_empty() {
+            bail!("{collection}: 段 {:?} に値がありません", tier.id);
+        }
+        for value in tier.values {
+            if let Some(other) = seen.insert(*value, tier.id) {
+                bail!(
+                    "{collection}: 値 {value:?} が段 {other:?} と {:?} の両方にあります",
+                    tier.id
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// データセットの種別。ジオメトリの型と用途が種別ごとに決まる。
@@ -647,7 +830,7 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         .and_then(crate::lod::coarse_resolution_m);
     let covers = key_value(crate::coverage::COVERS_KEY);
 
-    let columns = file_metadata
+    let columns: Vec<ColumnEntry> = file_metadata
         .schema_descr()
         .columns()
         .iter()
@@ -666,6 +849,11 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         if let Some(values) = read_vocabulary(path, column)? {
             summaries.insert((*column).to_string(), values);
         }
+    }
+
+    let tiers = tiers_for(described.collection);
+    if let Some(tiers) = tiers {
+        validate_tiers(tiers, &columns, described.collection)?;
     }
 
     Ok(DatasetEntry {
@@ -687,6 +875,7 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         source_lod,
         coarse_lod_tolerance_m,
         covers,
+        tiers,
         collection_via: described.via,
     })
 }
@@ -729,6 +918,79 @@ pub fn build_catalog(dir: &Path) -> Result<Vec<DatasetEntry>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn columns(names: &[&str]) -> Vec<ColumnEntry> {
+        names
+            .iter()
+            .map(|name| ColumnEntry {
+                name: (*name).to_string(),
+                data_type: "BYTE_ARRAY".to_string(),
+            })
+            .collect()
+    }
+
+    /// **配っている規則そのものが壊れていないこと。** 値の重複や、最後の段に
+    /// 値を書いてしまう間違いは、配信してから気付くと全建物の段がずれる。
+    #[test]
+    fn the_shipped_tier_rules_are_valid() {
+        for (collection, tiers) in TIERS {
+            let cols = columns(&[tiers.column, "name"]);
+            validate_tiers(tiers, &cols, collection).unwrap();
+            assert!(
+                DESCRIPTIONS
+                    .iter()
+                    .any(|(_, d)| d.collection == *collection),
+                "{collection} はどのデータセットのCollectionでもない (綴り違い?)"
+            );
+        }
+    }
+
+    fn tiers(values: &'static [&'static [&'static str]]) -> Tiers {
+        // 値の組から段を作る。テスト用なので題名とIDは使い回す。
+        let tiers: Vec<Tier> = values
+            .iter()
+            .map(|values| Tier {
+                id: "t",
+                title: "t",
+                values,
+            })
+            .collect();
+        Tiers {
+            column: "usage",
+            named_first: false,
+            tiers: Box::leak(tiers.into_boxed_slice()),
+        }
+    }
+
+    #[test]
+    fn rejects_a_value_in_two_tiers() {
+        let rule = tiers(&[&["官公庁施設"], &["官公庁施設"], &[]]);
+        let error = validate_tiers(&rule, &columns(&["usage"]), "c").unwrap_err();
+        assert!(error.to_string().contains("両方"), "{error}");
+    }
+
+    #[test]
+    fn rejects_values_on_the_last_tier() {
+        // 最後の段は「残り全部」。値を書くと、書いていない値の行き先が無くなる。
+        let rule = tiers(&[&["官公庁施設"], &["住宅"]]);
+        let error = validate_tiers(&rule, &columns(&["usage"]), "c").unwrap_err();
+        assert!(error.to_string().contains("残り全部"), "{error}");
+    }
+
+    #[test]
+    fn rejects_a_missing_column() {
+        let rule = tiers(&[&["官公庁施設"], &[]]);
+        let error = validate_tiers(&rule, &columns(&["class"]), "c").unwrap_err();
+        assert!(error.to_string().contains("usage"), "{error}");
+    }
+
+    #[test]
+    fn rejects_promoting_names_without_a_name_column() {
+        let mut rule = tiers(&[&["官公庁施設"], &[]]);
+        rule.named_first = true;
+        let error = validate_tiers(&rule, &columns(&["usage"]), "c").unwrap_err();
+        assert!(error.to_string().contains("name"), "{error}");
+    }
 
     #[test]
     fn parses_geo_metadata() {

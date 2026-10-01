@@ -8,6 +8,7 @@ import {
   NavigationControl,
   TerrainControl,
   setWorkerUrl,
+  type ExpressionSpecification,
   type RasterTileSource,
   type StyleSpecification,
 } from 'maplibre-gl';
@@ -102,6 +103,13 @@ interface StacCollection {
    */
   'duck:covers'?: string;
   /**
+   * **建物の重要度の段の規則。** 建物のCollectionだけが持つ。
+   *
+   * 段はデータの列ではなく、既存の列 (用途・名前) からの規則として載っている。
+   * UIはこれを読んで問い合わせの `CASE` を組み立てる ([`tierExpression`])。
+   */
+  'duck:tiers'?: Tiers;
+  /**
    * **いつ時点のデータか。** 配布元が名乗っている形 (`N02-25 (2026-03-06)` など)。
    *
    * ファイルごとに版が違うCollection (PLATEAUは都市ごとに更新年度が揃っていない)
@@ -120,6 +128,39 @@ interface StacCollection {
   summaries?: Record<string, string[]>;
   item_assets?: { data?: { 'table:columns'?: { name: string; type: string }[] } };
   links: StacLink[];
+}
+
+/** 建物の重要度の段の規則 (`duck:tiers`)。パイプラインの `catalog::Tiers` と同じ形。 */
+interface Tiers {
+  /** どの列の値で分けるか (PLATEAUは `usage`、Overtureは `class`)。 */
+  column: string;
+  /** 名前のある建物を先頭の段に上げるか。 */
+  named_first: boolean;
+  /** 上ほど重要。**最後の段は「残り全部」で値を持たない。** */
+  tiers: { id: string; title: string; values: string[] }[];
+}
+
+/**
+ * 重要度の段を求めるSQLの式。値は段のID (`'public'` など)。
+ *
+ * 規則をそのまま `CASE` にする: 名前があれば先頭の段 (`named_first` のとき)、
+ * そうでなければ上の段から順に値で当て、どれにも当たらなければ最後の段。
+ * **段をデータの列に書き込まない**ので、規則を変えても配信物を作り直さずに済む。
+ */
+function tierExpression(tiers: Tiers): string {
+  const quote = (value: string) => `'${value.replace(/'/g, "''")}'`;
+  const last = tiers.tiers.at(-1)!;
+  const whens: string[] = [];
+  if (tiers.named_first && tiers.tiers.length > 0) {
+    whens.push(`WHEN name IS NOT NULL THEN ${quote(tiers.tiers[0].id)}`);
+  }
+  for (const tier of tiers.tiers.slice(0, -1)) {
+    if (tier.values.length === 0) continue;
+    whens.push(
+      `WHEN ${tiers.column} IN (${tier.values.map(quote).join(', ')}) THEN ${quote(tier.id)}`,
+    );
+  }
+  return `CASE ${whens.join(' ')} ELSE ${quote(last.id)} END`;
 }
 
 /** STAC Item。1つのGeoParquetに対応する。 */
@@ -196,6 +237,8 @@ interface Collection {
   coarseLodToleranceM: number | undefined;
   /** どのCollectionの整備範囲か。整備範囲のメッシュ以外は undefined。 */
   covers: string | undefined;
+  /** 重要度の段の規則。建物以外は undefined。 */
+  tiers: Tiers | undefined;
   /** いつ時点のデータか。**ファイルごとに版が違うものには入っていない。** */
   vintage: string | undefined;
   /** Itemを読む。**Collectionごとに1回だけ**通信する。 */
@@ -500,6 +543,7 @@ function toCollection(
     meshDigits: document['duck:mesh_digits'],
     coarseLodToleranceM: document['duck:coarse_lod_tolerance_m'],
     covers: document['duck:covers'],
+    tiers: document['duck:tiers'],
     vintage: document['duck:vintage'],
     bbox,
     summaries: document.summaries ?? {},
@@ -709,6 +753,8 @@ interface BuildingSource {
    * そのどちらとも別の概念)。**代わりに「どこまで整備されているか」を出す。**
    */
   coverage: BuildingCoverage | undefined;
+  /** 重要度の段の規則 (カタログの `duck:tiers`)。無ければ段で絞れない。用途を問わない部品。 */
+  tiers: Tiers | undefined;
 }
 
 /**
@@ -1351,6 +1397,7 @@ async function initDuckDb(collections: Collection[]): Promise<{
       usages,
       bbox: collection.bbox,
       coverage,
+      tiers: collection.tiers,
       ensure: once(async () => {
         const items = await collection.items();
         source.files = itemFiles(items);
@@ -1734,6 +1781,8 @@ interface BuildingFeature {
   /** 用途 (PLATEAU) または種別 (Overture)。出所によって語彙が違う。 */
   category: string | null;
   height: number | null;
+  /** 重要度の段のID。出所が段を持たなければ null。 */
+  tier: string | null;
 }
 
 /** 建物の絞り込み条件。PLATEAUのように属性が揃っている出所でだけ意味を持つ。 */
@@ -1742,6 +1791,8 @@ interface BuildingFilter {
   minHeight: number;
   /** 対象の用途。null なら絞らない。 */
   usages: string[] | null;
+  /** 対象の重要度の段 (ID)。null なら絞らない。 */
+  tiers: string[] | null;
 }
 
 /**
@@ -1879,6 +1930,12 @@ async function fetchBuildingsInView(
     const list = filter.usages.map((u) => `'${u.replace(/'/g, "''")}'`).join(', ');
     conditions.push(list.length > 0 ? `${source.categoryColumn} IN (${list})` : 'false');
   }
+  // 段は規則から求める式。絞るときも同じ式を条件にする (列が無いので)。
+  const tierSelect = source.tiers ? tierExpression(source.tiers) : 'NULL';
+  if (source.tiers && filter.tiers) {
+    const list = filter.tiers.map((t) => `'${t.replace(/'/g, "''")}'`).join(', ');
+    conditions.push(list.length > 0 ? `(${tierSelect}) IN (${list})` : 'false');
+  }
   const categorySelect = source.categoryColumn ?? 'NULL';
 
   // 緯度方向と経度方向で1度あたりの距離が違うので、経度差を縮めてから比べる
@@ -1887,7 +1944,8 @@ async function fetchBuildingsInView(
   const lonScale = Math.cos((bounds.centerLat * Math.PI) / 180);
 
   const result = await conn.query(`
-    SELECT ST_AsGeoJSON(geometry) AS geojson, name, ${categorySelect} AS category, height
+    SELECT ST_AsGeoJSON(geometry) AS geojson, name, ${categorySelect} AS category, height,
+      ${tierSelect} AS tier
     FROM read_parquet([${list}])
     WHERE ${conditions.join('\n      AND ')}
     ORDER BY
@@ -1901,12 +1959,14 @@ async function fetchBuildingsInView(
       name: string | null;
       category: string | null;
       height: number | null;
+      tier: string | null;
     };
     return {
       geojson: JSON.parse(r.geojson) as GeoJSON.Geometry,
       name: r.name,
       category: r.category,
       height: r.height,
+      tier: r.tier,
     };
   });
 }
@@ -2314,6 +2374,51 @@ const GSI_STYLE: StyleSpecification = {
   // map の 'load' の条件に入り、**Mapterhornが落ちていると起動できなくなる**
   // (読み込み中の表示から進まない)。読み込み後に setTerrain で有効にする。
 };
+
+/**
+ * 建物の塗り (既定)。**高さで塗り分ける。** 傾けずに見るときも高さが分かるようにするため。
+ * 高さを持たないデータ (Overtureはほぼ全件がそう) では既定色のままになる。
+ *
+ * **出所で色相を分ける。** PLATEAUとOvertureは同時に出せるので、
+ * 重なったところでどちらの建物かが見分けられないと困る。
+ * カタログで先頭の出所 (`palette` 0) が青、それ以外が橙。
+ */
+const BUILDING_COLOR_BY_HEIGHT: ExpressionSpecification = [
+  'match',
+  ['get', 'palette'],
+  0,
+  [
+    'case',
+    ['==', ['get', 'height'], null],
+    '#4a6785',
+    ['interpolate', ['linear'], ['get', 'height'], 0, '#c6d4e4', 20, '#8fabc9', 60, '#4a6785', 150, '#2d3f52'],
+  ],
+  [
+    'case',
+    ['==', ['get', 'height'], null],
+    '#c77d3a',
+    ['interpolate', ['linear'], ['get', 'height'], 0, '#f0cfa8', 20, '#e0a669', 60, '#c77d3a', 150, '#8a4f1c'],
+  ],
+];
+
+/**
+ * 建物の塗り (重要度で色分けするとき)。**重要な段ほど目立たせ、住居・不明は退かせる。**
+ *
+ * 出所の色相 (青・橙) より段を優先する。重要なものを探すときは、どちらの出所かより
+ * どの段かが知りたい (出所はホバーで分かる)。段の無い出所 (`tierRank` -1) は
+ * 高さの塗りに落とす。
+ */
+const BUILDING_COLOR_BY_TIER: ExpressionSpecification = [
+  'match',
+  ['get', 'tierRank'],
+  0,
+  '#c0392b',
+  1,
+  '#e09a3e',
+  2,
+  '#d5d9de',
+  BUILDING_COLOR_BY_HEIGHT,
+];
 
 const EMPTY_FEATURE_COLLECTION: GeoJSON.FeatureCollection = {
   type: 'FeatureCollection',
@@ -2770,53 +2875,9 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
         type: 'fill-extrusion',
         source: 'buildings',
         paint: {
-          // 高さで塗り分ける。傾けずに見るときも高さが分かるようにするため。
-          // 高さを持たないデータ (Overtureはほぼ全件がそう) では既定色のままになる。
-          //
-          // **出所で色相を分ける。** PLATEAUとOvertureは同時に出せるので、
-          // 重なったところでどちらの建物かが見分けられないと困る。
-          // カタログで先頭の出所 (`palette` 0) が青、それ以外が橙。
-          'fill-extrusion-color': [
-            'match',
-            ['get', 'palette'],
-            0,
-            [
-              'case',
-              ['==', ['get', 'height'], null],
-              '#4a6785',
-              [
-                'interpolate',
-                ['linear'],
-                ['get', 'height'],
-                0,
-                '#c6d4e4',
-                20,
-                '#8fabc9',
-                60,
-                '#4a6785',
-                150,
-                '#2d3f52',
-              ],
-            ],
-            [
-              'case',
-              ['==', ['get', 'height'], null],
-              '#c77d3a',
-              [
-                'interpolate',
-                ['linear'],
-                ['get', 'height'],
-                0,
-                '#f0cfa8',
-                20,
-                '#e0a669',
-                60,
-                '#c77d3a',
-                150,
-                '#8a4f1c',
-              ],
-            ],
-          ],
+          // 既定は高さで塗る。「重要度で色分けする」を入れると段で塗る
+          // (`BUILDING_COLOR_BY_TIER` に差し替える)。
+          'fill-extrusion-color': BUILDING_COLOR_BY_HEIGHT,
           // 高さが無い建物にも既定値を与える。0にすると描画されず、
           // Overtureは高さが1.5%しか入っていないのでほぼ全部消えてしまう。
           'fill-extrusion-height': ['coalesce', ['get', 'height'], 3],
@@ -2954,6 +3015,9 @@ async function main() {
   const minHeightInput = document.querySelector<HTMLInputElement>('#min-height')!;
   const minHeightValue = document.querySelector<HTMLOutputElement>('#min-height-value')!;
   const usageOptionsEl = document.querySelector<HTMLDivElement>('#usage-options')!;
+  const tierField = document.querySelector<HTMLDivElement>('#tier-field')!;
+  const tierOptionsEl = document.querySelector<HTMLDivElement>('#tier-options')!;
+  const tierColorToggle = document.querySelector<HTMLInputElement>('#tier-color')!;
   const usageAllButton = document.querySelector<HTMLButtonElement>('#usage-all')!;
   const usageNoneButton = document.querySelector<HTMLButtonElement>('#usage-none')!;
   const buildingCountEl = document.querySelector<HTMLParagraphElement>('#building-count')!;
@@ -3397,7 +3461,7 @@ async function main() {
    * (PLATEAUは「商業施設」、Overtureは `commercial`) ので、共有すると意味が変わる。
    */
   const filters = new Map<string, BuildingFilter>(
-    buildingSources.map((source) => [source.id, { minHeight: 0, usages: null }]),
+    buildingSources.map((source) => [source.id, { minHeight: 0, usages: null, tiers: null }]),
   );
   const filterOf = (source: BuildingSource): BuildingFilter => filters.get(source.id)!;
 
@@ -3512,6 +3576,10 @@ async function main() {
             // 塗り分けの番号。IDを塗りの式に書くと出所が増えたときに直す場所が
             // 分かれるので、カタログに並んだ順番で渡す。
             palette: buildingSources.indexOf(source),
+            // **重要度の段。** 名前はホバー用、順位は色分け用 (0がいちばん重要)。
+            // 段の無い出所では -1 にして、色分けでも既定の塗りに落とす。
+            tier: source.tiers?.tiers.find((t) => t.id === row.tier)?.title ?? null,
+            tierRank: source.tiers?.tiers.findIndex((t) => t.id === row.tier) ?? -1,
           },
           geometry: row.geojson,
         });
@@ -4528,6 +4596,28 @@ async function main() {
       minHeightInput.value = String(filter.minHeight);
       minHeightValue.textContent = `${filter.minHeight} m`;
 
+      // **重要度の段。** 段の規則はカタログから来るので、出所ごとに作り直す
+      // (題名は同じでも、何がどの段に入るかは出所の語彙で違う)。
+      tierField.hidden = !source.tiers;
+      tierOptionsEl.replaceChildren();
+      for (const tier of source.tiers?.tiers ?? []) {
+        const label = document.createElement('label');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = tier.id;
+        checkbox.checked = filter.tiers === null || filter.tiers.includes(tier.id);
+        checkbox.addEventListener('change', () => {
+          const all = source.tiers!.tiers.map((t) => t.id);
+          const checked = [...tierOptionsEl.querySelectorAll<HTMLInputElement>('input:checked')];
+          filter.tiers = checked.length === all.length ? null : checked.map((c) => c.value);
+          requestRefresh();
+        });
+        // 何が入るのかを添える。段の名前だけでは「業務」に工場が入るのか分からない。
+        label.title = tier.values.length > 0 ? tier.values.join('・') : 'どの段にも入らないもの';
+        label.append(checkbox, document.createTextNode(tier.title));
+        tierOptionsEl.append(label);
+      }
+
       if (source.categoryColumn === null) return;
       const usages = source.usages;
 
@@ -4554,6 +4644,16 @@ async function main() {
       usageAllButton.onclick = () => setAll(true);
       usageNoneButton.onclick = () => setAll(false);
     };
+
+    // **重要度で色分けする。** 重要な段を目立たせ、住居・不明を退かせる。
+    // 引き直さず塗りだけを替える (段は既に地物に入っている)。出所をまたいで効く。
+    tierColorToggle.addEventListener('change', () => {
+      map.setPaintProperty(
+        'buildings-3d',
+        'fill-extrusion-color',
+        tierColorToggle.checked ? BUILDING_COLOR_BY_TIER : BUILDING_COLOR_BY_HEIGHT,
+      );
+    });
 
     // **どちらかの ⚙ を押したら、共有しているパネルをその出所に向ける。**
     // 描く出所は変えない (それは一覧のチェックが決める)。
@@ -4671,6 +4771,7 @@ async function main() {
             ['', (props.name as string | null) ?? '(名称なし)'],
             ['用途', (props.category as string | null) ?? null],
             ['高さ', props.height ? `${props.height as number} m` : null],
+            ['重要度', (props.tier as string | null) ?? null],
             ['出所', origin?.group?.title ?? origin?.title ?? null],
           ]),
         )
