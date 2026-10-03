@@ -1,0 +1,306 @@
+<!doctype html>
+<!--
+  利用者が見るべきことを1枚にまとめたボード。**作業の区切りごとに更新する** (AGENTS.md)。
+  細かい経緯や根拠はここに書かず、各ドキュメントへのリンクにする。
+  ブラウザで直接開く (file://)。ビルドもサーバーも要らない。
+-->
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>duck-geocoder ボード</title>
+    <style>
+      :root {
+        --ink: #222;
+        --sub: #666;
+        --line: #e3e8ee;
+        --accent: #14508c;
+        --you: #b4531a;
+        --wait: #7a6a00;
+      }
+      body {
+        margin: 0;
+        padding: 1.5rem;
+        font-family: system-ui, 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+        color: var(--ink);
+        background: #f4f6f8;
+        line-height: 1.6;
+      }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0.4rem 1rem;
+        margin-bottom: 1rem;
+      }
+      h1 {
+        margin: 0;
+        font-size: 1.3rem;
+      }
+      .updated {
+        color: var(--sub);
+        font-size: 0.85rem;
+      }
+      .lede {
+        margin: 0 0 1.2rem;
+        color: var(--sub);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
+        gap: 1rem;
+        align-items: start;
+      }
+      section {
+        background: white;
+        border: 1px solid var(--line);
+        border-radius: 0.5rem;
+        padding: 0.9rem 1.1rem;
+      }
+      section.you {
+        border-left: 4px solid var(--you);
+      }
+      section.next {
+        border-left: 4px solid var(--accent);
+      }
+      section.wait {
+        border-left: 4px solid var(--wait);
+      }
+      h2 {
+        margin: 0 0 0.5rem;
+        font-size: 1rem;
+      }
+      section.you h2 {
+        color: var(--you);
+      }
+      section.next h2 {
+        color: var(--accent);
+      }
+      section.wait h2 {
+        color: var(--wait);
+      }
+      ol,
+      ul {
+        margin: 0;
+        padding-left: 1.3rem;
+      }
+      li {
+        margin: 0.35rem 0;
+      }
+      li .why {
+        display: block;
+        color: var(--sub);
+        font-size: 0.85rem;
+      }
+      code {
+        background: #f0f2f5;
+        padding: 0 0.25rem;
+        border-radius: 0.2rem;
+        font-size: 0.85em;
+      }
+      pre {
+        background: #f0f2f5;
+        padding: 0.5rem 0.7rem;
+        border-radius: 0.3rem;
+        overflow-x: auto;
+        font-size: 0.8rem;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 0.9rem;
+      }
+      td,
+      th {
+        border-top: 1px solid var(--line);
+        padding: 0.3rem 0.4rem;
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        white-space: nowrap;
+        color: var(--sub);
+        font-weight: normal;
+      }
+      .tag {
+        display: inline-block;
+        padding: 0 0.4rem;
+        border-radius: 0.6rem;
+        font-size: 0.75rem;
+        background: #eef3f9;
+        color: var(--accent);
+      }
+      a {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>duck-geocoder ボード</h1>
+      <span class="updated">更新: 2026-10-03</span>
+    </header>
+    <p class="lede">
+      置いてあるデータを動かさずに、必要な分だけ取って、その場で使えるようにする実験。
+      サーバーを持たず、静的ファイル (STAC + GeoParquet) をブラウザの DuckDB-WASM で直接読む。
+      <a href="https://strorkis.github.io/duck-geocoder/">公開サイト</a>
+    </p>
+
+    <div class="grid">
+      <section class="you">
+        <h2>あなたの番</h2>
+        <ol>
+          <li>
+            <b>R2にJSONを2つ上げて、push</b> (公開中のサイトは止まらない)
+            <span class="why">建物の重要度の段の規則と名前が変わった。parquetは変わっていない</span>
+            <pre>cd ~/duck-geocoder
+R2=r2:duck-geocoder   # 前回と同じリモート名
+mise exec -- rclone copy data/output "$R2" \
+  --include '/plateau/plateau-buildings.json' \
+  --include '/overture/overture-buildings.json' -P
+git push</pre>
+          </li>
+          <li>
+            <b>片付け (急がない)</b>
+            <span class="why">
+              手元の <code>data/backup/r2-catalog-2026-10-01.json</code> (戻すための控え。もう不要) と、
+              R2の <code>plateau/plateau_bldg_minato.parquet</code> (どこからも参照されない古い名前)
+            </span>
+          </li>
+          <li>
+            <b>決めてほしいこと</b>
+            <span class="why">下の「未決の問い」</span>
+          </li>
+        </ol>
+      </section>
+
+      <section class="next">
+        <h2>次にやること (この順)</h2>
+        <ol>
+          <li>
+            <b>建物の粗い段 (間引き)</b>
+            <span class="why">
+              重要度の段で間引き、引いた表示では公共施設から出す。多めでもズーム14が限界なのは
+              転送量のため (画面に要る量の3〜15倍を読んでいる)。まず23区と前橋で試作して測る
+            </span>
+          </li>
+          <li>
+            <b>観点 (汎用の問い合わせのひな形)</b>
+            <span class="why">
+              複数のデータにまたがる条件に名前を付けたもの。条件はコードではなくデータで持ち、
+              用途ごとに組み替えられるようにする (ドローンは例の1つ)
+            </span>
+          </li>
+          <li>
+            <b>対象物の周辺検索</b>
+            <span class="why">線 (道路・鉄道・送電線・川) や点を選び、○m以内に何があるかを出す</span>
+          </li>
+          <li>
+            <b>ライセンスと商用利用の可否を一目で分かるように</b>
+            <span class="why">いまは識別子と出典だけ。「商用可か・表示義務・改変の扱い」を出したい</span>
+          </li>
+          <li>
+            <b>国土数値情報を足す</b>
+            <span class="why">
+              学校 P29 (最新年度はCC BY)・医療機関 P04・福祉施設 P14・公共施設 P02・都市公園 P13。
+              P04/P14 は許諾が未確認。<b>河川 W05 は使えない</b> (非商用・承認番号付き・2009年度で停止)
+            </span>
+          </li>
+          <li>
+            <b>Overtureの版を上げる</b>
+            <span class="why">使っている 2026-07-22.0 がS3から消えた。取り直すときに要る。送電線もここから取る</span>
+          </li>
+        </ol>
+      </section>
+
+      <section class="wait">
+        <h2>待ち (こちらから動かせない)</h2>
+        <ul>
+          <li>
+            <b>測量法の承認 (29条・複製)</b>
+            <span class="why">
+              N03 行政区域・DID・川 (基盤地図情報の水涯線) がまとめて開く。
+              下準備は <a href="survey-application.md">survey-application.md</a>
+            </span>
+          </li>
+        </ul>
+        <h2 style="margin-top: 0.9rem">未決の問い</h2>
+        <ul>
+          <li>
+            <b>建物の間引きの基準</b>
+            <span class="why">重要度の段を軸にする方向。段の中 (例えば住宅) をさらにどう減らすか</span>
+          </li>
+          <li>
+            <b>リポジトリの名前</b>
+            <span class="why">duck-geocoder は実態から外れた。方針が文になってから選ぶ</span>
+          </li>
+          <li>
+            <b>表示部分をライブラリにするか</b>
+            <span class="why"><code>web/src/main.ts</code> にデモと部品が混ざっている (約5,000行)</span>
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>構想 (このリポジトリの外)</h2>
+        <ul>
+          <li>
+            <b>Rangeでzipの一部だけ取る道具を切り出す</b>
+            <span class="why">
+              APIが無くても、Range Requestに応える配信元ならzipの中身を部分取得できる。
+              いまは <code>pipeline/src/remote_zip.rs</code>
+            </span>
+          </li>
+        </ul>
+        <h2 style="margin-top: 0.9rem">やらないこと</h2>
+        <ul>
+          <li>動的データ (気象・他機位置) をファイルで配る</li>
+          <li>点群の生データを配る (TB級。派生物にする)</li>
+          <li>SDSP/UASLの文脈を深追いする・航路の設計そのもの</li>
+          <li>認証が要る取得経路 (Foursquareの公式配布など)</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>いま配っているもの</h2>
+        <table>
+          <tr><th>PLATEAU</th><td>建物 306都市 (2,929万棟)・整備範囲メッシュ</td></tr>
+          <tr><th>Overture</th><td>行政区域・建物 (港区)・道路 (幹線、全国)</td></tr>
+          <tr><th>国土数値情報</th><td>鉄道 路線・駅 (全国)</td></tr>
+          <tr><th>国勢調査</th><td>人口メッシュ 125m / 1km</td></tr>
+          <tr><th>位置参照情報</th><td>大字・町丁目・街区 (住所検索)</td></tr>
+        </table>
+      </section>
+
+      <section>
+        <h2>ドキュメントの地図</h2>
+        <table>
+          <tr>
+            <th><a href="roadmap.md">roadmap.md</a></th>
+            <td>方針と、決めたことの記録 (何を・なぜ)</td>
+          </tr>
+          <tr>
+            <th><a href="pipeline.md">pipeline.md</a></th>
+            <td>データの作り方と実測 (粗い段・整備範囲・表示量・重要度の段)</td>
+          </tr>
+          <tr>
+            <th><a href="data-sources.md">data-sources.md</a></th>
+            <td>出所ごとのライセンス・使える/使えない理由</td>
+          </tr>
+          <tr>
+            <th><a href="deploy.md">deploy.md</a></th>
+            <td>R2へ上げる手順・戻し方</td>
+          </tr>
+          <tr>
+            <th><a href="survey-application.md">survey-application.md</a></th>
+            <td>測量法の申請の下準備</td>
+          </tr>
+          <tr>
+            <th><a href="../AGENTS.md">AGENTS.md</a></th>
+            <td>作業の約束事 (道具・テスト・コミット)</td>
+          </tr>
+        </table>
+      </section>
+    </div>
+  </body>
+</html>

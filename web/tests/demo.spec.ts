@@ -165,6 +165,15 @@ async function openSection(page: Page, id: string) {
 }
 
 /**
+ * 出典・使っている技術のダイアログを開く。右下のパネルは狭く、長い文言が
+ * 細切れに折り返すので、これらは節ではなくダイアログで出している。
+ */
+async function openInfoDialog(page: Page, id: 'credits-dialog' | 'tech-dialog') {
+  await page.locator(`.info-open[data-dialog="${id}"]`).click();
+  await expect(page.locator(`#${id}`)).toBeVisible();
+}
+
+/**
  * レイヤーの設定を開く。一覧の ⚙ を押すと、**パネルの中身が入れ替わる**
  * (重ねて出すと結局縦に伸びるため)。
  */
@@ -555,7 +564,7 @@ test('出典は既定でたたまれていて、押すと全文が出る', async
  * ⓘ は表示義務を果たす標準の置き場所として残し、**読ませるのはパネルの側**。
  */
 test('出典はパネルにデータごとの一覧として出る', async ({ page }) => {
-  await openSection(page, 'credits-section');
+  await openInfoDialog(page, 'credits-dialog');
 
   const terms = page.locator('#credits dt');
   // 出所は4件 (位置参照情報 / 国勢調査 / PLATEAU / Overture)。
@@ -583,7 +592,7 @@ test('出典はパネルにデータごとの一覧として出る', async ({ pa
  * 両方が、どこで使っているかと一緒に出ること。
  */
 test('使っている技術は、ライブラリと借りた考え方を分けて謝辞を出す', async ({ page }) => {
-  await openSection(page, 'tech-section');
+  await openInfoDialog(page, 'tech-dialog');
   const credits = page.locator('#tech-credits');
 
   await expect(credits.locator('.tech-heading')).toHaveCount(3);
@@ -604,7 +613,7 @@ test('使っている技術は、ライブラリと借りた考え方を分け�
 });
 
 test('出典に配布元へのリンクが出る', async ({ page }) => {
-  await openSection(page, 'credits-section');
+  await openInfoDialog(page, 'credits-dialog');
 
   const via = page.locator('#credits .via');
   await expect.poll(() => via.count()).toBeGreaterThan(2);
@@ -631,15 +640,15 @@ test('できることは開かなくても分かる', async ({ page }) => {
   }
   // 背景地図もレイヤーの1つ。**たたまない** (selectが1つあるだけ)。
   await expect(panel.locator('#basemap-section')).toContainText('背景地図');
-  // 使い方と出典だけが節のまま。右下 (MapLibreの ⓘ と同じ性格なので同じ側)。
-  for (const heading of ['使い方', '出典', '使っている技術']) {
-    await expect(
-      page.locator('#info-panel summary', { hasText: heading }).first(),
-    ).toBeVisible();
+  // 使い方・出典・使っている技術は右下 (MapLibreの ⓘ と同じ性格なので同じ側)。
+  await expect(page.locator('#info-panel summary', { hasText: '使い方' })).toBeVisible();
+  for (const heading of ['出典', '使っている技術']) {
+    await expect(page.locator('#info-panel .info-open', { hasText: heading })).toBeVisible();
   }
-  // 節の中身は既定でたたんである。
-  for (const id of ['help', 'credits-section', 'tech-section']) {
-    await expect(page.locator(`#${id}`)).not.toHaveAttribute('open', '');
+  // 中身は既定で出さない (使い方はたたみ、出典と技術はダイアログが閉じている)。
+  await expect(page.locator('#help')).not.toHaveAttribute('open', '');
+  for (const id of ['credits-dialog', 'tech-dialog']) {
+    await expect(page.locator(`#${id}`)).toBeHidden();
   }
   // レイヤーの設定も既定では出さない (一覧が先)。
   await expect(page.locator('#layer-settings')).toBeHidden();
@@ -1322,7 +1331,7 @@ test('用途を外すと建物が減る', async ({ page }) => {
 
 /**
  * **重要度の段で絞り、色分けできる。** 用途は十数個あり、1つずつ切り替えるのは
- * 重い。段 (公共・要配慮 / 人が集まる・業務 / 住居・不明) にまとめてある。
+ * 重い。段 (公共施設 / 商業・業務 / 住宅・その他) にまとめてある。
  *
  * 段の規則はカタログ (`duck:tiers`) から来る。画面の文言を書き写さず、
  * カタログと突き合わせる。
@@ -1773,7 +1782,7 @@ test('引いた表示の転送量は粗い段のぶんで収まる', async ({ pa
 test('出典にいつ時点のデータかが出る', async ({ page }) => {
   test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
 
-  await openSection(page, 'credits-section');
+  await openInfoDialog(page, 'credits-dialog');
   // 鉄道はメタデータXMLから版を読んでいる (N02-25)。
   await expect(page.locator('#credits .vintage').first()).toBeVisible();
   await expect(page.locator('#credits')).toContainText('N02-');

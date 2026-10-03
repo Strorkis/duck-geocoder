@@ -2402,7 +2402,7 @@ const BUILDING_COLOR_BY_HEIGHT: ExpressionSpecification = [
 ];
 
 /**
- * 建物の塗り (重要度で色分けするとき)。**重要な段ほど目立たせ、住居・不明は退かせる。**
+ * 建物の塗り (重要度で色分けするとき)。**重要な段ほど目立たせ、住宅・その他は退かせる。**
  *
  * 出所の色相 (青・橙) より段を優先する。重要なものを探すときは、どちらの出所かより
  * どの段かが知りたい (出所はホバーで分かる)。段の無い出所 (`tierRank` -1) は
@@ -2607,6 +2607,10 @@ interface TechCredit {
  * 仕様や論文への参照は、実際に設計を左右したものだけを載せる。
  * PLATEAU GIS Converter の README の謝辞 (Planetiler の手法を参考にした旨)
  * に倣った。
+ *
+ * **リンクはできるだけGitHubのリポジトリにする** (仕様もリポジトリで公開されている)。
+ * ただし**実在を確かめたものだけ** (2026-10-03にGitHub APIで確認)。リポジトリの
+ * 無いもの (STRの論文・地域メッシュ・SORA) は元の出典のままにする。
  */
 const TECH_CREDITS: { heading: string; items: TechCredit[] }[] = [
   {
@@ -2645,7 +2649,7 @@ const TECH_CREDITS: { heading: string; items: TechCredit[] }[] = [
         name: 'DuckDB',
         who: 'DuckDB · MIT',
         use: 'Overtureの取り出しと、道路・鉄道の簡略化 (粗い段) の作成',
-        url: 'https://duckdb.org/',
+        url: 'https://github.com/duckdb/duckdb',
       },
       {
         name: 'Apache Arrow / Parquet (arrow-rs)',
@@ -2657,7 +2661,7 @@ const TECH_CREDITS: { heading: string; items: TechCredit[] }[] = [
         name: 'PROJ',
         who: 'OSGeo · MIT',
         use: '座標系の変換',
-        url: 'https://proj.org/',
+        url: 'https://github.com/OSGeo/PROJ',
       },
       {
         name: 'GeoRust (geo-types / wkb / geojson)',
@@ -2674,13 +2678,13 @@ const TECH_CREDITS: { heading: string; items: TechCredit[] }[] = [
         name: 'STAC',
         who: '仕様',
         use: 'データの目録の形 (Catalog → Collection → Item)。一覧の見出しと行はこの階層そのもの',
-        url: 'https://stacspec.org/',
+        url: 'https://github.com/radiantearth/stac-spec',
       },
       {
         name: 'GeoParquet',
         who: '仕様 (OGC)',
         use: '配るファイルの形。bboxの列で、表示範囲の外の行グループを読み飛ばす',
-        url: 'https://geoparquet.org/',
+        url: 'https://github.com/opengeospatial/geoparquet',
       },
       {
         name: 'STR (Sort-Tile-Recursive)',
@@ -2704,7 +2708,7 @@ const TECH_CREDITS: { heading: string; items: TechCredit[] }[] = [
         name: 'Portolan',
         who: '仕様',
         use: 'オブジェクトストレージにSTACとGeoParquetを置くだけで配る構成。項目名を借りている (準拠はまだ)',
-        url: 'https://www.portolan-sdi.org/',
+        url: 'https://github.com/portolan-sdi/portolan-spec',
       },
       {
         name: '地域メッシュ (JIS X 0410)',
@@ -3058,6 +3062,20 @@ async function main() {
   const creditsEl = document.querySelector<HTMLDListElement>('#credits')!;
   // 技術の謝辞はカタログに依らないので、初期化を待たずに出す (失敗しても読める)。
   renderTechCredits(document.querySelector<HTMLDivElement>('#tech-credits')!);
+
+  // 出典・使っている技術のダイアログ。右下のパネルは幅が狭く、長い文言が細切れに
+  // 折り返して読めないので、押したらダイアログで広く出す。
+  for (const button of document.querySelectorAll<HTMLButtonElement>('.info-open')) {
+    const dialog = document.getElementById(button.dataset.dialog!) as HTMLDialogElement;
+    button.addEventListener('click', () => dialog.showModal());
+  }
+  for (const dialog of document.querySelectorAll<HTMLDialogElement>('.info-dialog')) {
+    dialog.querySelector('.info-dialog-close')!.addEventListener('click', () => dialog.close());
+    // 背景を押したら閉じる (中身は内側の要素にあるので、dialog自身が的になるのは背景だけ)。
+    dialog.addEventListener('click', (e) => {
+      if (e.target === dialog) dialog.close();
+    });
+  }
 
   // DuckDB-WASMの初期化とParquetの読み込みには数秒かかるので、
   // 準備が終わるまでは操作できないことが分かるようにしておく。
@@ -4645,7 +4663,7 @@ async function main() {
       usageNoneButton.onclick = () => setAll(false);
     };
 
-    // **重要度で色分けする。** 重要な段を目立たせ、住居・不明を退かせる。
+    // **重要度で色分けする。** 重要な段を目立たせ、住宅・その他を退かせる。
     // 引き直さず塗りだけを替える (段は既に地物に入っている)。出所をまたいで効く。
     tierColorToggle.addEventListener('change', () => {
       map.setPaintProperty(

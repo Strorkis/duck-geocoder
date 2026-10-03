@@ -975,6 +975,84 @@ body,
   color: #14508c;
 }
 
+/* 出典・使っている技術を開くボタン。たたんだ節の見出しと同じ見た目にそろえる。 */
+.info-open {
+  display: block;
+  width: 100%;
+  padding: 0.4rem 0;
+  border: none;
+  border-top: 1px solid #eee;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  font-weight: 600;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* 「開く」印。↗ だとページの外へ出るように見えるので使わない。 */
+.info-open::after {
+  content: ' ›';
+  font-weight: normal;
+  color: #999;
+}
+
+.info-open:hover {
+  color: #14508c;
+}
+
+/* 出典・使っている技術のダイアログ。**中身は内側の要素に入れ、dialog自身の余白は0**
+   (STACの文書のダイアログと同じ。背景を押したときだけ dialog がクリックの的になる)。 */
+.info-dialog {
+  width: min(44rem, 92vw);
+  max-height: 85vh;
+  padding: 0;
+  border: 1px solid #ccd;
+  border-radius: 0.5rem;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+}
+
+.info-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.info-dialog-body {
+  max-height: calc(85vh - 2px);
+  overflow-y: auto;
+  padding: 0.8rem 1.1rem 1rem;
+  box-sizing: border-box;
+  font-size: 0.85rem;
+}
+
+.info-dialog-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  font-size: 1rem;
+}
+
+.info-dialog-close {
+  border: 1px solid #ccc;
+  border-radius: 0.3rem;
+  background: white;
+  cursor: pointer;
+  padding: 0.1rem 0.5rem;
+}
+
+/* 幅があるので、名前と中身を2列に並べる。 */
+.info-dialog #credits,
+.info-dialog .tech-list {
+  display: grid;
+  grid-template-columns: minmax(9rem, 15rem) 1fr;
+  gap: 0.35rem 1rem;
+}
+
+.info-dialog #credits dd,
+.info-dialog .tech-list dd {
+  margin: 0;
+}
+
 /* 背景地図と表示量。データ一覧の最後に置く (QGISでも背景はレイヤーの1つ)。
    どちらもレイヤーをまたぐselect1つなので、**横に並べて縦を1段減らす。** */
 #view-settings {

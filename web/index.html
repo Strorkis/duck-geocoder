@@ -207,26 +207,40 @@
             <li>判定した結果は、<b>×</b> か <b>Esc</b> で消せます</li>
           </ul>
         </details>
-        <!-- 出典は地図右下の ⓘ にも出るが、そちらは1行に詰まって読みにくい
-             (MapLibreが出典の間を " | " のテキストで繋ぐため)。
-             何のデータの出典かを読めるようにここにも出す。 -->
-        <details id="credits-section">
-          <summary>出典</summary>
-          <dl id="credits"></dl>
-        </details>
-        <!-- 使っている技術への謝辞。データの出典と並べる。**ライブラリとして
-             使っているもの**と、**考え方・仕様だけ借りているもの**を分けて書く
-             (後者はコードの依存に現れないので、ここに書かないと見えない)。 -->
-        <details id="tech-section">
-          <summary>使っている技術</summary>
-          <div id="tech-credits"></div>
-        </details>
+        <!-- 出典と使っている技術は**ダイアログで開く。** このパネルの幅 (15rem) に
+             畳んで入れると、出典の長い文言や技術の説明が細切れに折り返して読めない。 -->
+        <button type="button" class="info-open" data-dialog="credits-dialog">出典</button>
+        <button type="button" class="info-open" data-dialog="tech-dialog">使っている技術</button>
       </div>
       <div id="loading">
         <div class="spinner"></div>
         <p id="loading-message">読み込み中…</p>
       </div>
     </div>
+    <!-- 出典は地図右下の ⓘ にも出るが、そちらは1行に詰まって読みにくい
+         (MapLibreが出典の間を " | " のテキストで繋ぐため)。
+         何のデータの出典かを読めるようにここにも出す。 -->
+    <dialog id="credits-dialog" class="info-dialog">
+      <div class="info-dialog-body">
+        <div class="info-dialog-head">
+          <strong>出典</strong>
+          <button type="button" class="info-dialog-close" title="閉じる">×</button>
+        </div>
+        <dl id="credits"></dl>
+      </div>
+    </dialog>
+    <!-- 使っている技術への謝辞。データの出典と並べる。**ライブラリとして
+         使っているもの**と、**考え方・仕様だけ借りているもの**を分けて書く
+         (後者はコードの依存に現れないので、ここに書かないと見えない)。 -->
+    <dialog id="tech-dialog" class="info-dialog">
+      <div class="info-dialog-body">
+        <div class="info-dialog-head">
+          <strong>使っている技術</strong>
+          <button type="button" class="info-dialog-close" title="閉じる">×</button>
+        </div>
+        <div id="tech-credits"></div>
+      </div>
+    </dialog>
     <!-- STACの文書をページの中で見せる。生のJSONへ飛ばすと地図から離れてしまい、
          そこから先 (親・子・Item) へも辿れない。ここではリンクを押すと次の文書に
          進めるので、**カタログを歩ける**。 -->

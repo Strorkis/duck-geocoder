@@ -67,7 +67,7 @@ pub struct DatasetEntry {
     /// 「PLATEAUのものだ」とUI側で決め打ちすると、出所が増えたときに
     /// 書き足す場所が分かれる。
     pub covers: Option<String>,
-    /// **重要度の段。** 建物を「公共・要配慮 / 人が集まる・業務 / 住居・不明」に分ける規則。
+    /// **重要度の段。** 建物を「公共施設 / 商業・業務 / 住宅・その他」に分ける規則。
     /// 建物のCollectionだけが持つ ([`TIERS`])。
     pub tiers: Option<&'static Tiers>,
     /// **この出所の配布元。** 出所全体で1つ。ファイル側に `via` が無くてもこれはある。
@@ -111,10 +111,12 @@ pub struct Tier {
 /// いろいろな問い合わせの部品にする** (ドローンの「落ちてはいけない場所」は
 /// 思い付いた例の1つ)。名前を用途に寄せないのはそのため。
 ///
-/// 「人が集まる・業務」は当初「人が集まる・大きい」と呼んでいたが、
-/// **大きさはまだ見ていない** (用途だけで分けている) ので名前を変えた。
-/// 用途が分からない建物が36%あり (不明654万・空欄419万)、そこを大きさで
-/// 拾い直すのは次の段階。
+/// **段の名前は建物の種類で言う** (公共施設 / 商業・業務 / 住宅・その他)。
+/// 当初は「公共・要配慮」「人が集まる」と呼んでいたが、ドローン目線すぎた。
+/// 並び順が重要度で、主な使い道は引いた表示での間引き (重要な段から出す)。
+///
+/// 用途が分からない建物が36%あり (不明654万・空欄419万)、いまは住宅・その他に入る。
+/// 大きさで拾い直すのは次の段階。
 pub const TIERS: &[(&str, Tiers)] = &[
     (
         "plateau-buildings",
@@ -124,12 +126,12 @@ pub const TIERS: &[(&str, Tiers)] = &[
             tiers: &[
                 Tier {
                     id: "public",
-                    title: "公共・要配慮",
+                    title: "公共施設",
                     values: &["文教厚生施設", "官公庁施設", "供給処理施設", "防衛施設"],
                 },
                 Tier {
-                    id: "gathering",
-                    title: "人が集まる・業務",
+                    id: "business",
+                    title: "商業・業務",
                     values: &[
                         "商業施設",
                         "業務施設",
@@ -141,7 +143,7 @@ pub const TIERS: &[(&str, Tiers)] = &[
                 },
                 Tier {
                     id: "other",
-                    title: "住居・不明",
+                    title: "住宅・その他",
                     values: &[],
                 },
             ],
@@ -157,7 +159,7 @@ pub const TIERS: &[(&str, Tiers)] = &[
             tiers: &[
                 Tier {
                     id: "public",
-                    title: "公共・要配慮",
+                    title: "公共施設",
                     values: &[
                         "public",
                         "civic",
@@ -176,8 +178,8 @@ pub const TIERS: &[(&str, Tiers)] = &[
                     ],
                 },
                 Tier {
-                    id: "gathering",
-                    title: "人が集まる・業務",
+                    id: "business",
+                    title: "商業・業務",
                     values: &[
                         "commercial",
                         "office",
@@ -197,7 +199,7 @@ pub const TIERS: &[(&str, Tiers)] = &[
                 },
                 Tier {
                     id: "other",
-                    title: "住居・不明",
+                    title: "住宅・その他",
                     values: &[],
                 },
             ],
