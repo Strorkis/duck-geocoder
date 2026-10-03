@@ -146,10 +146,18 @@ pub fn build_with_coarse_lod_sql(
 
     let columns = level.columns().join(",\n    ");
     let key = level.merge_key.join(", ");
-    let folded = level
-        .folded
+    // 統合キーと畳む列を1つの並びにする。**畳む列が無いこともある** (送電線・川は
+    // キーだけ) ので、別々に書くと末尾にカンマが残って構文エラーになる。
+    let grouped = level
+        .merge_key
         .iter()
-        .map(|(name, expression)| format!("{expression} AS {name}"))
+        .map(|name| (*name).to_string())
+        .chain(
+            level
+                .folded
+                .iter()
+                .map(|(name, expression)| format!("{expression} AS {name}")),
+        )
         .collect::<Vec<_>>()
         .join(",\n      ");
     let require = level
@@ -176,8 +184,7 @@ COPY (
     ST_AsWKB(geometry)::BLOB AS geometry
   FROM (
     SELECT
-      {key},
-      {folded},
+      {grouped},
       ST_Simplify(ST_LineMerge(ST_Collect(list(geometry))), {tolerance}) AS geometry
     FROM read_parquet('{input}'){require}
     GROUP BY {key}
@@ -231,6 +238,21 @@ mod tests {
         assert!((degrees - 0.000_898).abs() < 1e-6, "{degrees}");
         // メートルに戻ること。
         assert!((degrees * METERS_PER_DEGREE_LAT - 100.0).abs() < 1e-9);
+    }
+
+    /// **畳む列が無くても組み立てられること。** 送電線・川はキーだけで統合する。
+    /// 以前は統合キーと畳む列を別々に書いていて、末尾にカンマが残って DuckDB が拒んだ。
+    #[test]
+    fn works_without_folded_columns() {
+        let lines = CoarseLevel {
+            merge_key: &["name", "class", "tile"],
+            folded: &[],
+            require: None,
+        };
+        let sql = build_with_coarse_lod_sql("in.parquet", "out.parquet", &lines, "{}", "v");
+        assert!(sql.contains("GROUP BY name, class, tile"), "{sql}");
+        // カンマだけの行 (空の要素) が無いこと。
+        assert!(!sql.lines().any(|line| line.trim() == ","), "{sql}");
     }
 
     /// 統合の単位がGROUP BYに入ること。

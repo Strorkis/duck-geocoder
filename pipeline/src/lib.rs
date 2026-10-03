@@ -18,6 +18,7 @@ pub mod overture;
 pub mod peak_memory;
 pub mod plateau;
 pub mod plateau_catalog;
+pub mod quadkey;
 pub mod remote_zip;
 pub mod repack;
 pub mod spatial_pack;

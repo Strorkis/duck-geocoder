@@ -405,6 +405,11 @@ fn collection(id: &str, entries: &[&DatasetEntry], dir: &str) -> Result<Value> {
     // UIはこれを読んで問い合わせの条件を組み立てる。
     if let Some(tiers) = first.tiers {
         body["duck:tiers"] = json!(tiers);
+        // **段で間引ける列があるか。** 全ファイルが持つときだけ名乗る — 一部にしか
+        // 無いのに名乗ると、無いファイルを `lod <= 0` で引いて空になる (粗い段と同じ考え方)。
+        if entries.iter().all(|entry| entry.lod_by_tier) {
+            body["duck:tiers"]["lod_column"] = json!("lod");
+        }
     }
     // **いつ時点のデータか。** ファイルごとに違いうる (PLATEAUは都市ごとに
     // 更新年度が揃っていない) ので、**揃っているときだけ**Collectionに出す。
@@ -578,6 +583,7 @@ mod tests {
             coarse_lod_tolerance_m: None,
             covers: None,
             tiers: None,
+            lod_by_tier: false,
             collection_via: "https://example.invalid/download",
         }
     }

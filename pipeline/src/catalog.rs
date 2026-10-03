@@ -70,6 +70,9 @@ pub struct DatasetEntry {
     /// **重要度の段。** 建物を「公共施設 / 商業・業務 / 住宅・その他」に分ける規則。
     /// 建物のCollectionだけが持つ ([`TIERS`])。
     pub tiers: Option<&'static Tiers>,
+    /// **段で間引く `lod` 列を持つか** (`add_building_lod` が書く `duck:lod_by_tier`)。
+    /// Collection の全ファイルが持つときだけ、UI に `lod_column` として伝える。
+    pub lod_by_tier: bool,
     /// **この出所の配布元。** 出所全体で1つ。ファイル側に `via` が無くてもこれはある。
     pub collection_via: &'static str,
 }
@@ -207,6 +210,43 @@ pub const TIERS: &[(&str, Tiers)] = &[
     ),
 ];
 
+impl Tiers {
+    /// 段の**順位** (0がいちばん重要) を求めるSQLの式。
+    ///
+    /// UI (`tierExpression`) は同じ規則から段の ID を求める。**規則は1つで、
+    /// 式の形だけが違う** — こちらは並べ替え (間引きの段) に使うので順位を返す。
+    pub fn rank_sql(&self) -> String {
+        let quote = |value: &str| format!("'{}'", value.replace('\'', "''"));
+        let mut whens = Vec::new();
+        if self.named_first {
+            whens.push("WHEN name IS NOT NULL THEN 0".to_string());
+        }
+        let (_, rest) = self
+            .tiers
+            .split_last()
+            .expect("段が1つも無い規則は validate_tiers で弾いている");
+        for (rank, tier) in rest.iter().enumerate() {
+            let values = tier.values.iter().map(|v| quote(v)).collect::<Vec<_>>();
+            whens.push(format!(
+                "WHEN {} IN ({}) THEN {rank}",
+                self.column,
+                values.join(", ")
+            ));
+        }
+        format!("CASE {} ELSE {} END", whens.join(" "), self.tiers.len() - 1)
+    }
+}
+
+/// 建物のファイル名から、その出所の重要度の段の規則を引く。
+///
+/// **ファイル名の接頭辞で決める** (`DESCRIPTIONS` と同じ引き方)。知らないファイルは `None`。
+pub fn tiers_for_file(file_stem: &str) -> Option<&'static Tiers> {
+    DESCRIPTIONS
+        .iter()
+        .find(|(prefix, _)| file_stem.starts_with(prefix))
+        .and_then(|(_, described)| tiers_for(described.collection))
+}
+
 /// そのCollectionの重要度の段。建物以外は `None`。
 fn tiers_for(collection: &str) -> Option<&'static Tiers> {
     TIERS
@@ -294,6 +334,11 @@ pub enum DatasetKind {
     /// 地理院の道路中心線も名前は注記レイヤにしかない) ので、
     /// 「国道13号」で引けるのはこちらだけ。詳細は docs/data-sources.md。
     Road,
+    /// 送電線 (線)。出所はOverture (元はOpenStreetMap)。**国のデータには無い。**
+    PowerLine,
+    /// 川・運河 (線)。出所はOverture (元はOpenStreetMap)。**参考どまり** —
+    /// 国土数値情報の河川 (W05) は非商用で使えず、基盤地図情報の水涯線は承認待ち。
+    Waterway,
     /// **整備範囲** (面)。地域メッシュで「どこまで入っているか」を表す。
     ///
     /// 収録範囲をbboxの和で示すと、PLATEAUを306都市に広げた時点で日本をほぼ覆う
@@ -654,6 +699,35 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             via: "https://docs.overturemaps.org/guides/transportation/",
         },
     ),
+    (
+        "overture_power_lines",
+        Description {
+            kind: DatasetKind::PowerLine,
+            collection: "overture-power-lines",
+            title: "送電線",
+            // power_line (送電線) と cable (地中・海底線)。配電線 (minor_line) は入れない。
+            description: "送電線と地中・海底の電力線。線の名前を持つものがある。",
+            attribution: OVERTURE,
+            // 種別は2つ (送電線・地中線) だけなので絞り込みは作らない。
+            summary_columns: &[],
+            mesh_digits: None,
+            via: "https://docs.overturemaps.org/guides/base/",
+        },
+    ),
+    (
+        "overture_waterways",
+        Description {
+            kind: DatasetKind::Waterway,
+            collection: "overture-waterways",
+            title: "川",
+            // river と canal の線だけ。小川・用水路と、川幅を持つ面は入れない。
+            description: "川と運河の流れの線。元はOpenStreetMapで、国のデータではない。",
+            attribution: OVERTURE,
+            summary_columns: &[],
+            mesh_digits: None,
+            via: "https://docs.overturemaps.org/guides/base/",
+        },
+    ),
     // **`plateau_bldg` より前に置くこと。** 前方一致で引くので、後ろだと吸われる。
     (
         "plateau_bldg_coverage",
@@ -927,6 +1001,7 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         .as_deref()
         .and_then(crate::lod::coarse_resolution_m);
     let covers = key_value(crate::coverage::COVERS_KEY);
+    let lod_by_tier = key_value("duck:lod_by_tier").is_some();
 
     let columns: Vec<ColumnEntry> = file_metadata
         .schema_descr()
@@ -974,6 +1049,7 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         coarse_lod_tolerance_m,
         covers,
         tiers,
+        lod_by_tier,
         collection_via: described.via,
     })
 }
@@ -1058,6 +1134,40 @@ mod tests {
             named_first: false,
             tiers: Box::leak(tiers.into_boxed_slice()),
         }
+    }
+
+    /// **段の順位の式は規則どおり。** 名前があれば0、値で当てて、どれにも当たらなければ最後。
+    #[test]
+    fn rank_sql_follows_the_rule() {
+        let (_, plateau) = TIERS
+            .iter()
+            .find(|(id, _)| *id == "plateau-buildings")
+            .unwrap();
+        let sql = plateau.rank_sql();
+        assert!(
+            sql.starts_with("CASE WHEN name IS NOT NULL THEN 0 "),
+            "{sql}"
+        );
+        assert!(sql.contains("WHEN usage IN ('文教厚生施設'"), "{sql}");
+        assert!(sql.contains("THEN 1 "), "{sql}");
+        assert!(sql.ends_with("ELSE 2 END"), "{sql}");
+
+        // Overture は名前で上げない。
+        let (_, overture) = TIERS
+            .iter()
+            .find(|(id, _)| *id == "overture-buildings")
+            .unwrap();
+        assert!(!overture.rank_sql().contains("name IS NOT NULL"));
+    }
+
+    /// 建物のファイル名から規則を引ける。**QuadKey で分けた Overture も引ける。**
+    #[test]
+    fn finds_tiers_by_file_name() {
+        assert!(tiers_for_file("plateau_bldg_13103").is_some());
+        assert!(tiers_for_file("overture_buildings_13300211").is_some());
+        // 整備範囲は建物ではない (前方一致で建物の規則に吸われないこと)。
+        assert!(tiers_for_file("plateau_bldg_coverage").is_none());
+        assert!(tiers_for_file("overture_roads_motorway").is_none());
     }
 
     #[test]

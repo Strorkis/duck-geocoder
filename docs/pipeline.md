@@ -438,10 +438,6 @@ Overtureは最初からGeoParquetなので、変換は不要で必要な範囲�
 ```sh
 cd pipeline
 
-# 建物 (bboxで範囲指定)
-cargo run --release --bin extract_overture -- buildings \
-  ../data/output/overture_buildings_minato.parquet 139.73 35.63 139.78 35.68
-
 # 行政区域 (日本全体)
 cargo run --release --bin extract_overture -- divisions \
   ../data/overture/divisions_jp.parquet
@@ -454,6 +450,69 @@ cargo run --release --bin extract_overture -- ocean \
 **S3へのアクセスは最小限にすること。** Overtureは `bbox` covering列を持っているので、
 そこで絞ればrow group単位で読み飛ばせる (日本全体のdivisionsで約30秒)。
 国名や属性だけで絞ると読み飛ばしが効かず、何倍も時間がかかる。
+
+**版は消える。** S3に残るのは直近の数版だけで、使っていた 2026-07-22.0 は
+2026-10-01に消えていた。いまは `2026-09-23.1` (`overture.rs` の `DEFAULT_RELEASE`)。
+取り直す前に、バケットに残っている版を確かめること。
+
+### 建物を全国に (QuadKey で分ける, 2026-10-03)
+
+以前は港区だけを切り出していた。全国にした。
+
+```sh
+# 日本を含む範囲で取り出す (隣国も入る。9.3GB・7,405万棟、約18分)
+cargo run --release --bin extract_overture -- buildings \
+  ../data/overture/buildings_jp_bbox.parquet 122 20 154 46
+# 日本の分だけを QuadKey で分ける (5,419万棟 → 392ファイル、約4分)
+cargo run --release --bin overture_buildings_to_geoparquet -- \
+  ../data/overture/buildings_jp_bbox.parquet ../data/overture/divisions_jp.parquet \
+  ../data/output/overture
+# 並べ直し (1ファイルずつ) と、重要度の段
+for f in ../data/output/overture/overture_buildings_[0-3]*.parquet; do
+  cargo run --release --bin optimize_geoparquet -- "$f" "$f"; done
+cargo run --release --bin add_building_lod -- ../data/output/overture/overture_buildings_[0-3]*.parquet
+```
+
+- **分け方は QuadKey** (`overture_buildings_<quadkey>.parquet`)。地域メッシュは日本の基準
+  なので、世界のデータである Overture には使わない。拡張が要らず、矩形なので
+  ファイルの bbox で読み飛ばせ、前から切ると親になる (`pipeline/src/quadkey.rs`)
+- **細かさは件数で変える** (適応的な四分木)。同じズームで切ると、ズーム10でも最大195万棟の
+  タイルができ、`repack` (ファイルを丸ごとメモリに読む、1棟約1.1KB) に載らない。
+  ズーム7から始めて40万棟を超えるタイルだけ割り、最大ズーム12で止める
+- **日本かどうかはタイルで判定する。** 建物ごとに市区町村と交差を取ると、
+  7,405万棟 × 1,741区画で2GBに収まらなかった。ズーム12 (約10km) のタイルのうち
+  市区町村に重なるものを残す。日本と隣国の陸地がいちばん近いのは対馬と釜山の約50kmなので、
+  1つのタイルに両方の建物が入ることは無い
+- **GERS ID (`id` 列) は残す。** 27% (2.5GB / 9.3GB) を占めるが、Overture の他の版・
+  他のテーマと突き合わせる鍵なので、配り方の実験として落とさない。R2 の容量は
+  「超えた分は払う」方針 ([deploy.md](deploy.md))
+- 配信は **5.1GB** (並べ直しと段を付けたあと)。整備範囲メッシュは作らない
+  (日本をほぼ覆っているので「どこまであるか」を示す意味が薄い)
+
+### 送電線と川 (2026-10-03)
+
+```sh
+cargo run --release --bin extract_overture -- power ../data/overture/power_jp.parquet
+cargo run --release --bin extract_overture -- water ../data/overture/water_jp.parquet
+for k in power water; do
+  cargo run --release --bin overture_lines_to_geoparquet -- $k \
+    ../data/overture/${k}_jp.parquet ../data/overture/divisions_jp.parquet ../data/output/overture
+done
+# 並べ直しと粗い段
+cargo run --release --bin optimize_geoparquet -- <ファイル> <ファイル>   # 2つとも
+cargo run --release --bin add_coarse_lod -- \
+  ../data/output/overture/overture_power_lines.parquet ../data/output/overture/overture_waterways.parquet
+```
+
+- **送電線**: `power_line` と `cable` (地中・海底線)。配電線 (`minor_line`) は入れない。
+  日本で 33,964区間、配信 6.8MB
+- **川**: `river` と `canal` の**線**だけ。小川・用水路と、川幅を持つ面は入れない。
+  188,167区間、配信 101MB。**国のデータではない (元はOpenStreetMap) ので参考どまり**
+  — 国土数値情報の河川 (W05) は非商用で使えず、基盤地図情報の水涯線は承認待ち
+- **粗い段は (名前, 種別, タイル) で束ねる。** 全国の送電線は名前を持つのが19%だけで、
+  道路のように名前で束ねて名前の無いものを落とすと、引いた表示から8割が消える。
+  タイル (QuadKey ズーム9、約60km) ごとにまとめれば名前の無い線も残る。
+  粗い段は送電線 1.8MB (全国)、川 5.5MB (行グループ9つ)
 
 ### 海域を削る
 
@@ -784,7 +843,7 @@ UIが読むのは `mesh_code` / `buildings` / `cities` / `bbox` だけで、
 特定の用途向けではなく、**いろいろな問い合わせの部品**にする。段の名前は建物の
 種類で言う (当初の「公共・要配慮」「人が集まる」はドローン目線すぎたので改めた)。
 
-1. **間引き (主な使い道、これから)。** 引いた表示では重要な段から出す
+1. **間引き (主な使い道)。** 引いた表示では重要な段から出す (下の「段で間引く」)
 2. **寄ったときの絞り込み。** 十数個ある用途のチェックを3段にまとめる (用途の1つ1つはたたんで残す)
 3. **寄ったときの強調。** 「重要度で色分けする」で、公共施設を赤、商業・業務を橙、住宅・その他を灰にする
 
@@ -815,6 +874,31 @@ UIが読むのは `mesh_code` / `buildings` / `cities` / `bbox` だけで、
 ポートの候補は「駐車場など間借りできる場所」の想定で、公共施設を上の段にしておけば
 足りる、という判断 (2026-10-01)。
 
+##### 段で間引く (2026-10-03)
+
+**行を複製せず、段に振り分ける** (`add_building_lod`)。建物ファイルに `lod` 列
+(段の順位: 0 公共施設 / 1 商業・業務 / 2 住宅・その他) を付け、`repack` が段ごとに
+STR で並べて段の境で行グループを切る。線の粗い段 (統合・簡略化した行を**足す**) とは
+違い、建物は1棟ずつ独立しているので振り分けるだけで済む — COGP の考え方そのもの。
+
+UI は**1ズーム引くごとに1段減らす** (画面の面積は1ズームで4倍)。標準なら
+z15〜 全部 / z14 公共施設と商業・業務 / z13 公共施設 / それより引くと整備範囲。
+件数の欄に「公共施設のみ (ズーム15ですべて)」と、**どこまで出しているかを言う**。
+
+測った根拠 (東京駅・1280×720の画面、形状のWKBの合計):
+
+| | 公共施設 | 商業・業務 | 住宅・その他 |
+| --- | ---: | ---: | ---: |
+| z13 | 1.0万棟 / 1.9MB | 5.8万 / 8.7MB | 15.0万 / 20.1MB |
+| z12 | 4.0万 / 7.3MB | 12.0万 / 17.5MB | 87.3万 / 114.8MB |
+
+- 段の規則は `TIERS` の1つだけ。`lod` 列は `Tiers::rank_sql` で、UI の色分け・絞り込みは
+  `tierExpression` で、同じ規則から作る。**規則を変えたら `add_building_lod` を掛け直す**
+  (列に焼き込んでいるのは間引きの段だけ)
+- 二度掛けない (`duck:lod_by_tier` があれば飛ばす)。KV メタデータは全部引き継ぐ
+- カタログは**全ファイルが段を持つときだけ** `duck:tiers` に `lod_column` を足す
+  (一部にしか無いのに名乗ると、無いファイルを `lod <= 0` で引いて空になる)
+- PLATEAU 306都市で2分45秒、Overture 392ファイルで約4分
 #### 表示量は利用者が選ぶ (控えめ / 標準 / 多め)
 
 上限とズームの閾値は**どこまで描けるかで決まり、それは端末で違う**。

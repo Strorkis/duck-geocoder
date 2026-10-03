@@ -41,6 +41,29 @@ pub fn read_key_value(path: &Path, key: &str) -> Result<Option<String>> {
         .and_then(|entry| entry.value.clone()))
 }
 
+/// Parquet の KV メタデータを全部読む。**ファイルに書かれた順。** 値の無いキーは飛ばす。
+///
+/// 書き直すときに、解釈しないキー (`duck:via` `duck:source_lod` など) も
+/// 落とさず引き継ぐために使う。
+pub fn read_all_key_values(path: &Path) -> Result<Vec<(String, String)>> {
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+
+    let file = File::open(path).with_context(|| format!("開けません: {}", path.display()))?;
+    let reader = SerializedFileReader::new(file)
+        .with_context(|| format!("Parquetとして読めません: {}", path.display()))?;
+    Ok(reader
+        .metadata()
+        .file_metadata()
+        .key_value_metadata()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.value.clone().map(|value| (entry.key.clone(), value)))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
 /// `geo` メタデータの `geometry_types` を差し替える。
 ///
 /// 段を足すと種別が増える — 断片を `ST_LineMerge` で繋ぐと `LineString` が

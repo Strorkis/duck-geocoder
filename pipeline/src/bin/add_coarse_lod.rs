@@ -75,6 +75,17 @@ fn coarse_level_for(path: &Path) -> Result<CoarseLevel<'static>> {
         });
     }
 
+    // 送電線・川 (Overture)。**名前・種別・タイルで統合する。** 名前だけで束ねると、
+    // 全国の送電線は8割が名前を持たないので引いた表示から消える (overture::LINE_TILE_ZOOM)。
+    // 名前の無い線 (NULL) もタイルごとに1本にまとまるので、粗い段に全部の線が残る。
+    if name.starts_with("overture_power_lines") || name.starts_with("overture_waterways") {
+        return Ok(CoarseLevel {
+            merge_key: &["name", "class", "tile"],
+            folded: &[],
+            require: None,
+        });
+    }
+
     bail!(
         "統合の仕方が分かりません: {name}\n\
          列構成ごとに決め打ちしてあります (add_coarse_lod.rs の coarse_level_for)。"

@@ -1,7 +1,10 @@
 use anyhow::{Context, Result, bail};
 
 /// Overtureのリリース。更新する場合は https://docs.overturemaps.org/release/ を確認する。
-pub const DEFAULT_RELEASE: &str = "2026-07-22.0";
+///
+/// **古い版はS3から消える** (2026-10-01に 2026-07-22.0 が消えていた。残るのは直近の数版)。
+/// 取り直すときは、まずバケットに残っている版を確かめること。
+pub const DEFAULT_RELEASE: &str = "2026-09-23.1";
 
 /// 切り出す範囲 (WGS84)。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -48,6 +51,11 @@ pub fn build_extract_sql(release: &str, bbox: BoundingBox, output: &str) -> Stri
         "INSTALL spatial; LOAD spatial;
 INSTALL httpfs; LOAD httpfs;
 SET s3_region='us-west-2';
+-- **流しながら書く。** 日本全体だと数千万棟あり、行順を保とうとすると抱え込む
+-- (道路で実際にOOMになった。build_roads_extract_sql と同じ設定)。
+-- 行順はこのあと分割と optimize_geoparquet で組み直すので意味が無い。
+SET preserve_insertion_order = false;
+SET memory_limit = '2GB';
 COPY (
   SELECT
     id,
@@ -381,15 +389,271 @@ COPY (
 fn japan_road_filter(divisions: &str) -> String {
     format!(
         "(
-    EXISTS (
+    {}
+    OR len(list_filter(r.networks, lambda n: starts_with(n, 'JP'))) > 0
+  )",
+        in_japan(divisions, "r")
+    )
+}
+
+/// 日本の市区町村のどれかに重なるか。**国の境界ではなく市区町村で判定する。**
+///
+/// `JAPAN_BBOX` には韓国・台湾・ロシアの一部が入るので、bboxだけでは落とせない。
+/// 市区町村 (1,741区画) のbboxで先に絞ってから交差を見る。
+fn in_japan(divisions: &str, alias: &str) -> String {
+    format!(
+        "EXISTS (
       SELECT 1 FROM read_parquet('{divisions}') jp
       WHERE {MUNICIPALITY_FILTER}
-        AND jp.bbox.xmin <= r.bbox.xmax AND jp.bbox.xmax >= r.bbox.xmin
-        AND jp.bbox.ymin <= r.bbox.ymax AND jp.bbox.ymax >= r.bbox.ymin
-        AND ST_Intersects(jp.geometry, r.geometry)
+        AND jp.bbox.xmin <= {alias}.bbox.xmax AND jp.bbox.xmax >= {alias}.bbox.xmin
+        AND jp.bbox.ymin <= {alias}.bbox.ymax AND jp.bbox.ymax >= {alias}.bbox.ymin
+        AND ST_Intersects(jp.geometry, {alias}.geometry)
+    )"
     )
-    OR len(list_filter(r.networks, lambda n: starts_with(n, 'JP'))) > 0
-  )"
+}
+
+/// 取り出した建物に、細かい QuadKey (`fine_zoom`) を付けて書くSQL (1回目)。**絞り込まない。**
+///
+/// 全国の建物は1つのファイルにできない (`repack` がファイルを丸ごとメモリに読む)。
+/// 分け方は QuadKey ([`crate::quadkey`])。地域メッシュは日本の基準なので、
+/// 世界のデータである Overture には使わない。
+///
+/// ここで付けるキーは細かい単位で、**ファイルの単位はこのあと件数を見て決める**
+/// ([`crate::quadkey::choose_tiles`])。キーは建物の bbox の中心で決める
+/// (タイルの境をまたぐ建物は片方にだけ入る)。
+///
+/// **日本かどうかは、ここでは建物ごとに判定しない。** 7,405万棟 × 市区町村1,741区画の
+/// 交差判定は2GBに収まらなかった (実測でメモリ不足)。代わりにキーのタイルごとに
+/// 判定する ([`build_japan_tiles_sql`])。
+pub fn build_buildings_keyed_sql(input: &str, output: &str, fine_zoom: u8) -> String {
+    let key = crate::quadkey::sql_expression(
+        "((b.bbox.xmin + b.bbox.xmax) / 2)",
+        "((b.bbox.ymin + b.bbox.ymax) / 2)",
+        fine_zoom,
+    );
+    format!(
+        "INSTALL spatial; LOAD spatial;
+SET preserve_insertion_order = false;
+SET memory_limit = '2GB';
+COPY (
+  SELECT
+    b.id, b.name, b.class, b.subtype, b.height, b.num_floors, b.bbox,
+    ST_AsWKB(b.geometry)::BLOB AS geometry,
+    {key} AS fine_key
+  FROM read_parquet('{input}') b
+) TO '{output}' (FORMAT PARQUET);"
+    )
+}
+
+/// タイル (`tiles` の CSV: `fine_key,west,south,east,north`) のうち、
+/// **日本の市区町村に重なるもの**を返すSQL。
+///
+/// 建物ごとではなくタイルごとに判定するので軽い (数万タイル)。タイルはズーム12で
+/// 1辺約10km。日本と隣国の陸地がいちばん近いのは対馬と釜山で約50km離れているので、
+/// 1つのタイルに両方の建物が入ることは無い。
+pub fn build_japan_tiles_sql(tiles: &str, divisions: &str) -> String {
+    format!(
+        "INSTALL spatial; LOAD spatial;
+{SPATIAL_JOIN_SETTINGS}
+SELECT t.fine_key
+FROM read_csv('{tiles}', header = true, columns = {{
+  'fine_key': 'VARCHAR', 'west': 'DOUBLE', 'south': 'DOUBLE', 'east': 'DOUBLE', 'north': 'DOUBLE'
+}}) t
+WHERE EXISTS (
+  SELECT 1 FROM read_parquet('{divisions}') jp
+  WHERE {MUNICIPALITY_FILTER}
+    AND jp.bbox.xmin <= t.east AND jp.bbox.xmax >= t.west
+    AND jp.bbox.ymin <= t.north AND jp.bbox.ymax >= t.south
+    AND ST_Intersects(jp.geometry, ST_MakeEnvelope(t.west, t.south, t.east, t.north))
+);"
+    )
+}
+
+/// 日本の建物を、選んだタイル (`mapping` の CSV: `fine_key,tile`) ごとに振り分けて書くSQL (2回目)。
+/// ここでは `geo` メタデータを書かない。3回目 ([`build_building_tile_sql`]) で
+/// タイルごとの範囲を入れて書き直す。
+pub fn build_buildings_partition_sql(japan: &str, mapping: &str, out_dir: &str) -> String {
+    format!(
+        "SET preserve_insertion_order = false;
+SET memory_limit = '2GB';
+COPY (
+  SELECT b.* EXCLUDE (fine_key), m.tile AS quadkey
+  FROM read_parquet('{japan}') b
+  JOIN read_csv('{mapping}', header = true, columns = {{'fine_key': 'VARCHAR', 'tile': 'VARCHAR'}}) m
+    USING (fine_key)
+) TO '{out_dir}' (FORMAT PARQUET, PARTITION_BY (quadkey), OVERWRITE_OR_IGNORE);"
+    )
+}
+
+/// 振り分けた1タイル分を、配信用の GeoParquet にするSQL (2回目)。
+/// ジオメトリは1回目で既に WKB の BLOB になっている。
+pub fn build_building_tile_sql(
+    input: &str,
+    output: &str,
+    geo_metadata_json: &str,
+    vintage: &str,
+) -> String {
+    let escaped = geo_metadata_json.replace('\'', "''");
+    let vintage = vintage.replace('\'', "''");
+    let vintage_key = crate::geoparquet::VINTAGE_KEY;
+    format!(
+        "COPY (
+  SELECT id, name, class, subtype, height, num_floors, bbox, geometry
+  FROM read_parquet('{input}')
+) TO '{output}' (FORMAT PARQUET, KV_METADATA {{
+  geo: '{escaped}',
+  '{vintage_key}': '{vintage}'
+}});"
+    )
+}
+
+/// 道路以外に配るOvertureの線。**名前と種別だけを持つ単純な線**として同じ流れで作る。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OvertureLine {
+    /// 送電線 (`base/infrastructure`)。元はOpenStreetMap。
+    Power,
+    /// 川・運河 (`base/water`)。元はOpenStreetMap。**国のデータではないので参考どまり**
+    /// (国土数値情報の河川W05は非商用で使えず、基盤地図情報の水涯線は承認待ち)。
+    Water,
+}
+
+impl OvertureLine {
+    pub fn parse(name: &str) -> Result<Self> {
+        match name {
+            "power" => Ok(Self::Power),
+            "water" => Ok(Self::Water),
+            other => bail!("知らない線の種類です: {other:?} (power か water)"),
+        }
+    }
+
+    /// 配信するファイルの名前。カタログはこの接頭辞で種別を決める。
+    pub fn file_name(self) -> &'static str {
+        match self {
+            Self::Power => "overture_power_lines.parquet",
+            Self::Water => "overture_waterways.parquet",
+        }
+    }
+
+    /// `(theme, type, 絞り込み)`。
+    ///
+    /// - 送電線: `power_line` (送電線) と `cable` (地中・海底線)。`minor_line` (配電線) は
+    ///   電柱ごとの細い線で数が多く、送電線とは性格が違うので入れない
+    /// - 川: `river` と `canal` の**線**だけ。小川 (`stream`)・用水路 (`drain` `ditch`) は
+    ///   入れない (川崎付近で小川は455本中119本しか名前が無い)。面 (川幅を持つ水域) も入れない
+    fn source(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Power => (
+                "base",
+                "infrastructure",
+                "subtype = 'power' AND class IN ('power_line', 'cable')",
+            ),
+            Self::Water => (
+                "base",
+                "water",
+                "subtype IN ('river', 'canal') AND class IN ('river', 'canal')",
+            ),
+        }
+    }
+}
+
+/// Overtureから送電線・川を取り出すSQL。**線 (LineString) だけを取る。**
+pub fn build_lines_extract_sql(
+    line: OvertureLine,
+    release: &str,
+    bbox: BoundingBox,
+    output: &str,
+) -> String {
+    let BoundingBox {
+        xmin,
+        ymin,
+        xmax,
+        ymax,
+    } = bbox;
+    let (theme, kind, filter) = line.source();
+    format!(
+        "INSTALL spatial; LOAD spatial;
+INSTALL httpfs; LOAD httpfs;
+SET s3_region='us-west-2';
+SET preserve_insertion_order = false;
+SET memory_limit = '2GB';
+COPY (
+  SELECT
+    names.primary AS name,
+    class,
+    bbox,
+    geometry
+  FROM read_parquet(
+    's3://overturemaps-us-west-2/release/{release}/theme={theme}/type={kind}/*',
+    hive_partitioning=1
+  )
+  WHERE bbox.xmin BETWEEN {xmin} AND {xmax}
+    AND bbox.ymin BETWEEN {ymin} AND {ymax}
+    AND {filter}
+    AND ST_GeometryType(geometry) = 'LINESTRING'
+) TO '{output}' (FORMAT PARQUET);"
+    )
+}
+
+/// 取り出した線の収録範囲とジオメトリ種別。**書き出すものと同じ絞り込みを掛ける。**
+pub fn build_lines_stats_sql(input: &str, divisions: &str) -> String {
+    let japan = in_japan(divisions, "r");
+    format!(
+        "INSTALL spatial; LOAD spatial;
+{SPATIAL_JOIN_SETTINGS}
+SELECT
+  min(r.bbox.xmin) AS xmin,
+  min(r.bbox.ymin) AS ymin,
+  max(r.bbox.xmax) AS xmax,
+  max(r.bbox.ymax) AS ymax,
+  list_sort(list_distinct(list(ST_GeometryType(r.geometry)::VARCHAR))) AS geometry_types
+FROM read_parquet('{input}') r
+WHERE {japan};"
+    )
+}
+
+/// 送電線・川の粗い段を束ねる単位のタイル (QuadKey のズーム)。ズーム9で日本付近は約60km四方。
+///
+/// **名前だけでは束ねられない。** 全国の送電線は50,045区間のうち名前があるのは9,389
+/// (19%) だけで、名前で束ねて名前の無いものを落とすと、引いた表示から8割が消える。
+/// そこで (名前, 種別, タイル) で束ねる。名前の無い線もタイルごとにまとまって残り、
+/// タイルが表示範囲での読み飛ばしの単位にもなる。
+pub const LINE_TILE_ZOOM: u8 = 9;
+
+/// 取り出した線から、日本の分だけを配信用のデータセットにするSQL。
+///
+/// ジオメトリをBLOBとして書く理由は [`build_admin_sql`] と同じ。
+pub fn build_lines_sql(
+    input: &str,
+    divisions: &str,
+    output: &str,
+    geo_metadata_json: &str,
+    vintage: &str,
+) -> String {
+    let escaped = geo_metadata_json.replace('\'', "''");
+    let vintage = vintage.replace('\'', "''");
+    let vintage_key = crate::geoparquet::VINTAGE_KEY;
+    let japan = in_japan(divisions, "r");
+    let tile = crate::quadkey::sql_expression(
+        "((r.bbox.xmin + r.bbox.xmax) / 2)",
+        "((r.bbox.ymin + r.bbox.ymax) / 2)",
+        LINE_TILE_ZOOM,
+    );
+    format!(
+        "INSTALL spatial; LOAD spatial;
+{SPATIAL_JOIN_SETTINGS}
+COPY (
+  SELECT
+    r.name,
+    r.class,
+    {tile} AS tile,
+    r.bbox,
+    ST_AsWKB(r.geometry)::BLOB AS geometry
+  FROM read_parquet('{input}') r
+  WHERE {japan}
+) TO '{output}' (FORMAT PARQUET, KV_METADATA {{
+  geo: '{escaped}',
+  '{vintage_key}': '{vintage}'
+}});"
     )
 }
 
