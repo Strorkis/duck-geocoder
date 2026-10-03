@@ -40,6 +40,7 @@
 //! アセットも同じディレクトリにあるのでファイル名だけになる。
 
 use crate::catalog::{ColumnEntry, DatasetEntry, DatasetKind};
+use crate::external::ExternalTileset;
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -47,6 +48,8 @@ use std::collections::BTreeMap;
 const STAC_VERSION: &str = "1.1.0";
 /// `table:columns` / `table:row_count` の出どころ。
 const TABLE_EXTENSION: &str = "https://stac-extensions.github.io/table/v1.2.0/schema.json";
+/// `file:size` の出どころ。
+const FILE_EXTENSION: &str = "https://stac-extensions.github.io/file/v2.1.0/schema.json";
 const PARQUET_MEDIA_TYPE: &str = "application/vnd.apache.parquet";
 const JSON_MEDIA_TYPE: &str = "application/json";
 const GEOJSON_MEDIA_TYPE: &str = "application/geo+json";
@@ -159,6 +162,11 @@ const SUB_CATALOGS: &[SubCatalog] = &[
         dir: "isj",
         title: "位置参照情報",
         description: "国土交通省の位置参照情報。住所の代表点。",
+    },
+    SubCatalog {
+        dir: "gsi",
+        title: "国土地理院",
+        description: "国土地理院が公開している配信物。うちでは複製せず、公開元を直接指す。",
     },
 ];
 
@@ -424,10 +432,109 @@ fn collection(id: &str, entries: &[&DatasetEntry], dir: &str) -> Result<Value> {
     Ok(body)
 }
 
+/// PMTiles のメディアタイプ (protomaps の仕様が名乗っているもの)。
+const PMTILES_MEDIA_TYPE: &str = "application/vnd.pmtiles";
+
+/// **外部のタイルセット**の Collection。Item は無く、アセットが公開元を直接指す。
+///
+/// GeoParquet の Collection と違って SQL では引けないので、`duck:kind` を
+/// `vector_tiles` にして UI が「重ねて見るもの」として扱えるようにする。
+/// 層の一覧・ズーム・属性はスナップショット (PMTiles のメタデータ) から書く。
+fn external_collection(tileset: &ExternalTileset, dir: &str) -> Result<Value> {
+    tileset.validate()?;
+    let snapshot = tileset.snapshot()?;
+    let layer = |id: &str| {
+        snapshot
+            .metadata
+            .vector_layers
+            .iter()
+            .find(|layer| layer.id == id)
+    };
+    // テーマごとに、層の人向けの名前と、出るズーム・属性を添える。
+    let themes: Vec<Value> = tileset
+        .themes
+        .iter()
+        .map(|theme| {
+            let layers: Vec<Value> = theme
+                .layers
+                .iter()
+                .map(|(id, title)| {
+                    // validate が層の有無を確かめてある。
+                    let found = layer(id).expect("validate 済み");
+                    json!({
+                        "id": id,
+                        "title": title,
+                        "minzoom": found.minzoom,
+                        "maxzoom": found.maxzoom,
+                        "fields": found.fields.keys().collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            json!({ "id": theme.id, "title": theme.title, "layers": layers })
+        })
+        .collect();
+
+    let mut body = json!({
+        "type": "Collection",
+        "stac_version": STAC_VERSION,
+        // アセットの `file:size` の出どころ。
+        "stac_extensions": [FILE_EXTENSION],
+        "id": tileset.id,
+        "title": tileset.title,
+        "description": tileset.description,
+        "license": tileset.attribution.license,
+        "duck:terms": tileset.attribution.terms,
+        "duck:attribution": tileset.attribution.text,
+        "duck:attribution_url": tileset.attribution.url,
+        "duck:kind": "vector_tiles",
+        "duck:vintage": tileset.vintage,
+        "duck:themes": themes,
+        "providers": [{
+            "name": tileset.attribution.provider,
+            // **配信も向こう。** うちは指しているだけ。
+            "roles": ["producer", "licensor", "host"],
+            "url": tileset.via,
+        }],
+        "extent": {
+            "spatial": { "bbox": [snapshot.bounds] },
+            "temporal": { "interval": [[null, null]] },
+        },
+        "assets": {
+            "data": {
+                "href": snapshot.url,
+                "type": PMTILES_MEDIA_TYPE,
+                "title": tileset.title,
+                "roles": ["data"],
+                "file:size": snapshot.bytes,
+                "duck:zoom": [snapshot.min_zoom, snapshot.max_zoom],
+            },
+            "style": {
+                "href": tileset.style_url,
+                "type": JSON_MEDIA_TYPE,
+                "title": "描き方 (MapLibre のスタイル)",
+                "roles": ["style"],
+            },
+        },
+        "links": [
+            { "rel": "root", "href": root_href(dir), "type": JSON_MEDIA_TYPE },
+            { "rel": "parent", "href": CATALOG_FILE, "type": JSON_MEDIA_TYPE },
+            { "rel": "self", "href": collection_file(tileset.id), "type": JSON_MEDIA_TYPE },
+            via_link(tileset.via),
+        ],
+    });
+    // **どう作ったか。** 簡略化の度合い (tippecanoe の `-S`) がここで分かるので、
+    // 「表示用に加工されている」ことの根拠として残す。
+    if let Some(generator) = &snapshot.metadata.generator_options {
+        body["duck:generator_options"] = json!(generator);
+    }
+    Ok(body)
+}
+
 /// カタログをSTACの文書一式にする。
 ///
 /// 返るのは「配信の起点からの相対パス」と中身の組。書き出しは呼び出し側の仕事。
-pub fn build(datasets: &[DatasetEntry]) -> Result<Vec<Document>> {
+/// `externals` は外部で公開されている配信物 ([`crate::external`])。
+pub fn build(datasets: &[DatasetEntry], externals: &[ExternalTileset]) -> Result<Vec<Document>> {
     // BTreeMapなので、Collectionの並びはIDの順で安定する
     // (作り直すたびに差分が出ないように)。
     let mut grouped: BTreeMap<&str, Vec<&DatasetEntry>> = BTreeMap::new();
@@ -473,6 +580,22 @@ pub fn build(datasets: &[DatasetEntry]) -> Result<Vec<Document>> {
                     { "rel": "collection", "href": collection_file(id), "type": JSON_MEDIA_TYPE },
                 ],
             }),
+        });
+    }
+
+    for tileset in externals {
+        by_dir
+            .entry(tileset.dir.to_string())
+            .or_default()
+            .push(json!({
+                "rel": "child",
+                "href": collection_file(tileset.id),
+                "type": JSON_MEDIA_TYPE,
+                "title": tileset.title,
+            }));
+        documents.push(Document {
+            path: in_dir(tileset.dir, &collection_file(tileset.id)),
+            body: external_collection(tileset, tileset.dir)?,
         });
     }
 
@@ -541,6 +664,68 @@ pub fn build(datasets: &[DatasetEntry]) -> Result<Vec<Document>> {
 mod tests {
     use super::*;
     use crate::catalog::Attribution;
+    use crate::external::GSI_OPTIMAL_BVMAP;
+
+    /// 外部のタイルセット無しで組み立てる。ほとんどのテストは GeoParquet 側だけを見る。
+    fn build(datasets: &[DatasetEntry]) -> Result<Vec<Document>> {
+        super::build(datasets, &[])
+    }
+
+    /// **外部のタイルセットは公開元を直接指す。** Item は無く、層はテーマに束ねて載る。
+    #[test]
+    fn external_tilesets_point_at_the_publisher() {
+        let datasets = vec![entry("mesh_pop_13", "estat/mesh_pop_13.parquet", None)];
+        let documents = super::build(&datasets, &[GSI_OPTIMAL_BVMAP]).unwrap();
+
+        let root = find(&documents, "catalog.json");
+        let children: Vec<&str> = root["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|link| link["rel"] == "child")
+            .map(|link| link["href"].as_str().unwrap())
+            .collect();
+        assert!(children.contains(&"gsi/catalog.json"), "{children:?}");
+
+        let collection = find(&documents, "gsi/gsi-optimal-bvmap.json");
+        assert_eq!(collection["duck:kind"], "vector_tiles");
+        assert!(
+            collection["assets"]["data"]["href"]
+                .as_str()
+                .unwrap()
+                .starts_with("https://cyberjapandata.gsi.go.jp/")
+        );
+        assert_eq!(collection["assets"]["data"]["type"], PMTILES_MEDIA_TYPE);
+        assert_eq!(collection["assets"]["style"]["roles"][0], "style");
+        // Item は無い。
+        assert!(
+            collection["links"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|link| link["rel"] != "items")
+        );
+        assert!(
+            !documents
+                .iter()
+                .any(|document| document.path.starts_with("gsi/")
+                    && document.path.ends_with("-items.json"))
+        );
+        // 層はテーマに束ね、出るズームを添える (建物はズーム14から)。
+        let themes = collection["duck:themes"].as_array().unwrap();
+        let building = themes
+            .iter()
+            .find(|theme| theme["id"] == "building")
+            .unwrap();
+        assert_eq!(building["layers"][0]["id"], "BldA");
+        assert_eq!(building["layers"][0]["minzoom"], 14);
+        let layers: usize = themes
+            .iter()
+            .map(|theme| theme["layers"].as_array().unwrap().len())
+            .sum();
+        assert_eq!(layers, 24);
+        assert!(collection["duck:terms"]["commercial"] == "allowed");
+    }
 
     fn attribution() -> Attribution {
         Attribution {

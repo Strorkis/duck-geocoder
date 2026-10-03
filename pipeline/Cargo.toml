@@ -10,6 +10,8 @@ anyhow = "1.0.104"
 arrow = "59"
 csv = "1.4.0"
 encoding_rs = "0.8.35"
+# PMTiles のメタデータ (gzip) を解くため。zip が既に引き込んでいる版に揃える。
+flate2 = "1.1.9"
 geo-traits = "0.3"
 geo-types = "0.7.20"
 geojson = "1.0.0"

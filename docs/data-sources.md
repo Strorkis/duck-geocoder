@@ -527,7 +527,7 @@ OSMの `aerialway=*` はあるが参考どまり。
 | データ源 | ライセンス | 測量法の承認 | 加工・再配布 | 判定 |
 | --- | --- | --- | --- | --- |
 | [地理院ベクトルタイル提供実験](https://github.com/gsi-cyberjapan/gsimaps-vector-experiment) | [国土地理院コンテンツ利用規約](https://www.gsi.go.jp/kikakuchousei/kikakuchousei40182.html) (PDL 1.0) | **不要** | 可 | ✅ 使える |
-| [最適化ベクトルタイル](https://github.com/gsi-cyberjapan/optimal_bvmap) | 同上 | **不要** | 可 | ✅ 使える |
+| [最適化ベクトルタイル](https://github.com/gsi-cyberjapan/optimal_bvmap) | 同上 | **不要** | 可 | ✅ 使用中 (重ねて見るレイヤーとして。複製せず公開元を指す) |
 | [PLATEAU](https://www.mlit.go.jp/plateau/site-policy/) | PDL 1.0 (CC BY 4.0でも可) | 対象外 | 可 | ✅ 使用中 |
 | Overture Maps | ODbL 1.0 | 対象外 | 可 (share-alike) | ✅ 使用中 |
 | OpenStreetMap | ODbL 1.0 | 対象外 | 可 (share-alike) | ✅ 使える |
@@ -836,6 +836,13 @@ PMTilesのメタデータに生成コマンドが残っており、`tippecanoe -
 
 したがって**申請は「必要になった時点で」ではなく、必要が見えた時点で早めに出す**。
 約2週間の待ちがあるので、他の作業と並行できる。
+
+**ただし「見る」には使う (2026-10-03)。** 上の判断は**データの出所として**使わない
+というもので、背景地図はラスタを入れたまま来ていただけだった (ベクトルを試して
+退けた記録は無い)。公開されている PMTiles をカタログに載せないのはもったいないので、
+**重ねて見るレイヤー**として載せた。SQL では引かず、判定の根拠にもしない
+(カタログに `duck:kind: "vector_tiles"` と簡略化の引数を載せ、UI も「SQLでは引けない」と言う)。
+手順は [pipeline.md](pipeline.md) の「外部の配信物を載せる」。
 
 #### では自分が配る簡略化はどうなのか (2026-09-27)
 

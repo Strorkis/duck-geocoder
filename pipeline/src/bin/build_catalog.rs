@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use duck_geocoder::{catalog, stac};
+use duck_geocoder::{catalog, external, stac};
 use std::path::PathBuf;
 
 /// 配信ディレクトリ配下のGeoParquetを走査し、STACの文書一式を書き出す。
@@ -17,7 +17,9 @@ fn main() -> Result<()> {
     };
 
     let datasets = catalog::build_catalog(&dir)?;
-    let documents = stac::build(&datasets)?;
+    // 外部の配信物 (地理院のベクトルタイルなど) はスナップショットから載せる。
+    // **ここではネットワークに触らない** (`describe_pmtiles` で先に取っておく)。
+    let documents = stac::build(&datasets, external::EXTERNAL_TILESETS)?;
 
     // 作り直すたびに古いCollectionが残らないよう、一度消してから書く。
     // データセットを減らしたときに、消えたはずのCollectionが配信され続けるのを防ぐ。
@@ -31,6 +33,11 @@ fn main() -> Result<()> {
 
     for document in &documents {
         let path = dir.join(&document.path);
+        // 外部の配信物だけのサブカタログ (gsi/) は、実データが無いのでディレクトリも無い。
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("作れません: {}", parent.display()))?;
+        }
         std::fs::write(&path, serde_json::to_string_pretty(&document.body)?)
             .with_context(|| format!("書けません: {}", path.display()))?;
     }

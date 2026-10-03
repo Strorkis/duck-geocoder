@@ -14,6 +14,9 @@ importers:
       maplibre-gl:
         specifier: ^6.8.0
         version: 6.8.0
+      pmtiles:
+        specifier: ^4.5.0
+        version: 4.5.0
     devDependencies:
       '@playwright/test':
         specifier: ^1.62.1
@@ -257,6 +260,9 @@ packages:
       picomatch:
         optional: true
 
+  fflate@0.8.3:
+    resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
+
   find-replace@3.0.0:
     resolution: {integrity: sha512-6Tb2myMioCAgv5kfvP5/PkZZ/ntTpVK39fHY7WkWBgvbeE+VHd/tZuZ4mrC+bxh4cfOZeYKVPaJIZtZXV7GNCQ==}
     engines: {node: '>=4.0.0'}
@@ -434,6 +440,9 @@ packages:
     resolution: {integrity: sha512-0M+L3LAD8/nm554LOla9Ayx0j0tmFZ0FBcoQ7F1VuVHpM/XpiC8RcDzBQB8W5+hA8L22THxELzeF+2WcUzvcLg==}
     engines: {node: '>=20'}
     hasBin: true
+
+  pmtiles@4.5.0:
+    resolution: {integrity: sha512-CBeD4SoUluFziGdy/8k7FOjQxQy486n+929W/tWophauvMICpkZ26vGBWhDt/6b1FZQWNaf4jFdT/5+q0Wii5w==}
 
   postcss@8.5.26:
     resolution: {integrity: sha512-u82N74LFzG8ca+dD8puPnplTXoGH4fTPpVGuIbt36G3qvNlkvfD0lEAZSxaly3KX8TS/L1A1gsCEmvKmBcVbkQ==}
@@ -750,6 +759,8 @@ snapshots:
     optionalDependencies:
       picomatch: 4.0.5
 
+  fflate@0.8.3: {}
+
   find-replace@3.0.0:
     dependencies:
       array-back: 3.1.0
@@ -896,6 +907,10 @@ snapshots:
       playwright-core: 1.62.1
     optionalDependencies:
       fsevents: 2.3.2
+
+  pmtiles@4.5.0:
+    dependencies:
+      fflate: 0.8.3
 
   postcss@8.5.26:
     dependencies:

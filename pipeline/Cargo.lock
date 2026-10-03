@@ -737,6 +737,7 @@ dependencies = [
  "arrow",
  "csv",
  "encoding_rs",
+ "flate2",
  "geo-traits",
  "geo-types",
  "geojson",

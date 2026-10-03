@@ -1145,6 +1145,43 @@ PLATEAUなら整備年度)、`Description` に持たせるのが宿題。
 **準拠を名乗るのはv1.0が見えてから。** v0.2.0で破壊的変更が予告されており、
 追従コストが読めない。
 
+### 外部の配信物を載せる (地理院のベクトルタイル, 2026-10-03)
+
+**公開されている cloud-native なファイルは、複製しなくてもカタログから指せる。**
+STAC のアセットは絶対URLでよい。地理院の最適化ベクトルタイル (PMTiles 1ファイル・16.9GB)
+を、サブカタログ「国土地理院」(`gsi/`) の Collection として載せた。うちのR2には置かない。
+
+```sh
+cd pipeline
+# ヘッダとメタデータだけを Range で取る (3往復・7KB弱)。タイルは読まない
+cargo run --release --bin describe_pmtiles -- \
+  https://cyberjapandata.gsi.go.jp/xyz/optimal_bvmap-v1/optimal_bvmap-v1.pmtiles \
+  external/gsi-optimal-bvmap.json
+cargo build --release   # スナップショットはビルド時に取り込む (include_str!)
+./target/release/build_catalog ../data/output
+```
+
+- **カタログを作るときはネットワークに触らない。** スナップショット
+  (`pipeline/external/*.json`) を**追跡する**ので、何度作っても同じものになり、
+  向こうが変わったときは差分で分かる。取り直すのは配布元が更新したとき
+  (README の「データ更新情報」。四半期ごと)
+- Collection は `duck:kind: "vector_tiles"`。Item は無く、アセットは
+  `data` (PMTiles、`file:size` 付き) と `style` (配布元の MapLibre スタイル) の2つ
+- **層はテーマに束ねて載せる** (`duck:themes`。`external.rs` の `themes`)。
+  タイルの層は24、スタイルの描画の層は123あり、どちらもそのまま一覧にすると
+  見たいものを探せない (地理院地図Vectorの一覧がそう)。人が考える単位
+  (注記・道路・鉄道・建物・水部・地形・境界・構造物・送電線) の9つにした
+- **テーマが層をちょうど覆っていることをテストで見る。** 配布元が層を足したら、
+  スナップショットを取り直した時点で `build_catalog` もテストも落ちる (黙って一覧から漏れない)
+- 層ごとに**出るズーム** (`minzoom`) を載せる。UI は行を消さずに「ズーム16から」と添える
+- `duck:generator_options` に**どう作ったか** (`tippecanoe -S 2` など) を残す。
+  表示のために簡略化されていて**判定には使えない**根拠
+  ([data-sources.md](data-sources.md) の「描画用データではなく元データを基準にする」)
+
+UI では背景地図ではなく**重ねるレイヤー**として扱う (背景は1つしか選べないが、
+ベクトルタイルは層ごとに重ねられる)。描き方は配布元のスタイルをそのまま使い、
+うちのデータの下に敷く。入れるまでは何も読まない。
+
 ## テスト
 
 ```sh

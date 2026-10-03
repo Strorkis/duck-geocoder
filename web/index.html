@@ -74,6 +74,15 @@
         <div id="layer-view">
           <div id="layer-list">
             <p class="layer-heading">この場所のデータ</p>
+            <!-- 出所の並びのまま、同じ種類のものを横断して探す (「送電」で両方の送電線)。 -->
+            <input
+              id="layer-filter"
+              type="search"
+              placeholder="絞り込み (例: 送電、水部)"
+              aria-label="レイヤーを絞り込む"
+              autocomplete="off"
+            />
+            <p id="layer-filter-empty" class="layer-filter-empty" hidden>当てはまるものがありません</p>
             <div id="layer-rows"></div>
             <!-- 収録が無いものも出す。「無い」と分かるのも情報なので隠さない。 -->
             <div id="layer-absent" hidden>

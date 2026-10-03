@@ -1,0 +1,237 @@
+{
+  "url": "https://cyberjapandata.gsi.go.jp/xyz/optimal_bvmap-v1/optimal_bvmap-v1.pmtiles",
+  "bytes": 16900763181,
+  "tile_type": 1,
+  "addressed_tiles": 2949893,
+  "min_zoom": 4,
+  "max_zoom": 16,
+  "bounds": [
+    122.0,
+    17.03498,
+    154.766667,
+    46.0
+  ],
+  "metadata": {
+    "vector_layers": [
+      {
+        "id": "AdmArea",
+        "minzoom": 4,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number"
+        }
+      },
+      {
+        "id": "AdmBdry",
+        "minzoom": 4,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number"
+        }
+      },
+      {
+        "id": "Anno",
+        "minzoom": 4,
+        "maxzoom": 16,
+        "fields": {
+          "vt_arrng": "Number",
+          "vt_arrngagl": "Number",
+          "vt_code": "Number",
+          "vt_dsppos": "String",
+          "vt_flag17": "Number",
+          "vt_text": "String"
+        }
+      },
+      {
+        "id": "BldA",
+        "minzoom": 14,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number",
+          "vt_lvorder": "Number"
+        }
+      },
+      {
+        "id": "Cntr",
+        "minzoom": 9,
+        "maxzoom": 16,
+        "fields": {
+          "vt_alti": "Number",
+          "vt_code": "Number"
+        }
+      },
+      {
+        "id": "Cstline",
+        "minzoom": 4,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number"
+        }
+      },
+      {
+        "id": "Isbt",
+        "minzoom": 14,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number",
+          "vt_depth": "Number"
+        }
+      },
+      {
+        "id": "PwrTrnsmL",
+        "minzoom": 14,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number"
+        }
+      },
+      {
+        "id": "RailCL",
+        "minzoom": 4,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number",
+          "vt_flag17": "Number",
+          "vt_lvorder": "Number",
+          "vt_railstate": "String",
+          "vt_rtcode": "String",
+          "vt_sngldbl": "String"
+        }
+      },
+      {
+        "id": "RailTrCL",
+        "minzoom": 16,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number",
+          "vt_drworder": "Number"
+        }
+      },
+      {
+        "id": "RdCL",
+        "minzoom": 4,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number",
+          "vt_drworder": "Number",
+          "vt_flag17": "Number",
+          "vt_lvorder": "Number",
+          "vt_motorway": "Number",
+          "vt_rdctg": "String",
+          "vt_rnkwidth": "String",
+          "vt_tollsect": "String",
+          "vt_width": "Number"
+        }
+      },
+      {
+        "id": "RdCompt",
+        "minzoom": 16,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number"
+        }
+      },
+      {
+        "id": "RdEdg",
+        "minzoom": 16,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number",
+          "vt_drworder": "Number"
+        }
+      },
+      {
+        "id": "RvrCL",
+        "minzoom": 10,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number"
+        }
+      },
+      {
+        "id": "SpcfArea",
+        "minzoom": 11,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number"
+        }
+      },
+      {
+        "id": "StrctArea",
+        "minzoom": 14,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number"
+        }
+      },
+      {
+        "id": "StrctLine",
+        "minzoom": 14,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number"
+        }
+      },
+      {
+        "id": "TpgphArea",
+        "minzoom": 10,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number",
+          "vt_flag17": "Number"
+        }
+      },
+      {
+        "id": "TpgphLine",
+        "minzoom": 14,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number"
+        }
+      },
+      {
+        "id": "WA",
+        "minzoom": 4,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number"
+        }
+      },
+      {
+        "id": "WL",
+        "minzoom": 16,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number"
+        }
+      },
+      {
+        "id": "WRltLine",
+        "minzoom": 5,
+        "maxzoom": 16,
+        "fields": {
+          "vt_angle": "Number",
+          "vt_code": "Number"
+        }
+      },
+      {
+        "id": "WStrA",
+        "minzoom": 8,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number"
+        }
+      },
+      {
+        "id": "WStrL",
+        "minzoom": 14,
+        "maxzoom": 16,
+        "fields": {
+          "vt_code": "Number",
+          "vt_flag17": "Number"
+        }
+      }
+    ],
+    "generator_options": "tippecanoe -P -f -q -pf -pk -S 2 -Z 4 -z 7 -B 4 -d 14 -D 14 -m 14 -o output/tiles-5000k.mbtiles; tippecanoe -P -f -q -pf -pk -S 2 -Z 8 -z 10 -B 8 -o output/tiles-1000k.mbtiles; tippecanoe -P -f -q -pf -pk -S 2 -Z 11 -z 13 -B 11 -o output/tiles-200k.mbtiles; tippecanoe -P -f -q -pf -pk -S 2 -Z 14 -z 16 -B 14 -o output/tiles-25k.mbtiles; tile-join -o ./26-07.mbtiles ./tiles-1000k.mbtiles ./tiles-200k.mbtiles ./tiles-25k.mbtiles ./tiles-5000k.mbtiles"
+  }
+}

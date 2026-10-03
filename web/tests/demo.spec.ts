@@ -2863,20 +2863,24 @@ test('周辺検索: 建物を起点にできる', async ({ page }) => {
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
   await showPlateauBuildings(page);
   // 描かれている建物の上で、パネルに覆われていない点を探す。
-  const point = await page.evaluate(() => {
-    const map = (window as unknown as TestWindow).__map!;
-    const canvas = map.getCanvas();
-    const rect = canvas.getBoundingClientRect();
-    for (let y = 200; y < canvas.clientHeight - 100; y += 20) {
-      for (let x = 400; x < canvas.clientWidth - 450; x += 20) {
-        if (document.elementFromPoint(rect.left + x, rect.top + y) !== canvas) continue;
-        const hit = map.queryRenderedFeatures([x, y] as never, { layers: ['buildings-3d'] });
-        if (hit.length > 0) return { x, y };
+  // **見つかるまで探し直す。** ソースにデータが入っても、描かれるのは次の描画から
+  // (並列で負荷が高いと間に合わず、1回だけ探すと落ちた)。
+  const findPoint = () =>
+    page.evaluate(() => {
+      const map = (window as unknown as TestWindow).__map!;
+      const canvas = map.getCanvas();
+      const rect = canvas.getBoundingClientRect();
+      for (let y = 200; y < canvas.clientHeight - 100; y += 20) {
+        for (let x = 400; x < canvas.clientWidth - 450; x += 20) {
+          if (document.elementFromPoint(rect.left + x, rect.top + y) !== canvas) continue;
+          const hit = map.queryRenderedFeatures([x, y] as never, { layers: ['buildings-3d'] });
+          if (hit.length > 0) return { x, y };
+        }
       }
-    }
-    return null;
-  });
-  expect(point, '建物の上の点が見つからない').not.toBeNull();
+      return null;
+    });
+  await expect.poll(findPoint, { message: '建物の上の点が見つからない' }).not.toBeNull();
+  const point = await findPoint();
   await nearbyAt(page, point!);
   await expect(page.locator('#nearby-origin')).toContainText('起点: 建物', { timeout: 60_000 });
   await expect(page.locator('#nearby-results')).toContainText('棟', { timeout: 60_000 });
@@ -3039,4 +3043,164 @@ test('CityGML をメッシュ単位で探し、ZIPにまとめられる (配信�
     { timeout: 30_000 },
   );
   expect(asked.some((a) => a.startsWith('POST') && a.endsWith('/citygml/pack'))).toBe(true);
+});
+
+// ---- 外部のベクトルタイル (地理院) ------------------------------------------
+
+const GSI_VECTOR = 'gsi-optimal-bvmap';
+/** テーマの行ID。 */
+const gsiRow = (theme: string) => `${GSI_VECTOR}--${theme}`;
+
+/** カタログに地理院のベクトルタイルが載っているか。 */
+async function hasGsiVector(page: Page): Promise<boolean> {
+  const response = await page.request.get(await resolveDataUrl(page, `gsi/${GSI_VECTOR}.json`));
+  return response.ok();
+}
+
+/** 地理院の描画の層のうち、タイルの層 `sourceLayer` を描くものの visibility (重複なし)。 */
+function gsiVisibility(page: Page, sourceLayer: string): Promise<string[]> {
+  return page.evaluate(
+    ({ prefix, sourceLayer }) => {
+      const map = (window as unknown as TestWindow).__map!;
+      const values = map
+        .getStyle()
+        .layers.filter(
+          (layer) =>
+            layer.id.startsWith(prefix) && 'source-layer' in layer && layer['source-layer'] === sourceLayer,
+        )
+        .map((layer) => (layer.layout as { visibility?: string } | undefined)?.visibility ?? 'visible');
+      return [...new Set(values)];
+    },
+    { prefix: `${GSI_VECTOR}/`, sourceLayer },
+  );
+}
+
+/**
+ * **地理院のベクトルタイルは、テーマごとの行で出る。** カタログの「国土地理院」の下に
+ * 9行 (注記・道路…)。入れるまでは**何も読まない**。入れると配布元のPMTilesと描き方を
+ * 直接読み、うちのデータの下に描く。
+ */
+test('地理院のベクトルタイルをテーマごとに重ねられる', async ({ page }) => {
+  test.skip(!(await hasGsiVector(page)), '地理院のベクトルタイルがカタログに無い');
+  const asked: string[] = [];
+  page.on('request', (request) => {
+    if (request.url().includes('optimal_bvmap')) asked.push(request.url());
+  });
+
+  await expect(page.locator('[data-group="duck-geocoder-gsi"]')).toBeVisible();
+  await expect(page.locator(`[data-layer^="${GSI_VECTOR}--"]`)).toHaveCount(9);
+  // 入れるまでは読まない。
+  expect(asked).toEqual([]);
+
+  await page.evaluate(() => {
+    (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7671, 35.6812], zoom: 15.5 });
+  });
+  await showLayer(page, gsiRow('building'));
+  await expect.poll(() => gsiVisibility(page, 'BldA'), { timeout: 30_000 }).toEqual(['visible']);
+  // ほかのテーマは出していない。
+  expect(await gsiVisibility(page, 'RdCL')).toEqual(['none']);
+  // 配布元の PMTiles から、建物のタイルが実際に読めて描かれる。
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          (source) =>
+            (window as unknown as TestWindow).__map!.querySourceFeatures(source, { sourceLayer: 'BldA' })
+              .length,
+          GSI_VECTOR,
+        ),
+      { timeout: 30_000 },
+    )
+    .toBeGreaterThan(0);
+  expect(asked.some((url) => url.includes('optimal_bvmap-v1.pmtiles'))).toBe(true);
+  expect(asked.some((url) => url.endsWith('/style/std.json'))).toBe(true);
+
+  // うちのデータより下に描く (いちばん下の人口メッシュより前に並ぶ)。
+  const order = await page.evaluate((prefix) => {
+    const ids = (window as unknown as TestWindow).__map!.getStyle().layers.map((l) => l.id);
+    return {
+      lastGsi: ids.findLastIndex((id) => id.startsWith(prefix)),
+      mesh: ids.indexOf('population-mesh-fill'),
+    };
+  }, `${GSI_VECTOR}/`);
+  expect(order.lastGsi).toBeGreaterThanOrEqual(0);
+  expect(order.lastGsi).toBeLessThan(order.mesh);
+});
+
+/**
+ * **ズームを変えても、入り切りは戻らない。** 地理院地図Vectorはズームで出る層が
+ * 変わると絞り込みが戻ってしまい、使いにくかった。いまのズームで描かれない層も
+ * 行は残し、「ズーム16から」と添える。
+ */
+test('地理院のベクトルタイルは、ズームを変えても層ごとの入り切りが戻らない', async ({ page }) => {
+  test.skip(!(await hasGsiVector(page)), '地理院のベクトルタイルがカタログに無い');
+  const jump = (zoom: number) =>
+    page.evaluate((z) => {
+      (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7671, 35.6812], zoom: z });
+    }, zoom);
+  await jump(12);
+
+  // 道路を入れ、開いて道路縁だけ外す。
+  const road = page.locator(`[data-layer="${gsiRow('road')}"]`);
+  await showLayer(page, gsiRow('road'));
+  await road.locator('.layer-expander').click();
+  const edge = road.locator('[data-part="RdEdg"]');
+  await expect(edge).toContainText('ズーム16から');
+  await edge.locator('input').uncheck();
+  await expect(page.locator(`#layer-toggle-${gsiRow('road')}`)).toHaveJSProperty('indeterminate', true);
+
+  // 建物はズーム14からなので、出しても今は描かれないと行が言う。
+  await showLayer(page, gsiRow('building'));
+  await expect(page.locator(`[data-layer-status="${gsiRow('building')}"]`)).toContainText(
+    'ズーム14から',
+  );
+
+  for (const zoom of [17, 9, 15]) {
+    await jump(zoom);
+    await expect.poll(() => gsiVisibility(page, 'RdCL')).toEqual(['visible']);
+    expect(await gsiVisibility(page, 'RdEdg')).toEqual(['none']);
+    expect(await gsiVisibility(page, 'BldA')).toEqual(['visible']);
+    // 一覧も同じ。開いたまま、道路縁は外れたまま。
+    await expect(road.locator('[data-part="RdEdg"] input')).not.toBeChecked();
+    await expect(road.locator('[data-part="RdCL"] input')).toBeChecked();
+  }
+  // ズーム15では建物も道路縁以外も描かれるので、「ズーム…から」は出ない。
+  await expect(page.locator(`[data-layer-status="${gsiRow('building')}"]`)).not.toContainText('ズーム');
+  await expect(road.locator('[data-part="RdEdg"]')).toContainText('ズーム16から');
+});
+
+/**
+ * **一覧を絞り込める。** 出所の並びは崩さず、同じ種類のものを横断して探す。
+ * 中の層にだけ当たったときは、開いて当たった層だけを見せる。
+ */
+test('一覧を語で絞り込める (出所をまたいで、中の層にも当たる)', async ({ page }) => {
+  const filter = page.locator('#layer-filter');
+  const rows = page.locator('#layer-rows [data-layer], #layer-absent-rows [data-layer]');
+  const all = await rows.count();
+
+  await filter.fill('送電');
+  const ids = await rows.evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.layer));
+  expect(ids).toContain(LAYER.powerLines);
+  if (await hasGsiVector(page)) expect(ids).toContain(gsiRow('power'));
+  expect(ids.length).toBeLessThan(all);
+  // 見出しは当たった行の出所だけ。
+  await expect(page.locator('[data-group="duck-geocoder-plateau"]')).toHaveCount(0);
+
+  if (await hasGsiVector(page)) {
+    // 「等高」は地形の中の「等高線」にだけ当たる。開いて、当たった層だけを見せる。
+    await filter.fill('等高');
+    await expect(rows).toHaveCount(1);
+    const terrain = page.locator(`[data-layer="${gsiRow('terrain')}"]`);
+    await expect(terrain.locator('[data-part]')).toHaveCount(1);
+    await expect(terrain.locator('[data-part="Cntr"]')).toBeVisible();
+  }
+
+  await filter.fill('当てはまらない語');
+  await expect(rows).toHaveCount(0);
+  await expect(page.locator('#layer-filter-empty')).toBeVisible();
+
+  // Esc で戻る。
+  await filter.press('Escape');
+  await expect(rows).toHaveCount(all);
+  await expect(page.locator('#layer-filter-empty')).toBeHidden();
 });

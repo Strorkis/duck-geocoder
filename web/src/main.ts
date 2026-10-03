@@ -7,12 +7,14 @@ import {
   AttributionControl,
   NavigationControl,
   TerrainControl,
+  addProtocol,
   setWorkerUrl,
   type ExpressionSpecification,
   type RasterTileSource,
   type StyleSpecification,
 } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import { Protocol as PmtilesProtocol } from 'pmtiles';
 // MapLibreは既定では new URL(`./${名前}`, import.meta.url) でワーカーを探すが、
 // 名前が変数なのでバンドラが静的に検出できず、ビルド成果物に出力されない。
 // 結果、本番だけGeoJSONソースが一切描画されなくなる (地図タイルもポップアップも
@@ -61,7 +63,42 @@ type DatasetKind =
   | 'road'
   | 'road_route'
   | 'power_line'
-  | 'waterway';
+  | 'waterway'
+  // **外部のベクトルタイル** (地理院の最適化ベクトルタイル)。SQLでは引けず、重ねて見るだけ。
+  | 'vector_tiles';
+
+/** ベクトルタイルの層1つ (`duck:themes[].layers[]`)。PMTiles のメタデータから来る。 */
+interface VectorLayerInfo {
+  /** タイルの中の層のID (`BldA` など)。スタイルの `source-layer` と同じ。 */
+  id: string;
+  title: string;
+  /** **このズームより引くと描かれない** (タイルに入っていない)。 */
+  minzoom: number;
+  maxzoom: number;
+  fields: string[];
+}
+
+/**
+ * 層を束ねたテーマ (「道路」「水部」…)。**一覧の1行になる。**
+ *
+ * タイルの層 (地理院なら24) やスタイルの描画の層 (123) をそのまま並べると、
+ * 見たいものを探すのが大変になる (地理院地図Vectorの一覧がそう)。
+ */
+interface VectorTheme {
+  id: string;
+  title: string;
+  layers: VectorLayerInfo[];
+}
+
+/** STAC のアセット。外部のタイルセットは Collection が直接持つ。 */
+interface StacAsset {
+  href: string;
+  type?: string;
+  title?: string;
+  roles?: string[];
+  'file:size'?: number;
+  'duck:zoom'?: [number, number];
+}
 
 /** STAC Catalog。ルートと、出所ごとのサブカタログ。 */
 interface StacCatalog {
@@ -131,6 +168,12 @@ interface StacCollection {
    */
   summaries?: Record<string, string[]>;
   item_assets?: { data?: { 'table:columns'?: { name: string; type: string }[] } };
+  /** 外部のタイルセットだけが持つ (`data` がタイル、`style` が描き方)。 */
+  assets?: Record<string, StacAsset>;
+  /** 外部のベクトルタイルの層を、テーマに束ねたもの。 */
+  'duck:themes'?: VectorTheme[];
+  /** **どう作ったか** (tippecanoe の引数など)。簡略化の度合いが分かる。 */
+  'duck:generator_options'?: string;
   links: StacLink[];
 }
 
@@ -254,6 +297,11 @@ interface Collection {
   terms: Terms | undefined;
   /** いつ時点のデータか。**ファイルごとに版が違うものには入っていない。** */
   vintage: string | undefined;
+  /** Collection が直接持つアセット (外部のタイルセット)。hrefは解決済み。 */
+  assets: Record<string, StacAsset>;
+  /** 外部のベクトルタイルのテーマ。それ以外は undefined。 */
+  themes: VectorTheme[] | undefined;
+  generatorOptions: string | undefined;
   /** Itemを読む。**Collectionごとに1回だけ**通信する。 */
   items: () => Promise<LocatedItem[]>;
 }
@@ -559,6 +607,15 @@ function toCollection(
     tiers: document['duck:tiers'],
     terms: document['duck:terms'],
     vintage: document['duck:vintage'],
+    // アセットのhrefも文書からの相対。外部のものは絶対URLなのでそのまま通る。
+    assets: Object.fromEntries(
+      Object.entries(document.assets ?? {}).map(([key, asset]) => [
+        key,
+        { ...asset, href: resolveHref(asset.href, path) },
+      ]),
+    ),
+    themes: document['duck:themes'],
+    generatorOptions: document['duck:generator_options'],
     bbox,
     summaries: document.summaries ?? {},
     columns: new Set(
@@ -2847,6 +2904,99 @@ const BASEMAPS = [
  */
 const TERRAIN_TILEJSON_URL = 'https://tiles.mapterhorn.com/tilejson.json';
 
+/** `pmtiles://` を MapLibre に教える。**1回だけ** (2回登録すると後のものが勝つだけだが無駄)。 */
+let pmtilesRegistered = false;
+function registerPmtiles() {
+  if (pmtilesRegistered) return;
+  addProtocol('pmtiles', new PmtilesProtocol().tile);
+  pmtilesRegistered = true;
+}
+
+/**
+ * **外部のベクトルタイルを重ねる。** 層ごとに入り切りできる。
+ *
+ * 描き方は**配布元が公開しているスタイルをそのまま使う** (地理院の `std.json`)。
+ * 自前で書き起こすと、地理院地図と見え方がずれるうえ、123の描画の層を保守することになる。
+ * スタイルの層は `source-layer` (タイルの層) で引き当て、タイルの層ごとに入り切りする。
+ *
+ * **入り切りの状態はここが持ち、ズームでは変えない。** 地理院地図Vectorはズームで
+ * 出る層が変わると絞り込みが戻ってしまい、使いにくかった。描かれるかどうかは
+ * タイルの側 (その層が入っているズーム) が決めるので、こちらは「出したいか」だけを持つ。
+ *
+ * 何も出さないうちは**何も読まない** (スタイルもタイルも)。最初に入れたときに読む。
+ */
+interface VectorOverlay {
+  collection: Collection;
+  /** タイルの層ID → 出すか。 */
+  visible: Map<string, boolean>;
+  /** 状態を地図に写す。初めて何かを出すときにスタイルを読む。 */
+  apply: () => Promise<void>;
+  /** 地図の描画の層ID → タイルの層ID。ホバーで使う。 */
+  styleLayers: Map<string, string>;
+}
+
+function createVectorOverlay(map: MapLibreMap, collection: Collection, beforeId: string): VectorOverlay {
+  const visible = new Map<string, boolean>();
+  for (const theme of collection.themes ?? []) {
+    for (const layer of theme.layers) visible.set(layer.id, false);
+  }
+  /** タイルの層ID → それを描く地図の層ID。 */
+  const bySourceLayer = new Map<string, string[]>();
+  const styleLayers = new Map<string, string>();
+  let loading: Promise<void> | undefined;
+
+  const load = async () => {
+    const tiles = collection.assets.data?.href;
+    const styleUrl = collection.assets.style?.href;
+    if (!tiles || !styleUrl) throw new Error(`${collection.id}: タイルか描き方のアセットがありません`);
+    registerPmtiles();
+    const response = await fetch(styleUrl);
+    if (!response.ok) throw new Error(`描き方を読めません (${response.status}): ${styleUrl}`);
+    const style = (await response.json()) as StyleSpecification;
+    // 文字とアイコン。**このアプリは自前では使っていない**ので、配布元のものをそのまま入れる。
+    if (style.glyphs) map.setGlyphs(style.glyphs);
+    if (typeof style.sprite === 'string') map.setSprite(style.sprite);
+
+    const sourceId = collection.id;
+    map.addSource(sourceId, { type: 'vector', url: `pmtiles://${tiles}` });
+    for (const layer of style.layers) {
+      // 背景は塗らない (下の地図を隠す)。タイルの層を持たないものも対象外。
+      if (layer.type === 'background' || !('source-layer' in layer) || !layer['source-layer']) continue;
+      const sourceLayer = layer['source-layer'];
+      const id = `${collection.id}/${layer.id}`;
+      map.addLayer(
+        {
+          ...layer,
+          id,
+          source: sourceId,
+          layout: { ...layer.layout, visibility: 'none' },
+        } as typeof layer,
+        // **うちのデータより下に敷く。** 重ねて見るための背景寄りのもので、主役はGeoParquet側。
+        map.getLayer(beforeId) ? beforeId : undefined,
+      );
+      const ids = bySourceLayer.get(sourceLayer) ?? [];
+      ids.push(id);
+      bySourceLayer.set(sourceLayer, ids);
+      styleLayers.set(id, sourceLayer);
+    }
+  };
+
+  const apply = async () => {
+    const anyVisible = [...visible.values()].some(Boolean);
+    if (!loading) {
+      if (!anyVisible) return;
+      loading = load();
+    }
+    await loading;
+    for (const [sourceLayer, ids] of bySourceLayer) {
+      const value = visible.get(sourceLayer) ? 'visible' : 'none';
+      for (const id of ids) map.setLayoutProperty(id, 'visibility', value);
+    }
+  };
+
+  return { collection, visible, apply, styleLayers };
+}
+
 const GSI_STYLE: StyleSpecification = {
   version: 8,
   sources: {
@@ -4908,7 +5058,15 @@ async function main() {
      * 建物のうちメッシュを持つ出所 (PLATEAU) だけ。
      */
     coverage?: BuildingCoverage;
+    /**
+     * **中の層** (外部のベクトルタイルのテーマ)。行を開くと層ごとに入り切りできる。
+     * 入り切りの状態は `overlay.visible` が持つ (**ズームでは変えない**)。
+     */
+    parts?: { overlay: VectorOverlay; layers: VectorLayerInfo[] };
   }
+
+  /** 中の層を開いている行。**描き直しても開いたまま**にする (一覧は moveend ごとに作り直す)。 */
+  const expandedRows = new Set<string>();
 
   const byKind = (kind: DatasetKind) => collections.filter((c) => c.kind === kind);
   const bboxOf = (members: Collection[]) =>
@@ -4916,6 +5074,11 @@ async function main() {
 
   /** 建物の設定パネルをその出所に向ける。中身は建物の節 (下) で埋める。 */
   let pointBuildingSettings: (source: BuildingSource) => void = () => {};
+
+  /** 外部のベクトルタイル。ホバーで引き当てるために持っておく。 */
+  const vectorOverlays: VectorOverlay[] = [];
+  /** 外部のベクトルタイルは、うちのデータでいちばん下の層 (人口メッシュ) のさらに下に敷く。 */
+  const VECTOR_OVERLAY_BEFORE = 'population-mesh-fill';
 
   // **カタログに書かれた順に並べる。** 並びはパイプライン側 (`SUB_CATALOGS`) が決める。
   const layers: Layer[] = [];
@@ -4988,6 +5151,32 @@ async function main() {
         // 絞り込みが無いので、設定の中身は空 (⚙ ではCollectionの中身だけが出る)。
         const settings = document.createElement('div');
         layers.push({ ...base, settings, refresh: requestLineRefresh(source) });
+        break;
+      }
+      case 'vector_tiles': {
+        // **テーマごとに1行。** 層はテーマの中に入れ、行を開くと出てくる。
+        const overlay = createVectorOverlay(map, collection, VECTOR_OVERLAY_BEFORE);
+        vectorOverlays.push(overlay);
+        const settings = document.createElement('div');
+        for (const theme of collection.themes ?? []) {
+          // 行ID。`:` を使わない (CSSのセレクタで要素IDとして引けなくなる)。
+          const rowId = `${collection.id}--${theme.id}`;
+          layers.push({
+            ...base,
+            id: rowId,
+            title: theme.title,
+            // 出所 (見出し) が同じでも、どのタイルセットの層かを版と一緒に添える。
+            vintage: [collection.title, collection.vintage].filter(Boolean).join(' · '),
+            settings,
+            refresh: () => {
+              overlay.apply().catch((e: unknown) => {
+                console.error('[vector] apply failed', e);
+                setLayerStatus(rowId, '読めませんでした');
+              });
+            },
+            parts: { overlay, layers: theme.layers },
+          });
+        }
         break;
       }
       default:
@@ -5261,6 +5450,64 @@ async function main() {
     container.append(select, list, pack, packStatus, note);
   };
 
+  /**
+   * 外部のタイルセットのカード。**ファイルも列も無い** (Itemを持たず、SQLでは引けない)。
+   * 代わりに形式・大きさ・ズーム・層と、どう作ったか (簡略化の度合い) を出す。
+   */
+  const vectorTilesFacts = (
+    collection: Collection,
+    fact: (term: string, ...value: (string | Node)[]) => HTMLElement,
+  ): HTMLElement[] => {
+    const data = collection.assets.data;
+    const style = collection.assets.style;
+    if (data) {
+      const size = data['file:size'];
+      fact(
+        '形式',
+        'PMTiles',
+        size ? ` (${formatBytes(size)})` : '',
+        ' ',
+        externalLink(data.href, 'タイル'),
+        ...(style ? [' ', externalLink(style.href, '描き方')] : []),
+      );
+      const zoom = data['duck:zoom'];
+      if (zoom) fact('ズーム', `${zoom[0]}〜${zoom[1]} (それより寄ると拡大して描く)`);
+    }
+    fact('引き方', '重ねて見るだけ。SQL では引けない (表示用に簡略化されている)');
+    if (collection.bbox) fact('範囲', formatBbox(collection.bbox));
+
+    // 層は24あるので、テーマごとにたたんでおく。属性も添える (ホバーで読めるもの)。
+    const themes = collection.themes ?? [];
+    const layersEl = document.createElement('details');
+    const summary = document.createElement('summary');
+    summary.textContent = `層 (${themes.reduce((sum, theme) => sum + theme.layers.length, 0)})`;
+    const list = document.createElement('ul');
+    list.className = 'vector-layer-list';
+    for (const theme of themes) {
+      for (const layer of theme.layers) {
+        const item = document.createElement('li');
+        const fields = layer.fields.length > 0 ? ` — ${layer.fields.join(', ')}` : '';
+        item.textContent = `${theme.title} › ${layer.title} (${layer.id}、ズーム${layer.minzoom}〜)${fields}`;
+        list.append(item);
+      }
+    }
+    layersEl.append(summary, list);
+
+    const nodes: HTMLElement[] = [layersEl];
+    // **どう作ったか。** tippecanoe の `-S` (簡略化) などが読める。判定に使えない根拠。
+    if (collection.generatorOptions) {
+      const generator = document.createElement('details');
+      const generatorSummary = document.createElement('summary');
+      generatorSummary.textContent = '作り方 (配布元のメタデータ)';
+      const code = document.createElement('pre');
+      code.className = 'generator-options';
+      code.textContent = collection.generatorOptions.replace(/; /g, ';\n');
+      generator.append(generatorSummary, code);
+      nodes.push(generator);
+    }
+    return nodes;
+  };
+
   const collectionCard = (collection: Collection): HTMLElement => {
     const card = document.createElement('div');
     card.className = 'collection-card';
@@ -5301,6 +5548,10 @@ async function main() {
     }
     if (collection.provider) fact('提供', collection.provider);
     if (collection.vintage) fact('版', collection.vintage);
+    if (collection.kind === 'vector_tiles') {
+      card.append(head, description, facts, ...vectorTilesFacts(collection, fact));
+      return card;
+    }
     // **ファイル数はItemCollectionを読まないと分からない。** 起動時には読まない
     // 約束なので、開いたときに読む (1回だけ。建物を引くときもこれを使い回す)。
     const count = document.createElement('span');
@@ -5351,7 +5602,11 @@ async function main() {
     );
   };
 
-  const layerRow = (layer: Layer, present: boolean): HTMLElement => {
+  const layerRow = (
+    layer: Layer,
+    present: boolean,
+    matches?: (text: string) => boolean,
+  ): HTMLElement => {
     const row = document.createElement('div');
     row.className = present ? 'layer-row' : 'layer-row absent';
     row.dataset.layer = layer.id;
@@ -5360,8 +5615,22 @@ async function main() {
     toggle.type = 'checkbox';
     toggle.checked = layer.visible;
     toggle.id = `layer-toggle-${layer.id}`;
+    const parts = layer.parts;
+    if (parts) {
+      // テーマの入り切りは**中の層をまとめて**。一部だけ出しているときは中間の印。
+      const on = parts.layers.filter((part) => parts.overlay.visible.get(part.id)).length;
+      toggle.checked = on === parts.layers.length;
+      toggle.indeterminate = on > 0 && on < parts.layers.length;
+      layer.visible = on > 0;
+    }
     toggle.addEventListener('change', () => {
       layer.visible = toggle.checked;
+      if (parts) {
+        for (const part of parts.layers) parts.overlay.visible.set(part.id, toggle.checked);
+        layer.refresh();
+        renderLayerList();
+        return;
+      }
       layer.refresh();
     });
 
@@ -5420,7 +5689,81 @@ async function main() {
     sub.append(source, status);
 
     row.append(head, sub);
+    if (parts) appendParts(row, head, status, layer, parts, matches);
     return row;
+  };
+
+  /** 「ズーム14から」。**行は消さない** — 消すと、寄れば出ることが分からない。 */
+  const fromZoom = (minzoom: number) => `ズーム${minzoom}から`;
+
+  /**
+   * テーマの行に、中の層を開く仕掛けと層ごとの行を足す。
+   *
+   * **ズームで行を出し入れしない。** いまのズームで描かれない層も行は残し、
+   * 「ズーム16から」と添える。入り切りの状態もズームでは変えない
+   * (地理院地図Vectorはズームで出る層が変わり、絞り込みが戻ってしまう)。
+   */
+  const appendParts = (
+    row: HTMLElement,
+    head: HTMLElement,
+    status: HTMLElement,
+    layer: Layer,
+    parts: NonNullable<Layer['parts']>,
+    matches: ((text: string) => boolean) | undefined,
+  ) => {
+    const zoom = map.getZoom();
+    const shown = parts.layers.filter((part) => parts.overlay.visible.get(part.id));
+    // 出しているのに、いまのズームでは1つも描かれないなら、いつから描かれるかを言う。
+    if (shown.length > 0 && shown.every((part) => zoom < part.minzoom)) {
+      status.textContent = `${fromZoom(Math.min(...shown.map((part) => part.minzoom)))}描かれます`;
+    }
+
+    // 中が1層だけなら開く意味が無い (注記・建物・送電線)。
+    if (parts.layers.length < 2) return;
+    // 絞り込みが中の層にだけ当たったときは、開いて当たった層を見せる。
+    // テーマの名前そのものに当たったときは、中を全部見せる (「水」で水部の中を削らない)。
+    const filtered =
+      matches && !matches(layer.title) ? parts.layers.filter((part) => matches(part.title)) : [];
+    const open = expandedRows.has(layer.id) || filtered.length > 0;
+
+    const expander = document.createElement('button');
+    expander.type = 'button';
+    expander.className = 'layer-expander';
+    expander.textContent = open ? '▾' : '▸';
+    expander.title = open ? '中の層をたたむ' : `中の層を開く (${parts.layers.length})`;
+    expander.setAttribute('aria-expanded', String(open));
+    expander.addEventListener('click', () => {
+      if (expandedRows.has(layer.id)) expandedRows.delete(layer.id);
+      else expandedRows.add(layer.id);
+      renderLayerList();
+    });
+    // 名前の右に置く。頭に置くと、開けない行とチェックボックスの位置がずれる。
+    head.querySelector('.layer-name')?.after(expander);
+    if (!open) return;
+
+    const list = document.createElement('div');
+    list.className = 'layer-parts';
+    for (const part of filtered.length > 0 ? filtered : parts.layers) {
+      const item = document.createElement('label');
+      item.className = zoom < part.minzoom ? 'layer-part later' : 'layer-part';
+      item.dataset.part = part.id;
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = parts.overlay.visible.get(part.id) ?? false;
+      box.addEventListener('change', () => {
+        parts.overlay.visible.set(part.id, box.checked);
+        layer.refresh();
+        renderLayerList();
+      });
+      const title = document.createElement('span');
+      title.textContent = part.title;
+      const note = document.createElement('span');
+      note.className = 'layer-part-zoom';
+      note.textContent = zoom < part.minzoom ? fromZoom(part.minzoom) : '';
+      item.append(box, title, note);
+      list.append(item);
+    }
+    row.append(list);
   };
 
   /**
@@ -5449,16 +5792,55 @@ async function main() {
   };
 
   /** 行を並べ、サブカタログが変わるところに見出しを挟む。 */
-  const withHeadings = (rows: Layer[], present: boolean): HTMLElement[] => {
+  const withHeadings = (
+    rows: Layer[],
+    present: boolean,
+    matches?: (text: string) => boolean,
+  ): HTMLElement[] => {
     const nodes: HTMLElement[] = [];
     let previous: CatalogGroup | undefined;
     for (const layer of rows) {
       if (layer.group && layer.group.id !== previous?.id) nodes.push(groupHeading(layer.group));
       previous = layer.group;
-      nodes.push(layerRow(layer, present));
+      nodes.push(layerRow(layer, present, matches));
     }
     return nodes;
   };
+
+  // ---- 一覧の絞り込み -------------------------------------------------------
+  //
+  // **出所の並びは崩さずに、同じ種類のものを横断して探す。** 「送電」と打てば
+  // Overture の送電線と地理院の送電線が並ぶ。行が増えても見通しを保つための仕掛け。
+  const layerFilterEl = document.querySelector<HTMLInputElement>('#layer-filter')!;
+  const layerFilterEmptyEl = document.querySelector<HTMLElement>('#layer-filter-empty')!;
+
+  /** 空白で区切った語が**全部**入っていれば当たり。大文字小文字は見ない。 */
+  const layerMatcher = (): ((text: string) => boolean) | undefined => {
+    const words = layerFilterEl.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (words.length === 0) return undefined;
+    return (text) => {
+      const lower = text.toLowerCase();
+      return words.every((word) => lower.includes(word));
+    };
+  };
+
+  /** 行を探すときに見る文字。見出し (出所)・行の名前・Collection・中の層の名前。 */
+  const layerHaystack = (layer: Layer) =>
+    [
+      layer.group?.title,
+      layer.title,
+      ...layer.collections.map((c) => c.title),
+      ...(layer.parts?.layers.map((part) => part.title) ?? []),
+    ]
+      .filter(Boolean)
+      .join(' ');
+
+  layerFilterEl.addEventListener('input', () => renderLayerList());
+  layerFilterEl.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !layerFilterEl.value) return;
+    layerFilterEl.value = '';
+    renderLayerList();
+  });
 
   /** 裏方 (検索・逆ジオコーディングが使うもの)。**切れてはいけない**ので出すだけ。 */
   const supportRow = (title: string, source: string): HTMLElement => {
@@ -5492,13 +5874,16 @@ async function main() {
    */
   const isPresent = (layer: Layer) => coversView(layer.bbox) && (presence.get(layer.id) ?? true);
 
-  const renderLayerList = () => {
-    const present = layers.filter(isPresent);
-    const absent = layers.filter((layer) => !isPresent(layer));
-    layerRowsEl.replaceChildren(...withHeadings(present, true));
-    layerAbsentRowsEl.replaceChildren(...withHeadings(absent, false));
+  function renderLayerList() {
+    const matches = layerMatcher();
+    const rows = matches ? layers.filter((layer) => matches(layerHaystack(layer))) : layers;
+    const present = rows.filter(isPresent);
+    const absent = rows.filter((layer) => !isPresent(layer));
+    layerRowsEl.replaceChildren(...withHeadings(present, true, matches));
+    layerAbsentRowsEl.replaceChildren(...withHeadings(absent, false, matches));
     layerAbsentEl.hidden = absent.length === 0;
-  };
+    layerFilterEmptyEl.hidden = !matches || rows.length > 0;
+  }
 
   /** 整備範囲を持つ行について、表示範囲にセルがあるかを聞き直す。 */
   const refreshPresence = async () => {
@@ -6245,6 +6630,40 @@ async function main() {
       hoverPopup.remove();
     });
   }
+
+  // 外部のベクトルタイル (地理院)。描画の層が123あって個別に登録しきれないので、
+  // 地図全体で拾い、**いちばん上に描かれているものが地理院のときだけ**出す。
+  // うちのデータの上にいるときは、そちらのホバーに任せる (吹き出しを奪わない)。
+  let hoveredVector = '';
+  map.on('mousemove', (e) => {
+    if (picking || vectorOverlays.length === 0) return;
+    const top = map.queryRenderedFeatures(e.point)[0];
+    const overlay = top && vectorOverlays.find((o) => o.styleLayers.has(top.layer.id));
+    if (!top || !overlay) {
+      // 何も無いところへ出たときだけ片付ける。うちのデータの上なら、吹き出しはそちらのもの。
+      if (hoveredVector && !top) hoverPopup.remove();
+      hoveredVector = '';
+      return;
+    }
+    hoverPopup.setLngLat(e.lngLat).addTo(map);
+    const sourceLayer = overlay.styleLayers.get(top.layer.id)!;
+    const props = top.properties;
+    const identity = `${sourceLayer}|${props.vt_code ?? ''}|${props.vt_text ?? ''}`;
+    if (identity === hoveredVector) return;
+    hoveredVector = identity;
+    const theme = overlay.collection.themes?.find((t) => t.layers.some((l) => l.id === sourceLayer));
+    const layer = theme?.layers.find((l) => l.id === sourceLayer);
+    hoverPopup.setDOMContent(
+      hoverContent([
+        ['', (props.vt_text as string | undefined) || `${theme?.title ?? ''} › ${layer?.title ?? sourceLayer}`],
+        ['層', `${layer?.title ?? sourceLayer} (${sourceLayer})`],
+        // 地物の種別のコード。意味は配布元の「地物種別コード一覧」にある。
+        ['種別コード', props.vt_code != null ? String(props.vt_code) : null],
+        ['出所', `${overlay.collection.group?.title ?? ''} ${overlay.collection.title}`.trim()],
+        ['時点', overlay.collection.vintage ?? null],
+      ]),
+    );
+  });
 
   // 逆ジオコーディング: クリックした地点がどの行政区域かを引き、
   // その区域をハイライトしてポップアップで名前を出す (popup は上で用意している)。

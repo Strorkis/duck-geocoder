@@ -762,6 +762,85 @@ body,
   color: #14508c;
 }
 
+/* 外部のタイルセットの層の一覧と作り方。⚙ のカードの中。 */
+.vector-layer-list {
+  margin: 0.2rem 0;
+  padding-left: 1rem;
+  font-size: 0.7rem;
+  color: #555;
+}
+
+.generator-options {
+  margin: 0.2rem 0;
+  padding: 0.3rem 0.4rem;
+  font-size: 0.65rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #f4f6f8;
+  border-radius: 0.2rem;
+}
+
+/* 一覧の絞り込み。見出しのすぐ下に、一覧の幅いっぱいで置く。 */
+#layer-filter {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0 0 0.3rem;
+  padding: 0.2rem 0.4rem;
+  font: inherit;
+  font-size: 0.8rem;
+  border: 1px solid #ccd5df;
+  border-radius: 0.25rem;
+}
+
+.layer-filter-empty {
+  margin: 0.2rem 0;
+  font-size: 0.75rem;
+  color: #888;
+}
+
+/* テーマの中の層を開く。⚙ と同じく控えめなボタン。 */
+.layer-expander {
+  flex: none;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.75rem;
+  line-height: 1;
+  padding: 0.1rem 0.2rem;
+  color: #666;
+}
+
+.layer-expander:hover {
+  color: #14508c;
+}
+
+/* 中の層。テーマの行の下に字下げして並べる。 */
+.layer-parts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.15rem 0 0 1.3rem;
+  font-size: 0.75rem;
+}
+
+.layer-part {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+}
+
+/* いまのズームでは描かれない層。**消さずに**薄くし、いつから描かれるかを添える。 */
+.layer-part.later > span:first-of-type {
+  color: #999;
+}
+
+.layer-part-zoom {
+  margin-left: auto;
+  font-size: 0.68rem;
+  color: #999;
+}
+
 /* 設定は一覧と**入れ替える**。重ねて出すと結局縦に伸びる。 */
 #layer-list[hidden],
 #layer-settings[hidden] {
