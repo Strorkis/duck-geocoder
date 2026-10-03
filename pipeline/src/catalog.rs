@@ -333,7 +333,51 @@ pub struct Attribution {
     pub license: &'static str,
     /// STACの `providers[].name`。組織名。
     pub provider: &'static str,
+    /// **使う人が知りたい条件** (商用可か・出典表示・改変・継承)。STACの `duck:terms`。
+    ///
+    /// `license` の識別子 (`"other"` を含む) だけでは、使う人が規約を読みに行かないと
+    /// 何ができるか分からない。規約を読んだ結果をここに書き、画面にバッジで出す。
+    pub terms: Terms,
 }
+
+/// 規約を読んだ結果。**規約の本文が正本で、これは要約。** 迷ったら本文へのリンクを辿る。
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Terms {
+    /// 規約の名前 (「公共データ利用規約 (PDL1.0)」など)。
+    pub name: &'static str,
+    /// 規約の本文。
+    pub url: &'static str,
+    pub commercial: Commercial,
+    /// 出典の表示が要るか。
+    pub attribution_required: bool,
+    /// 加工したとき、その旨を書く必要があるか。
+    pub note_modification: bool,
+    /// **継承 (share-alike)。** 派生したデータを配るとき同じライセンスにする義務があるか。
+    pub share_alike: bool,
+}
+
+/// 商用利用の扱い。
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Commercial {
+    /// 規約が商用利用を明示的に認めている。
+    Allowed,
+    /// **規約に制限の記載が無い** (認めるとも禁じるとも書いていない)。
+    /// 「可」と言い切らないために分けてある。
+    NotRestricted,
+    /// 非商用に限る。
+    NonCommercial,
+}
+
+/// 公共データ利用規約 (PDL1.0)。国土数値情報の既定。CC BY 4.0 と互換。
+const PDL1: Terms = Terms {
+    name: "公共データ利用規約 (第1.0版)",
+    url: "https://nlftp.mlit.go.jp/ksj/other/agreement.html",
+    commercial: Commercial::Allowed,
+    attribution_required: true,
+    note_modification: true,
+    share_alike: false,
+};
 
 /// 国土交通省のコンテンツ。
 ///
@@ -341,17 +385,42 @@ pub struct Attribution {
 /// 加工した場合は加工した旨を求めている。このパイプラインは座標系を変換し、
 /// 行を空間的に並べ替えているので、いずれも「もとに作成」にあたる。
 /// <https://nlftp.mlit.go.jp/ksj/other/agreement.html>
-const MLIT_ISJ: Attribution = Attribution {
-    text: "「位置参照情報ダウンロードサービス」（国土交通省）をもとに作成",
-    url: "https://nlftp.mlit.go.jp/isj/",
-    license: "other",
-    provider: "国土交通省",
-};
 const MLIT_KSJ: Attribution = Attribution {
     text: "「国土数値情報（行政区域データ）」（国土交通省）をもとに作成",
     url: "https://nlftp.mlit.go.jp/ksj/",
     license: "other",
     provider: "国土交通省",
+    terms: PDL1,
+};
+
+/// 位置参照情報。**国土数値情報とは別の、独自の利用規約。**
+///
+/// 出典の書き方を指定している:「街区レベル位置参照情報　国土交通省」または
+/// 「大字・町丁目位置参照情報　国土交通省」。編集・加工は認めていて、
+/// 加工責任者の情報も「可能な限り併記」とある。商用を認めるとも禁じるとも
+/// 書いていない (「無償で利用できます」) ので、[`Commercial::NotRestricted`] にする。
+/// <https://nlftp.mlit.go.jp/isj/agreement.html>
+const ISJ_TERMS: Terms = Terms {
+    name: "位置参照情報ダウンロードサービス利用規約",
+    url: "https://nlftp.mlit.go.jp/isj/agreement.html",
+    commercial: Commercial::NotRestricted,
+    attribution_required: true,
+    note_modification: false,
+    share_alike: false,
+};
+const MLIT_ISJ_OAZA: Attribution = Attribution {
+    text: "大字・町丁目位置参照情報　国土交通省 (座標系を変換して加工)",
+    url: "https://nlftp.mlit.go.jp/isj/",
+    license: "other",
+    provider: "国土交通省",
+    terms: ISJ_TERMS,
+};
+const MLIT_ISJ_BLOCK: Attribution = Attribution {
+    text: "街区レベル位置参照情報　国土交通省 (座標系を変換して加工)",
+    url: "https://nlftp.mlit.go.jp/isj/",
+    license: "other",
+    provider: "国土交通省",
+    terms: ISJ_TERMS,
 };
 
 /// 国土数値情報の鉄道データ (N02)。**2020年度以降はオープンデータ扱い**で、
@@ -363,6 +432,7 @@ const MLIT_KSJ_RAILWAY: Attribution = Attribution {
     url: "https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N02-2022.html",
     license: "other",
     provider: "国土交通省",
+    terms: PDL1,
 };
 
 /// Overture Maps は ODbL 1.0。OpenStreetMap由来を含むため両方を示す。
@@ -372,6 +442,16 @@ const OVERTURE: Attribution = Attribution {
     url: "https://docs.overturemaps.org/attribution/",
     license: "ODbL-1.0",
     provider: "Overture Maps Foundation",
+    // **継承がある。** 派生したデータベースを配るときは ODbL にする義務がある
+    // (別ファイルとして並べて配るだけなら及ばない。roadmap.md の「ODbLの感染範囲」)。
+    terms: Terms {
+        name: "Open Database License (ODbL) 1.0",
+        url: "https://opendatacommons.org/licenses/odbl/1-0/",
+        commercial: Commercial::Allowed,
+        attribution_required: true,
+        note_modification: false,
+        share_alike: true,
+    },
 };
 
 /// PLATEAU (3D都市モデル) は政府標準利用規約に準じたPDL1.0。
@@ -384,6 +464,14 @@ const MLIT_PLATEAU: Attribution = Attribution {
     // PDL1.0だが CC BY 4.0 での利用も認められている。SPDXに当てはまる方を出す。
     license: "CC-BY-4.0",
     provider: "国土交通省",
+    terms: Terms {
+        name: "PLATEAU サイトポリシー (PDL1.0 / CC BY 4.0)",
+        url: "https://www.mlit.go.jp/plateau/site-policy/",
+        commercial: Commercial::Allowed,
+        attribution_required: true,
+        note_modification: true,
+        share_alike: false,
+    },
 };
 
 /// 国勢調査の地域メッシュ統計。政府標準利用規約 (第2.0版) で、出典表示のうえ
@@ -395,6 +483,14 @@ const ESTAT_MESH: Attribution = Attribution {
     url: "https://www.e-stat.go.jp/gis",
     license: "other",
     provider: "総務省統計局",
+    terms: Terms {
+        name: "政府標準利用規約 (第2.0版)",
+        url: "https://www.e-stat.go.jp/terms-of-use",
+        commercial: Commercial::Allowed,
+        attribution_required: true,
+        note_modification: true,
+        share_alike: false,
+    },
 };
 
 /// データセットの素性。ファイル名の接頭辞から引く。
@@ -631,7 +727,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             collection: "isj-oaza",
             title: "大字・町丁目",
             description: "町名・丁目の代表点。住所検索に使う。",
-            attribution: MLIT_ISJ,
+            attribution: MLIT_ISJ_OAZA,
             summary_columns: &[],
             mesh_digits: None,
             via: "https://nlftp.mlit.go.jp/cgi-bin/isj/dls/_choose_method.cgi",
@@ -644,7 +740,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             collection: "isj-block",
             title: "街区",
             description: "街区 (「〜番」) の代表点。番地まで含む住所検索に使う。",
-            attribution: MLIT_ISJ,
+            attribution: MLIT_ISJ_BLOCK,
             summary_columns: &[],
             mesh_digits: None,
             via: "https://nlftp.mlit.go.jp/cgi-bin/isj/dls/_choose_method.cgi",
@@ -1078,12 +1174,12 @@ mod tests {
         }
     }
 
-    // 国土交通省の利用約款は、出典に「コンテンツ名」「（国土交通省）」「当該ページのURL」を、
+    // 国土数値情報の利用約款は、出典に「コンテンツ名」「（国土交通省）」「当該ページのURL」を、
     // 加工した場合はその旨を求めている。座標系変換と空間的な並べ替えをしているので、
     // どれも加工にあたる。
     #[test]
     fn mlit_attributions_follow_the_required_form() {
-        for Attribution { text, url, .. } in [MLIT_ISJ, MLIT_KSJ] {
+        for Attribution { text, url, .. } in [MLIT_KSJ, MLIT_KSJ_RAILWAY] {
             assert!(
                 text.contains("（国土交通省）"),
                 "作成者の表示が無い: {text}"
@@ -1096,6 +1192,35 @@ mod tests {
                 url.contains("nlftp.mlit.go.jp"),
                 "当該ページのURLが国土交通省のものでない: {url}",
             );
+        }
+    }
+
+    /// **位置参照情報は規約が出典の書き方を指定している** (国土数値情報とは別の規約)。
+    /// 「大字・町丁目位置参照情報　国土交通省」「街区レベル位置参照情報　国土交通省」。
+    #[test]
+    fn isj_attributions_follow_their_own_terms() {
+        for (attribution, name) in [
+            (MLIT_ISJ_OAZA, "大字・町丁目位置参照情報　国土交通省"),
+            (MLIT_ISJ_BLOCK, "街区レベル位置参照情報　国土交通省"),
+        ] {
+            assert!(attribution.text.starts_with(name), "{}", attribution.text);
+            assert_eq!(
+                attribution.terms.url,
+                "https://nlftp.mlit.go.jp/isj/agreement.html"
+            );
+        }
+    }
+
+    /// **配っている全データに規約の要約があること。** バッジが出ない出所を作らない。
+    /// 規約の本文へのリンクは必ず https。
+    #[test]
+    fn every_dataset_states_its_terms() {
+        for (prefix, described) in DESCRIPTIONS {
+            let terms = described.attribution.terms;
+            assert!(!terms.name.is_empty(), "{prefix}: 規約の名前が無い");
+            assert!(terms.url.starts_with("https://"), "{prefix}: {}", terms.url);
+            // 出典の表示が要らないデータは今のところ無い。あったら確かめ直す。
+            assert!(terms.attribution_required, "{prefix}");
         }
     }
 

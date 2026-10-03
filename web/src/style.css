@@ -1053,6 +1053,69 @@ body,
   margin: 0;
 }
 
+/* 使うときの条件。バッジは色で強弱を付けるが、**文字でも読める**ようにしてある。 */
+.terms-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+  vertical-align: middle;
+}
+
+.terms-badge {
+  padding: 0 0.4rem;
+  border-radius: 0.6rem;
+  font-size: 0.7rem;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.terms-badge.ok {
+  background: #e3f3e6;
+  color: #1d6b2f;
+}
+
+.terms-badge.note {
+  background: #eef3f9;
+  color: #14508c;
+}
+
+.terms-badge.warn {
+  background: #fbeee2;
+  color: #9a4a12;
+}
+
+.terms-line {
+  margin-top: 0.15rem;
+  font-size: 0.75rem;
+}
+
+.terms-table {
+  width: 100%;
+  margin-bottom: 0.4rem;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.terms-table th,
+.terms-table td {
+  padding: 0.25rem 0.4rem;
+  border-bottom: 1px solid #e3e8ee;
+  text-align: left;
+  vertical-align: top;
+}
+
+.terms-table th {
+  color: #666;
+  font-weight: normal;
+  white-space: nowrap;
+}
+
+.terms-note {
+  margin: 0 0 0.8rem;
+  color: #777;
+  font-size: 0.72rem;
+}
+
 /* 背景地図と表示量。データ一覧の最後に置く (QGISでも背景はレイヤーの1つ)。
    どちらもレイヤーをまたぐselect1つなので、**横に並べて縦を1段減らす。** */
 #view-settings {

@@ -612,6 +612,41 @@ test('使っている技術は、ライブラリと借りた考え方を分け�
   expect(await credits.locator('dt a[href^="http"]').count()).toBe(terms);
 });
 
+/**
+ * **使うときの条件 (商用可か・出典表示・継承) が一目で分かる。**
+ *
+ * ライセンスの識別子 (`other` を含む) だけでは、規約を読みに行かないと何ができるか
+ * 分からない。カタログの `duck:terms` (規約を読んだ結果の要約) から、出典ダイアログの
+ * 一覧表と ⚙ のバッジを出す。文言を書き写さず、カタログと突き合わせる。
+ */
+test('使うときの条件が一覧表とバッジで出る', async ({ page }) => {
+  await openInfoDialog(page, 'credits-dialog');
+  const table = page.locator('#terms-summary table');
+  await expect(table).toBeVisible();
+
+  // Overture は ODbL なので継承がある。PLATEAU は CC BY で継承は無い。
+  const overture = table.locator('tbody tr', { hasText: 'Overture' }).first();
+  await expect(overture).toContainText('あり');
+  await expect(overture.locator('a')).toHaveAttribute('href', /opendatacommons\.org/);
+  const plateau = table.locator('tbody tr', { hasText: 'PLATEAU' }).first();
+  await expect(plateau.locator('td').nth(1)).toHaveText('可');
+  await expect(plateau.locator('td').nth(4)).toHaveText('—');
+  // 位置参照情報は商用を認めるとも禁じるとも書いていない。**「可」と言い切らない。**
+  await expect(table.locator('tbody tr', { hasText: '町丁目' }).locator('td').nth(1)).toHaveText('記載なし');
+  await page.locator('#credits-dialog .info-dialog-close').click();
+
+  // ⚙ のカードにもバッジ。カタログの duck:terms と一致すること。
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+  const collection = (await (
+    await page.request.get(await resolveDataUrl(page, 'plateau/plateau-buildings.json'))
+  ).json()) as { 'duck:terms': { commercial: string; share_alike: boolean } };
+  expect(collection['duck:terms'].commercial).toBe('allowed');
+  await openLayerSettings(page, LAYER.plateauBuildings);
+  const card = page.locator(`.collection-card[data-collection="${LAYER.plateauBuildings}"]`);
+  await expect(card.locator('.terms-badge', { hasText: '商用可' })).toBeVisible();
+  await expect(card.locator('.terms-badge', { hasText: '継承あり' })).toHaveCount(0);
+});
+
 test('出典に配布元へのリンクが出る', async ({ page }) => {
   await openInfoDialog(page, 'credits-dialog');
 

@@ -109,6 +109,8 @@ interface StacCollection {
    * UIはこれを読んで問い合わせの `CASE` を組み立てる ([`tierExpression`])。
    */
   'duck:tiers'?: Tiers;
+  /** 規約の要約 (商用可か・出典表示・改変・継承)。 */
+  'duck:terms'?: Terms;
   /**
    * **いつ時点のデータか。** 配布元が名乗っている形 (`N02-25 (2026-03-06)` など)。
    *
@@ -239,6 +241,8 @@ interface Collection {
   covers: string | undefined;
   /** 重要度の段の規則。建物以外は undefined。 */
   tiers: Tiers | undefined;
+  /** 規約の要約。古いカタログには無い。 */
+  terms: Terms | undefined;
   /** いつ時点のデータか。**ファイルごとに版が違うものには入っていない。** */
   vintage: string | undefined;
   /** Itemを読む。**Collectionごとに1回だけ**通信する。 */
@@ -544,6 +548,7 @@ function toCollection(
     coarseLodToleranceM: document['duck:coarse_lod_tolerance_m'],
     covers: document['duck:covers'],
     tiers: document['duck:tiers'],
+    terms: document['duck:terms'],
     vintage: document['duck:vintage'],
     bbox,
     summaries: document.summaries ?? {},
@@ -2491,10 +2496,20 @@ function groupCredits(collections: Collection[]): {
   url: string;
   via: string[];
   vintages: string[];
+  terms: Terms | undefined;
+  /** サブカタログの題名 (PLATEAU など)。出所の一覧表の見出しに使う。 */
+  group: string | undefined;
 }[] {
   const byAttribution = new Map<
     string,
-    { url: string; titles: string[]; via: string[]; vintages: string[] }
+    {
+      url: string;
+      titles: string[];
+      via: string[];
+      vintages: string[];
+      terms: Terms | undefined;
+      group: string | undefined;
+    }
   >();
   for (const collection of collections) {
     const entry = byAttribution.get(collection.attribution) ?? {
@@ -2502,6 +2517,9 @@ function groupCredits(collections: Collection[]): {
       titles: [],
       via: [],
       vintages: [],
+      // 同じ出典なら同じ規約 (出典と規約はパイプラインで1つの組として持っている)。
+      terms: collection.terms,
+      group: collection.group?.title,
     };
     // 同じ出典で細かさ違いのCollectionが並ぶことがある (人口メッシュの125mと1km)。
     if (!entry.titles.includes(collection.title)) entry.titles.push(collection.title);
@@ -2516,13 +2534,51 @@ function groupCredits(collections: Collection[]): {
   // 並べ替えは表示する文言で行う (組み立てたHTMLで並べると、順序がタグの中身に左右される)。
   return [...byAttribution]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([attribution, { url, titles, via, vintages }]) => ({
+    .map(([attribution, { url, titles, via, vintages, terms, group }]) => ({
       titles,
       attribution,
       url,
       via,
       vintages,
+      terms,
+      group,
     }));
+}
+
+/**
+ * 規約の要約 (`duck:terms`)。パイプラインの `catalog::Terms` と同じ形。
+ * **規約の本文が正本で、これは要約。** 画面には必ず本文へのリンクを添える。
+ */
+interface Terms {
+  name: string;
+  url: string;
+  commercial: 'allowed' | 'not_restricted' | 'non_commercial';
+  attribution_required: boolean;
+  note_modification: boolean;
+  share_alike: boolean;
+}
+
+/** 規約の要約をバッジにする。**「可」と言い切れないものは言い切らない。** */
+function termsBadges(terms: Terms): HTMLElement {
+  const box = document.createElement('span');
+  box.className = 'terms-badges';
+  const badge = (text: string, tone: 'ok' | 'note' | 'warn', title: string) => {
+    const el = document.createElement('span');
+    el.className = `terms-badge ${tone}`;
+    el.textContent = text;
+    el.title = title;
+    box.append(el);
+  };
+  if (terms.commercial === 'allowed') badge('商用可', 'ok', '規約が商用利用を認めている');
+  else if (terms.commercial === 'not_restricted') {
+    badge('商用の制限の記載なし', 'note', '規約に商用を認めるとも禁じるとも書いていない。本文を確かめること');
+  } else badge('非商用のみ', 'warn', '商用には使えない');
+  if (terms.attribution_required) badge('出典表示が必要', 'note', '使うときは出典を表示する');
+  if (terms.note_modification) badge('加工したら明記', 'note', '加工したデータを使うときは、加工した旨を書く');
+  if (terms.share_alike) {
+    badge('継承あり', 'warn', '派生したデータを配るときは同じライセンスにする (別ファイルとして並べるだけなら及ばない)');
+  }
+  return box;
 }
 
 function buildDataCredits(collections: Collection[]): string[] {
@@ -2553,9 +2609,46 @@ function externalLink(href: string, label: string): HTMLAnchorElement {
  * 地形 (Mapterhorn) のようにTileJSONから来る出典はカタログに無いので、
  * ⓘ の側が引き続き唯一の出どころになる。
  */
+/**
+ * **使うときの条件の一覧表。** 出所ごとに1行で、商用可か・出典表示・加工の明記・継承を並べる。
+ * 出典の文言を1つずつ読まなくても、何に使えるかが一目で分かるようにする。
+ */
+function renderTermsSummary(container: HTMLElement, collections: Collection[]): void {
+  const rows = groupCredits(collections).filter((credit) => credit.terms);
+  if (rows.length === 0) {
+    container.replaceChildren();
+    return;
+  }
+  const table = document.createElement('table');
+  table.className = 'terms-table';
+  const head = table.createTHead().insertRow();
+  for (const label of ['データ', '商用', '出典表示', '加工したら明記', '継承', '規約']) {
+    const th = document.createElement('th');
+    th.textContent = label;
+    head.append(th);
+  }
+  const body = table.createTBody();
+  const mark = (value: boolean) => (value ? '要' : '—');
+  for (const { titles, group, terms } of rows) {
+    const row = body.insertRow();
+    row.insertCell().textContent = group ? `${group}: ${titles.join('・')}` : titles.join('・');
+    row.insertCell().textContent =
+      terms!.commercial === 'allowed' ? '可' : terms!.commercial === 'non_commercial' ? '不可' : '記載なし';
+    row.insertCell().textContent = mark(terms!.attribution_required);
+    row.insertCell().textContent = mark(terms!.note_modification);
+    row.insertCell().textContent = terms!.share_alike ? 'あり' : '—';
+    row.insertCell().append(externalLink(terms!.url, terms!.name));
+  }
+  const note = document.createElement('p');
+  note.className = 'terms-note';
+  note.textContent =
+    '規約を読んだ結果の要約です。正本は各規約の本文です。「記載なし」は、規約が商用を認めるとも禁じるとも書いていないものです。';
+  container.replaceChildren(table, note);
+}
+
 function renderCredits(container: HTMLElement, collections: Collection[]): void {
   container.replaceChildren();
-  for (const { titles, attribution, url, via, vintages } of groupCredits(collections)) {
+  for (const { titles, attribution, url, via, vintages, terms } of groupCredits(collections)) {
     const term = document.createElement('dt');
     term.textContent = titles.join('・');
     // **いつ時点のデータか。** 出所だけでは版が分からず、古いものを新しいと
@@ -2569,6 +2662,13 @@ function renderCredits(container: HTMLElement, collections: Collection[]): void 
 
     const detail = document.createElement('dd');
     detail.append(externalLink(url, attribution));
+    // 使うときの条件。バッジと規約の本文へのリンク (要約なので、本文が正本)。
+    if (terms) {
+      const line = document.createElement('div');
+      line.className = 'terms-line';
+      line.append(termsBadges(terms), ' ', externalLink(terms.url, terms.name));
+      detail.append(line);
+    }
 
     // **配布元へ辿れるようにする。** ここにあるのは変換した複製で、原典は向こうにある。
     // 出典表示のリンク先とは別 (Overtureは出典がガイドページを指す)。
@@ -3115,6 +3215,7 @@ async function main() {
     ({ ensureSpatial, ensureOaza, ensureStations, ensureSections } = db);
     map = createdMap;
     renderCredits(creditsEl, collections);
+    renderTermsSummary(document.querySelector<HTMLDivElement>('#terms-summary')!, collections);
   } catch (e) {
     console.error('[init] failed', e);
     loadingEl.innerHTML = '<p>初期化に失敗しました。コンソールを確認してください。</p>';
@@ -4288,13 +4389,19 @@ async function main() {
       facts.append(dt, dd);
       return dd;
     };
-    // `other` は「SPDXに当てはまるものが無い」。中身は利用規約にあるので、そこへ飛ばす。
-    fact(
-      'ライセンス',
-      collection.license === 'other'
-        ? externalLink(collection.attributionUrl, '利用規約')
-        : collection.license,
-    );
+    // **使うときの条件はバッジで出す。** 識別子 (`other` を含む) だけでは何ができるか
+    // 分からない。規約の本文へのリンクを必ず添える (バッジは要約)。
+    if (collection.terms) {
+      fact('使う条件', termsBadges(collection.terms), ' ', externalLink(collection.terms.url, collection.terms.name));
+    } else {
+      // 古いカタログ (duck:terms の無いもの) では識別子だけ出す。
+      fact(
+        'ライセンス',
+        collection.license === 'other'
+          ? externalLink(collection.attributionUrl, '利用規約')
+          : collection.license,
+      );
+    }
     if (collection.provider) fact('提供', collection.provider);
     if (collection.vintage) fact('版', collection.vintage);
     // **ファイル数はItemCollectionを読まないと分からない。** 起動時には読まない

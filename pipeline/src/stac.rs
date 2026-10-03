@@ -340,6 +340,9 @@ fn collection(id: &str, entries: &[&DatasetEntry], dir: &str) -> Result<Value> {
         "title": first.title,
         "description": first.description,
         "license": first.attribution.license,
+        // **使う人が知りたい条件** (商用可か・出典表示・改変・継承) の要約。
+        // `license` の識別子 (`other` を含む) だけでは何ができるか分からない。
+        "duck:terms": first.attribution.terms,
         // 表示義務のある文言。STACに専用の項目が無いので独自項目で持つ。
         // providers[].name は組織名なので、そちらとは別に要る。
         "duck:attribution": first.attribution.text,
@@ -540,6 +543,14 @@ mod tests {
             url: "https://example.invalid/",
             license: "other",
             provider: "どこか",
+            terms: crate::catalog::Terms {
+                name: "どこかの規約",
+                url: "https://example.invalid/terms",
+                commercial: crate::catalog::Commercial::Allowed,
+                attribution_required: true,
+                note_modification: true,
+                share_alike: false,
+            },
         }
     }
 
