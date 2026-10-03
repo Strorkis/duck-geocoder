@@ -59,7 +59,9 @@ type DatasetKind =
   | 'railway'
   | 'railway_station'
   | 'road'
-  | 'road_route';
+  | 'road_route'
+  | 'power_line'
+  | 'waterway';
 
 /** STAC Catalog。ルートと、出所ごとのサブカタログ。 */
 interface StacCatalog {
@@ -140,6 +142,11 @@ interface Tiers {
   named_first: boolean;
   /** 上ほど重要。**最後の段は「残り全部」で値を持たない。** */
   tiers: { id: string; title: string; values: string[] }[];
+  /**
+   * **段で間引くための列** (段の順位、0がいちばん重要)。全ファイルが持つときだけ付く。
+   * あれば引いた表示で `lod <= 段` の行グループだけを読める。
+   */
+  lod_column?: string;
 }
 
 /**
@@ -169,6 +176,8 @@ function tierExpression(tiers: Tiers): string {
 interface StacItem {
   id: string;
   bbox?: number[];
+  /** `via` (このファイルの配布元) など。PLATEAUは都市ごとのzipを指す。 */
+  links?: StacLink[];
   properties: {
     'table:row_count'?: number;
     /** 原典にあるLOD ("1,2,3")。**配信しているものより細かいものが原典にある**ときだけ付く。 */
@@ -811,6 +820,75 @@ interface RoadSource {
 }
 
 /**
+ * 名前と種別だけを持つ線 (送電線・川)。**道路と違って等級の絞り込みを持たない。**
+ * 粗い段の切り替え・一覧の行・ホバーは道路と同じ仕組みを使う。
+ */
+interface LineSource {
+  id: string;
+  kind: LineKind;
+  title: string;
+  bbox: Bbox | null;
+  files: ItemFile[];
+  /** 粗い段の許容誤差 (メートル)。段が無ければ undefined。 */
+  coarseLodToleranceM: number | undefined;
+  ensure: () => Promise<void>;
+}
+
+type LineKind = 'power_line' | 'waterway';
+const LINE_KINDS: readonly LineKind[] = ['power_line', 'waterway'];
+
+/** 線の見せ方。川は水色の実線、送電線は紫の破線 (道路・鉄道と見分けるため)。 */
+const LINE_STYLES: Record<LineKind, { color: string; width: number; dash: number[] | null }> = {
+  power_line: { color: '#7b4fa0', width: 1.6, dash: [2, 1.5] },
+  waterway: { color: '#3a8fd6', width: 1.8, dash: null },
+};
+
+/** 線の種別 (`class`) の呼び名。Overture の値はOSM由来の英語なので言い直す。 */
+const LINE_CLASS_LABELS: Record<string, string> = {
+  power_line: '送電線',
+  cable: '地中・海底線',
+  river: '川',
+  canal: '運河',
+};
+
+interface LineFeature {
+  geojson: GeoJSON.Geometry;
+  name: string | null;
+  lineClass: string;
+}
+
+/**
+ * 表示範囲の線を引く。道路 ([`fetchRoadsInView`]) と同じく、中心に近い順に上限まで。
+ */
+async function fetchLinesInView(
+  conn: duckdb.AsyncDuckDBConnection,
+  source: LineSource,
+  bounds: ViewBounds,
+  limit: number,
+  lod: number | undefined,
+): Promise<LineFeature[]> {
+  const files = filesInView(source, bounds);
+  if (files.length === 0) return [];
+  const list = files.map((file) => `'${file}'`).join(', ');
+  const lonScale = Math.cos((bounds.centerLat * Math.PI) / 180);
+  const result = await conn.query(`
+    SELECT ST_AsGeoJSON(geometry) AS geojson, name, class
+    FROM read_parquet([${list}])
+    WHERE ${lodFilter(lod)}
+      bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}
+      AND bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}
+    ORDER BY
+      pow(((bbox.xmin + bbox.xmax) / 2 - ${bounds.centerLon}) * ${lonScale}, 2)
+      + pow((bbox.ymin + bbox.ymax) / 2 - ${bounds.centerLat}, 2)
+    LIMIT ${limit};
+  `);
+  return result.toArray().map((row) => {
+    const r = row.toJSON() as unknown as { geojson: string; name: string | null; class: string };
+    return { geojson: JSON.parse(r.geojson) as GeoJSON.Geometry, name: r.name, lineClass: r.class };
+  });
+}
+
+/**
  * 道路の等級ごとの色と呼び名。**語彙はカタログから来る**ので、ここには
  * 見せ方だけを持つ (鉄道の事業者種別と同じ)。
  *
@@ -1172,6 +1250,10 @@ function filesInView(
 
 async function initDuckDb(collections: Collection[]): Promise<{
   conn: duckdb.AsyncDuckDBConnection;
+  /** 問い合わせの結果を Parquet にして返す (ダウンロード用)。 */
+  exportParquet: (select: string, kv: Record<string, string>) => Promise<Uint8Array>;
+  /** 配信パスを DuckDB に登録する (Rangeで読めるようにする)。二度目は何もしない。 */
+  registerFiles: (files: string[]) => Promise<void>;
   /** 建物データの出所。カタログにあるものだけが並ぶ。 */
   buildingSources: BuildingSource[];
   /** 人口メッシュ。細かさの違うものが並ぶ。空なら地上リスクの表示を出さない。 */
@@ -1184,6 +1266,8 @@ async function initDuckDb(collections: Collection[]): Promise<{
   railwayVintage: string | undefined;
   /** 道路 (Overture)。無ければ道路の節を出さない。 */
   roadSource: RoadSource | undefined;
+  /** 送電線・川など、名前と種別だけを持つ線。カタログに並んだ順。 */
+  lineSources: LineSource[];
   /** 道路等級の語彙。絞り込みの選択肢をここから作る。 */
   roadClasses: string[];
   /** 道路がいつ時点のものか。ホバーで出す。 */
@@ -1479,6 +1563,27 @@ async function initDuckDb(collections: Collection[]): Promise<{
     : undefined;
   const roadVintage = roadCollection?.vintage;
 
+  // 送電線・川。道路と同じく、寄るまで (ONにするまで) Itemを読まない。
+  const lineSources: LineSource[] = collections
+    .filter((c) => (LINE_KINDS as readonly string[]).includes(c.kind))
+    .map((collection) => {
+      const source: LineSource = {
+        id: collection.id,
+        kind: collection.kind as LineKind,
+        title: collection.title,
+        bbox: collection.bbox,
+        files: [],
+        coarseLodToleranceM: collection.coarseLodToleranceM,
+        ensure: once(async () => {
+          const items = await collection.items();
+          source.files = itemFiles(items);
+          await register(source.files.map(({ file }) => file));
+          await ensureSpatial();
+        }),
+      };
+      return source;
+    });
+
   // 路線の索引と、区間そのもの。**検索とハイライトのときだけ**読む。
   const routeCollection = byKind('road_route')[0];
   const ensureRoutes =
@@ -1532,14 +1637,41 @@ async function initDuckDb(collections: Collection[]): Promise<{
            FROM admin;`,
   );
 
+  /**
+   * 問い合わせの結果を Parquet にして返す (ダウンロード用)。
+   *
+   * DuckDB-WASM の中の空のファイルに書いてから取り出す。ジオメトリの列が
+   * GEOMETRY 型なら DuckDB が `geo` メタデータを書くので、GeoParquet として読める。
+   * `kv` に出典や規約を入れて、**切り出したファイルにも条件が付いて回る**ようにする。
+   */
+  const exportParquet = async (select: string, kv: Record<string, string>): Promise<Uint8Array> => {
+    const name = `export_${Date.now()}.parquet`;
+    await db.registerEmptyFileBuffer(name);
+    const escape = (text: string) => text.replace(/'/g, "''");
+    const kvSql = Object.entries(kv)
+      .map(([key, value]) => `'${escape(key)}': '${escape(value)}'`)
+      .join(', ');
+    try {
+      await conn.query(
+        `COPY (${select}) TO '${name}' (FORMAT PARQUET${kvSql ? `, KV_METADATA {${kvSql}}` : ''});`,
+      );
+      return await db.copyFileToBuffer(name);
+    } finally {
+      await db.dropFile(name);
+    }
+  };
+
   return {
     conn,
+    exportParquet,
+    registerFiles: register,
     buildingSources,
     meshSources,
     railwaySources,
     railwayInstitutionTypes,
     railwayVintage,
     roadSource,
+    lineSources,
     roadClasses,
     roadVintage,
     ensureRoutes,
@@ -1548,6 +1680,144 @@ async function initDuckDb(collections: Collection[]): Promise<{
     ensureStations,
     ensureSections,
   };
+}
+
+/**
+ * 緯度経度の点が入る3次メッシュ (8桁、約1km) のコード。[`meshBounds`] の逆。
+ * パイプラインの `mesh.rs` と同じ計算 (1次は緯度×1.5と経度−100の整数部、
+ * 2次は8分割、3次は10分割)。
+ */
+function meshCode3(lon: number, lat: number): string {
+  const p = Math.floor(lat * 1.5);
+  const u = Math.floor(lon - 100);
+  const latRest = lat * 1.5 - p;
+  const lonRest = lon - 100 - u;
+  const q = Math.floor(latRest * 8);
+  const v = Math.floor(lonRest * 8);
+  const r = Math.floor((latRest * 8 - q) * 10);
+  const w = Math.floor((lonRest * 8 - v) * 10);
+  return `${p}${u}${q}${v}${r}${w}`;
+}
+
+/**
+ * 表示範囲に掛かる3次メッシュのコード。**多すぎるときは2次メッシュ (6桁) にまとめる**
+ * (PLATEAU配信サービスは6桁でも引ける)。それでも多ければ `null` (寄ってもらう)。
+ */
+function meshCodesInView(bounds: ViewBounds, limit = 60): string[] | null {
+  const codes = new Set<string>();
+  // 3次メッシュは緯度30秒 (1/120度)・経度45秒 (1/80度)。半分の刻みで拾えば漏れない。
+  for (let lat = bounds.south; lat <= bounds.north + 1 / 240; lat += 1 / 240) {
+    for (let lon = bounds.west; lon <= bounds.east + 1 / 160; lon += 1 / 160) {
+      codes.add(meshCode3(Math.min(lon, bounds.east), Math.min(lat, bounds.north)));
+      if (codes.size > 2000) break;
+    }
+  }
+  if (codes.size <= limit) return [...codes].sort();
+  const coarse = new Set([...codes].map((code) => code.slice(0, 6)));
+  return coarse.size <= limit / 4 ? [...coarse].sort() : null;
+}
+
+/** PLATEAU配信サービス (公式のAPI)。CityGMLのメッシュ単位のファイルとpackを引く。 */
+const PLATEAU_API = 'https://api.plateauview.mlit.go.jp';
+
+/** CityGMLの地物の種類の呼び名。APIが返す種類のうち、よく出るもの。 */
+const CITYGML_TYPES: Record<string, string> = {
+  bldg: '建物',
+  tran: '道路',
+  rwy: '鉄道',
+  brid: '橋',
+  luse: '土地利用',
+  dem: '地形',
+  fld: '洪水浸水想定',
+  tnm: '津波浸水想定',
+  htd: '高潮浸水想定',
+  lsld: '土砂災害警戒区域',
+  urf: '都市計画決定',
+  veg: '植生',
+  frn: '都市設備',
+  ubld: '地下街',
+  wwy: '航路',
+};
+
+/** メッシュ単位のCityGMLファイル1つ。 */
+interface CityGmlFile {
+  type: string;
+  code: string;
+  url: string;
+  maxLod: number;
+  fileSize?: number;
+  features?: number;
+}
+
+/**
+ * 表示範囲のCityGMLファイル (メッシュ単位) を公式のAPIで引く。**押したときだけ呼ぶ。**
+ * このAPIはブラウザから直接呼べる (`access-control-allow-origin: *` を確かめた)。
+ */
+async function fetchCityGmlFiles(codes: string[]): Promise<CityGmlFile[]> {
+  const response = await fetch(`${PLATEAU_API}/datacatalog/citygml/m:${codes.join(',')}`);
+  if (response.status === 404) return [];
+  if (!response.ok) throw new Error(`PLATEAU配信サービスが ${response.status} を返しました`);
+  const body = (await response.json()) as {
+    cities?: { files?: Record<string, Omit<CityGmlFile, 'type'>[]> }[];
+  };
+  const files: CityGmlFile[] = [];
+  const seen = new Set<string>();
+  for (const city of body.cities ?? []) {
+    for (const [type, list] of Object.entries(city.files ?? {})) {
+      for (const file of list) {
+        if (!file.url || seen.has(file.url)) continue;
+        seen.add(file.url);
+        files.push({ ...file, type });
+      }
+    }
+  }
+  return files;
+}
+
+/**
+ * 公式の pack で、選んだCityGMLを**付属ファイル (コードリスト・テクスチャ) 込みのZIP**に
+ * まとめてもらう。サーバー側の非同期の処理なので、状態を数秒おきに見る。
+ * 返すのはZIPのURL。
+ */
+async function packCityGml(urls: string[], onProgress: (progress: number) => void): Promise<string> {
+  const response = await fetch(`${PLATEAU_API}/citygml/pack`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ urls }),
+  });
+  if (!response.ok) throw new Error(`packの依頼に失敗しました (${response.status})`);
+  const { id } = (await response.json()) as { id: string };
+  for (;;) {
+    const status = await fetch(`${PLATEAU_API}/citygml/pack/${id}/status`);
+    if (!status.ok) throw new Error(`packの状態を取れません (${status.status})`);
+    const body = (await status.json()) as { status: string; progress?: number };
+    if (body.status === 'succeeded') return `${PLATEAU_API}/citygml/pack/${id}.zip`;
+    if (body.status !== 'accepted' && body.status !== 'processing') {
+      throw new Error(`packが失敗しました (${body.status})`);
+    }
+    onProgress(body.progress ?? 0);
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+}
+
+/** バイト列をファイルとして保存させる。 */
+function saveBytes(bytes: Uint8Array, filename: string): void {
+  const blob = new Blob([bytes as BlobPart], { type: 'application/vnd.apache.parquet' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/** バイト数を読みやすく。 */
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
 /**
@@ -1779,6 +2049,231 @@ async function fetchRoadsInView(
   });
 }
 
+// ---- 周辺検索 ----------------------------------------------------------------
+//
+// **起点 (点・線・面) から○m以内に何があるか**を、カタログにあるデータ全部に聞く。
+// 画面に出しているかどうかは関係ない (出していないデータも数える)。
+// 用途を決め打ちしない汎用の部品で、「川沿い・送電線沿いに何があるか」も
+// 「この建物の周りに学校はあるか」も同じ問い合わせになる。
+
+/** 周辺検索の起点。 */
+interface NearbyOrigin {
+  /** 何を起点にしたか (「山手線」「地図上の点」など)。 */
+  label: string;
+  geometry: GeoJSON.Geometry;
+}
+
+/**
+ * 距離を測るための座標の置き換え。**起点の近くの緯度でメートルに直す**
+ * (`ST_Affine`)。経度1度の長さは緯度で変わるので、起点の中心の緯度で決める。
+ * 1km以内なら平面とみなした誤差は小さい (東京で1kmにつき数m)。
+ */
+interface NearbyFrame {
+  /** `ST_Affine(… , sx, 0, 0, sy, ox, oy)` で度をメートルに直す。 */
+  sx: number;
+  sy: number;
+  ox: number;
+  oy: number;
+  /** 先に絞るための範囲 (起点の範囲を距離ぶん広げたもの。表示範囲で切ることがある)。 */
+  bounds: ViewBounds;
+  /** 表示範囲で切ったか。起点が画面より大きい (長い路線など) とき。 */
+  clipped: boolean;
+  /** 起点のジオメトリをメートルに直したSQLの式。 */
+  origin: string;
+  distance: number;
+}
+
+/** GeoJSON の座標を全部たどって範囲を返す。 */
+function geometryBbox(geometry: GeoJSON.Geometry): Bbox {
+  let west = Infinity;
+  let south = Infinity;
+  let east = -Infinity;
+  let north = -Infinity;
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value) && typeof value[0] === 'number') {
+      const [x, y] = value as number[];
+      west = Math.min(west, x);
+      east = Math.max(east, x);
+      south = Math.min(south, y);
+      north = Math.max(north, y);
+    } else if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+    }
+  };
+  if (geometry.type === 'GeometryCollection') {
+    for (const part of geometry.geometries) {
+      const [w, s, e, n] = geometryBbox(part);
+      west = Math.min(west, w);
+      south = Math.min(south, s);
+      east = Math.max(east, e);
+      north = Math.max(north, n);
+    }
+  } else {
+    visit(geometry.coordinates);
+  }
+  return [west, south, east, north];
+}
+
+/**
+ * 周辺検索の座標系と先に絞る範囲を決める。
+ *
+ * **起点が画面より大きいときは、表示範囲の中だけを数える。** 路線のように
+ * 長いものを起点にすると、範囲が都市を丸ごと覆って建物を何百MBも読むことになる。
+ */
+function nearbyFrame(origin: NearbyOrigin, distance: number, view: ViewBounds): NearbyFrame {
+  const [west, south, east, north] = geometryBbox(origin.geometry);
+  const lat0 = (south + north) / 2;
+  const lon0 = (west + east) / 2;
+  const sx = 111_320 * Math.cos((lat0 * Math.PI) / 180);
+  const sy = 110_540;
+  const dx = distance / sx;
+  const dy = distance / sy;
+  const expanded = { west: west - dx, south: south - dy, east: east + dx, north: north + dy };
+  const clipped =
+    expanded.west < view.west ||
+    expanded.east > view.east ||
+    expanded.south < view.south ||
+    expanded.north > view.north;
+  const bounds: ViewBounds = clipped
+    ? {
+        west: Math.max(expanded.west, view.west),
+        south: Math.max(expanded.south, view.south),
+        east: Math.min(expanded.east, view.east),
+        north: Math.min(expanded.north, view.north),
+        centerLon: lon0,
+        centerLat: lat0,
+      }
+    : { ...expanded, centerLon: lon0, centerLat: lat0 };
+  const json = JSON.stringify(origin.geometry).replace(/'/g, "''");
+  const frame = { sx, sy, ox: -lon0 * sx, oy: -lat0 * sy, bounds, clipped, distance };
+  return { ...frame, origin: toMeters(frame, `ST_GeomFromGeoJSON('${json}')`) };
+}
+
+/** ジオメトリの式をメートルの座標に直す。 */
+function toMeters(frame: Pick<NearbyFrame, 'sx' | 'sy' | 'ox' | 'oy'>, expression: string): string {
+  return `ST_Affine(${expression}, ${frame.sx}, 0, 0, ${frame.sy}, ${frame.ox}, ${frame.oy})`;
+}
+
+/** メートルの座標を度に戻す ([`toMeters`] の逆)。範囲の輪郭を地図に描くのに使う。 */
+function fromMeters(frame: Pick<NearbyFrame, 'sx' | 'sy' | 'ox' | 'oy'>, expression: string): string {
+  return `ST_Affine(${expression}, ${1 / frame.sx}, 0, 0, ${1 / frame.sy}, ${-frame.ox / frame.sx}, ${-frame.oy / frame.sy})`;
+}
+
+/** 先に bbox で絞り、そのうえで距離で判定する WHERE の中身。 */
+function nearbyCondition(frame: NearbyFrame): string {
+  const b = frame.bounds;
+  return `bbox.xmin <= ${b.east} AND bbox.xmax >= ${b.west}
+      AND bbox.ymin <= ${b.north} AND bbox.ymax >= ${b.south}
+      AND ST_DWithin(${toMeters(frame, 'geometry')}, ${frame.origin}, ${frame.distance})`;
+}
+
+/** 周辺の建物。段ごとの件数・名前のある建物・強調に使う形。 */
+interface NearbyBuildings {
+  source: BuildingSource;
+  /** 段の題名 → 件数。段の無い出所では「すべて」の1つ。 */
+  counts: [string, number][];
+  named: string[];
+  features: GeoJSON.Feature[];
+}
+
+/** 強調に描く建物の上限。数えるのは全部だが、描くのはここまで。 */
+const NEARBY_DRAW_LIMIT = 3000;
+
+async function fetchNearbyBuildings(
+  conn: duckdb.AsyncDuckDBConnection,
+  source: BuildingSource,
+  frame: NearbyFrame,
+): Promise<NearbyBuildings | null> {
+  const files = filesInView(source, frame.bounds);
+  if (files.length === 0) return null;
+  const list = files.map((file) => `'${file}'`).join(', ');
+  const tier = source.tiers ? tierExpression(source.tiers) : `'all'`;
+  const where = nearbyCondition(frame);
+  const counted = await conn.query(`
+    SELECT ${tier} AS tier, count(*) AS n,
+      list(DISTINCT name) FILTER (name IS NOT NULL) AS names
+    FROM read_parquet([${list}])
+    WHERE ${where}
+    GROUP BY 1;
+  `);
+  const rows = counted.toArray().map((row) => row.toJSON() as { tier: string; n: number | bigint; names: unknown });
+  if (rows.length === 0) return null;
+  const order = source.tiers?.tiers ?? [{ id: 'all', title: 'すべて', values: [] }];
+  const counts = order.map(
+    (t) => [t.title, Number(rows.find((r) => r.tier === t.id)?.n ?? 0)] as [string, number],
+  );
+  // 名前は重要な段から並べる (公共施設の名前が先に来る)。
+  const named = order.flatMap((t) => {
+    const row = rows.find((r) => r.tier === t.id);
+    return row?.names ? Array.from(row.names as ArrayLike<unknown>, String) : [];
+  });
+
+  const drawn = await conn.query(`
+    SELECT ST_AsGeoJSON(geometry) AS geojson, name, ${tier} AS tier
+    FROM read_parquet([${list}])
+    WHERE ${where}
+    LIMIT ${NEARBY_DRAW_LIMIT};
+  `);
+  const features = drawn.toArray().map((row) => {
+    const r = row.toJSON() as { geojson: string; name: string | null; tier: string };
+    const rank = order.findIndex((t) => t.id === r.tier);
+    return {
+      type: 'Feature' as const,
+      properties: { name: r.name, tierRank: source.tiers ? rank : -1 },
+      geometry: JSON.parse(r.geojson) as GeoJSON.Geometry,
+    };
+  });
+  return { source, counts, named, features };
+}
+
+/**
+ * 周辺にある線や点の名前 (重複なし)。駅・路線・道路・送電線・川で共通。
+ * `nameExpression` は名前を作る式 (駅なら駅名と路線名など)。
+ */
+async function fetchNearbyNames(
+  conn: duckdb.AsyncDuckDBConnection,
+  source: { files: ItemFile[]; coarseLodToleranceM?: number },
+  frame: NearbyFrame,
+  nameExpression: string,
+  limit = 30,
+): Promise<{ names: string[]; total: number }> {
+  const files = filesInView(source, frame.bounds);
+  if (files.length === 0) return { names: [], total: 0 };
+  const list = files.map((file) => `'${file}'`).join(', ');
+  // 粗い段を持つファイルは原寸だけで判定する (粗い段は簡略化して位置がずれている)。
+  const lod = source.coarseLodToleranceM !== undefined ? lodFilter(EXACT_LOD) : '';
+  const result = await conn.query(`
+    SELECT DISTINCT ${nameExpression} AS name
+    FROM read_parquet([${list}])
+    WHERE ${lod} ${nearbyCondition(frame)}
+      AND (${nameExpression}) IS NOT NULL;
+  `);
+  const names = result.toArray().map((row) => String((row.toJSON() as { name: unknown }).name));
+  names.sort((a, b) => a.localeCompare(b, 'ja'));
+  return { names: names.slice(0, limit), total: names.length };
+}
+
+/**
+ * 周辺の人口。**範囲に掛かるメッシュの値の合計** なので、範囲より広い分を含む
+ * (メッシュの一部だけ掛かっても、そのメッシュ全体の人口を数える)。概算として出す。
+ */
+async function fetchNearbyPopulation(
+  conn: duckdb.AsyncDuckDBConnection,
+  source: MeshSource,
+  frame: NearbyFrame,
+): Promise<{ population: number; cells: number } | null> {
+  const files = filesInView(source, frame.bounds);
+  if (files.length === 0) return null;
+  const list = files.map((file) => `'${file}'`).join(', ');
+  const result = await conn.query(`
+    SELECT coalesce(sum(population), 0) AS population, count(*) AS cells
+    FROM read_parquet([${list}])
+    WHERE ${nearbyCondition(frame)};
+  `);
+  const row = result.toArray()[0]?.toJSON() as { population: number | bigint; cells: number | bigint };
+  return { population: Number(row.population), cells: Number(row.cells) };
+}
+
 /** 建物1件分の表示用データ。 */
 interface BuildingFeature {
   geojson: GeoJSON.Geometry;
@@ -1915,6 +2410,8 @@ async function fetchBuildingsInView(
   bounds: ViewBounds,
   filter: BuildingFilter,
   limit: number,
+  /** 間引くときの段の上限 (この順位まで出す)。`undefined` なら全部。 */
+  maxRank?: number,
 ): Promise<BuildingFeature[]> {
   // 表示範囲に重なるファイルだけを渡す。重なるものが無ければ問い合わせない。
   const files = filesInView(source, bounds);
@@ -1927,6 +2424,10 @@ async function fetchBuildingsInView(
     `bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}`,
     `bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}`,
   ];
+  // **段の列で間引く。** 段ごとに行グループが分かれているので、統計で読み飛ばせる。
+  if (maxRank !== undefined && source.tiers?.lod_column) {
+    conditions.unshift(`${source.tiers.lod_column} <= ${maxRank}`);
+  }
   if (source.hasHeight && filter.minHeight > 0) {
     conditions.push(`height >= ${filter.minHeight}`);
   }
@@ -2902,6 +3403,25 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
       // 道路は人口メッシュの上、鉄道の下。**鉄道より下に敷く**のは、
       // 交差点で鉄道の方が見えてほしいため (踏切と立体交差の区別は付かないが、
       // 線路の連続性が切れる方が読みにくい)。
+      // 送電線・川。道路の下に敷く (道路の方が細かく読まれるため)。
+      // 種別ごとに1組。見せ方は `LINE_STYLES` (川は実線、送電線は破線)。
+      for (const kind of LINE_KINDS) {
+        const style = LINE_STYLES[kind];
+        map.addSource(`line-${kind}`, { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
+        map.addLayer({
+          id: `line-${kind}`,
+          type: 'line',
+          source: `line-${kind}`,
+          paint: {
+            'line-color': style.color,
+            'line-width': ['interpolate', ['linear'], ['zoom'], 6, style.width * 0.6, 14, style.width * 1.6],
+            'line-opacity': 0.85,
+            ...(style.dash ? { 'line-dasharray': style.dash } : {}),
+          },
+          layout: { 'line-cap': 'round', 'line-join': 'round' },
+        });
+      }
+
       map.addSource('road', {
         type: 'geojson',
         data: EMPTY_FEATURE_COLLECTION,
@@ -3043,6 +3563,33 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
         },
       });
 
+      // 周辺検索の範囲 (起点から○m) と、範囲に入った建物。ハイライトの下に敷く。
+      map.addSource('nearby-zone', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
+      map.addLayer({
+        id: 'nearby-zone-fill',
+        type: 'fill',
+        source: 'nearby-zone',
+        paint: { 'fill-color': '#ff6600', 'fill-opacity': 0.08 },
+      });
+      map.addLayer({
+        id: 'nearby-zone-line',
+        type: 'line',
+        source: 'nearby-zone',
+        paint: { 'line-color': '#ff6600', 'line-width': 1.5, 'line-dasharray': [2, 1] },
+      });
+      map.addSource('nearby-hits', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
+      map.addLayer({
+        id: 'nearby-hits',
+        type: 'fill',
+        source: 'nearby-hits',
+        // 重要度で色分けと同じ色。段の無い出所は橙。
+        paint: {
+          'fill-color': ['match', ['get', 'tierRank'], 0, '#c0392b', 1, '#e09a3e', 2, '#8a94a0', '#ff6600'],
+          'fill-opacity': 0.75,
+          'fill-outline-color': '#ffffff',
+        },
+      });
+
       map.addSource('highlight', {
         type: 'geojson',
         data: EMPTY_FEATURE_COLLECTION,
@@ -3107,6 +3654,12 @@ async function main() {
   const resultsEl = document.querySelector<HTMLUListElement>('#results')!;
   const clearButton = document.querySelector<HTMLButtonElement>('#clear-button')!;
   const pickButton = document.querySelector<HTMLButtonElement>('#pick-location')!;
+  const nearbyButton = document.querySelector<HTMLButtonElement>('#nearby-button')!;
+  const nearbyPanel = document.querySelector<HTMLDivElement>('#nearby-panel')!;
+  const nearbyDistance = document.querySelector<HTMLSelectElement>('#nearby-distance')!;
+  const nearbyOriginEl = document.querySelector<HTMLParagraphElement>('#nearby-origin')!;
+  const nearbyResultsEl = document.querySelector<HTMLDivElement>('#nearby-results')!;
+  const nearbyFromSearch = document.querySelector<HTMLButtonElement>('#nearby-from-search')!;
   const loadingEl = document.querySelector<HTMLDivElement>('#loading')!;
   const loadingMessageEl = document.querySelector<HTMLParagraphElement>('#loading-message')!;
   const busyEl = document.querySelector<HTMLDivElement>('#busy')!;
@@ -3181,6 +3734,8 @@ async function main() {
   // 準備が終わるまでは操作できないことが分かるようにしておく。
   loadingMessageEl.textContent = '地図とデータベースを準備中…';
   let conn: duckdb.AsyncDuckDBConnection;
+  let exportParquet: (select: string, kv: Record<string, string>) => Promise<Uint8Array>;
+  let registerFiles: (files: string[]) => Promise<void>;
   let map: MapLibreMap;
   let buildingSources: BuildingSource[] = [];
   let meshSources: MeshSource[] = [];
@@ -3188,6 +3743,7 @@ async function main() {
   let railwayInstitutionTypes: string[] = [];
   let railwayVintage: string | undefined;
   let roadSource: RoadSource | undefined;
+  let lineSources: LineSource[] = [];
   let roadClasses: string[] = [];
   let roadVintage: string | undefined;
   let ensureRoutes: (() => Promise<void>) | undefined;
@@ -3203,12 +3759,15 @@ async function main() {
       initMap(collections),
     ]);
     conn = db.conn;
+    exportParquet = db.exportParquet;
+    registerFiles = db.registerFiles;
     buildingSources = db.buildingSources;
     meshSources = db.meshSources;
     railwaySources = db.railwaySources;
     railwayInstitutionTypes = db.railwayInstitutionTypes;
     railwayVintage = db.railwayVintage;
     roadSource = db.roadSource;
+    lineSources = db.lineSources;
     roadClasses = db.roadClasses;
     roadVintage = db.roadVintage;
     ensureRoutes = db.ensureRoutes;
@@ -3236,6 +3795,7 @@ async function main() {
   void ensureSpatial().catch((e: unknown) => console.error('[warmup] spatial', e));
   input.disabled = false;
   pickButton.disabled = false;
+  nearbyButton.disabled = false;
   input.focus();
 
   // 地図の切り替え。出典も maxzoom も tileSize も3種で同じなので、
@@ -3363,7 +3923,9 @@ async function main() {
             result.operator,
             result.bbox,
           );
-          await setSourceData('highlight', toMultiLineString(parts));
+          const geometry = toMultiLineString(parts);
+          await setSourceData('highlight', geometry);
+          if (geometry) rememberSelection(result.label, geometry);
         });
       }
       fitToBbox(result.bbox);
@@ -3378,7 +3940,9 @@ async function main() {
         await busy('道路を読み込み中…', async () => {
           await ensureRoutes();
           const parts = await fetchRouteGeometry(conn, result.routeName, result.bbox);
-          await setSourceData('highlight', toMultiLineString(parts));
+          const geometry = toMultiLineString(parts);
+          await setSourceData('highlight', geometry);
+          if (geometry) rememberSelection(result.label, geometry);
         });
       }
       fitToBbox(result.bbox);
@@ -3387,13 +3951,9 @@ async function main() {
 
     // 地名(代表点しか無い)と駅はその地点へ飛ぶ。ポリゴンは消す。
     if (result.kind === 'oaza' || result.kind === 'station') {
-      await Promise.all([
-        setSourceData('highlight', null),
-        setSourceData('selected-point', {
-          type: 'Point',
-          coordinates: [result.lon, result.lat],
-        }),
-      ]);
+      const point: GeoJSON.Point = { type: 'Point', coordinates: [result.lon, result.lat] };
+      await Promise.all([setSourceData('highlight', null), setSourceData('selected-point', point)]);
+      rememberSelection(result.label, point);
       map.flyTo({ center: [result.lon, result.lat], zoom: 16, duration: 1500 });
       return;
     }
@@ -3419,6 +3979,7 @@ async function main() {
       setSourceData('highlight', polygon.geojson),
       setSourceData('selected-point', null),
     ]);
+    rememberSelection(result.label, polygon.geojson);
     map.fitBounds(
       [
         [polygon.bbox[0], polygon.bbox[1]],
@@ -3550,6 +4111,20 @@ async function main() {
   // **行はCollectionなので、状態もCollection IDで持つ。** 以前は設定パネルの
   // 要約を監視して行へ写していたが、建物がPLATEAUとOvertureの2行になると
   // 要約1つでは足りない。
+  /** いまの表示範囲。傾けたときの中心は bounds の中心とずれるので、地図から直接もらう。 */
+  const currentBounds = (): ViewBounds => {
+    const b = map.getBounds();
+    const c = map.getCenter();
+    return {
+      west: b.getWest(),
+      south: b.getSouth(),
+      east: b.getEast(),
+      north: b.getNorth(),
+      centerLon: c.lng,
+      centerLat: c.lat,
+    };
+  };
+
   const layerStatus = new Map<string, string>();
   const setLayerStatus = (id: string, text: string) => {
     layerStatus.set(id, text);
@@ -3613,73 +4188,63 @@ async function main() {
       return;
     }
 
-    const zoomedOut = map.getZoom() < detail.buildingsMinZoom;
+    const zoom = map.getZoom();
     const token = ++buildingsToken;
-    const b = map.getBounds();
-    const c = map.getCenter();
-    const bounds: ViewBounds = {
-      west: b.getWest(),
-      south: b.getSouth(),
-      east: b.getEast(),
-      north: b.getNorth(),
-      centerLon: c.lng,
-      centerLat: c.lat,
-    };
+    const bounds = currentBounds();
 
     // 状態は最後にまとめて出す。途中で打ち切ったとき (地図が動いた) に
     // 片方の出所だけ新しい件数が出る、という食い違いを作らない。
     const statuses: [BuildingSource, string][] = [];
 
-    // **引いた表示では整備範囲を出す。**
-    //
-    // 建物そのものを出す道は無い — 簡略化はフットプリントが1px未満で効かず、
-    // 高さで選ぶのは基準に意味を持たせられなかった。代わりに
-    // 「**どこまで整備されているか**」を1kmのメッシュで見せる。
-    if (zoomedOut) {
-      await mapSource.setData(EMPTY_FEATURE_COLLECTION);
-      const features: GeoJSON.Feature[] = [];
-      for (const source of visible) {
-        if (!source.coverage) {
-          // 整備範囲を持たない出所 (Overture) は、引いた表示では何も描かない。
-          // 以前は収録範囲を枠で示せたが、やめた — どこにあるかは一覧の
-          // 「この範囲には無い」が言う。
-          //
-          // **どこまで寄れば出るかを数字で言う。**「拡大すると」だけだと、
-          // どれだけ動かせばいいのか分からない。
-          statuses.push([source, `ズーム${detail.buildingsMinZoom}まで寄ると出ます`]);
-          continue;
-        }
+    // **出所ごとに、このズームでどこまで出すかを決める** ([`buildingDepth`])。
+    // 全部 / 重要な段だけ (間引き) / 整備範囲のメッシュ、の3通り。
+    const depths = new Map(visible.map((source) => [source, buildingDepth(source, zoom)]));
 
-        const area = source.coverage;
-        // 配られているより細かくはできない。引くほど粗く束ねる。
-        const digits = Math.min(meshDigits(map.getZoom()), area.meshDigits);
-        const cells = await busy('整備範囲を読み込み中…', async () => {
-          await area.ensure();
-          return fetchCoverageInView(conn, area, bounds, digits);
-        });
-        if (token !== buildingsToken) return;
-
-        features.push(...coverageFeatureCollection(cells).features);
-        const buildings = cells.reduce((total, cell) => total + cell.buildings, 0);
-        statuses.push([
-          source,
-          `整備範囲 ${cells.length.toLocaleString()} メッシュ` +
-            ` (${MESH_SIZE_LABELS[digits] ?? `${digits}桁`}) · ` +
-            `建物 ${buildings.toLocaleString()} 棟 · ズーム${detail.buildingsMinZoom}から建物そのもの`,
-        ]);
+    // **引いた表示では整備範囲を出す** (段で間引いても出せないほど引いたとき)。
+    // 建物そのものは、簡略化はフットプリントが1px未満で効かず、高さで選ぶのは
+    // 基準に意味を持たせられなかった。代わりに「どこまで整備されているか」を出す。
+    const coverageFeatures: GeoJSON.Feature[] = [];
+    for (const source of visible) {
+      if (depths.get(source) !== null) continue;
+      if (!source.coverage) {
+        // 整備範囲を持たない出所は、引いた表示では何も描かない。
+        // **どこまで寄れば出るかを数字で言う。**
+        statuses.push([source, `ズーム${firstVisibleZoom(source)}まで寄ると出ます`]);
+        continue;
       }
-      await coverage?.setData({ type: 'FeatureCollection', features });
-      for (const [source, text] of statuses) showBuildingStatus(source, text);
-      return;
+      const area = source.coverage;
+      // 配られているより細かくはできない。引くほど粗く束ねる。
+      const digits = Math.min(meshDigits(zoom), area.meshDigits);
+      const cells = await busy('整備範囲を読み込み中…', async () => {
+        await area.ensure();
+        return fetchCoverageInView(conn, area, bounds, digits);
+      });
+      if (token !== buildingsToken) return;
+      coverageFeatures.push(...coverageFeatureCollection(cells).features);
+      const buildings = cells.reduce((total, cell) => total + cell.buildings, 0);
+      statuses.push([
+        source,
+        `整備範囲 ${cells.length.toLocaleString()} メッシュ` +
+          ` (${MESH_SIZE_LABELS[digits] ?? `${digits}桁`}) · ` +
+          `建物 ${buildings.toLocaleString()} 棟 · ズーム${firstVisibleZoom(source)}から建物そのもの`,
+      ]);
     }
+    await coverage?.setData({ type: 'FeatureCollection', features: coverageFeatures });
 
-    // 寄ったら枠もメッシュも消す。実物が出るので要らない。
-    await coverage?.setData(EMPTY_FEATURE_COLLECTION);
     const features: GeoJSON.Feature[] = [];
     for (const source of visible) {
+      const depth = depths.get(source);
+      if (depth === null || depth === undefined) continue;
       const rows = await busy('建物を読み込み中…', async () => {
         await source.ensure();
-        return fetchBuildingsInView(conn, source, bounds, filterOf(source), detail.buildingsLimit);
+        return fetchBuildingsInView(
+          conn,
+          source,
+          bounds,
+          filterOf(source),
+          detail.buildingsLimit,
+          depth === 'all' ? undefined : depth,
+        );
       });
       if (token !== buildingsToken) return;
 
@@ -3707,11 +4272,45 @@ async function main() {
         rows.length >= detail.buildingsLimit
           ? `${detail.buildingsLimit}件以上 (表示上限)`
           : `${rows.length}件`;
-      statuses.push([source, count + sourceLodNote(source, bounds)]);
+      // **間引いているときは、どこまで出しているかを言う。** 黙って減らすと
+      // 「住宅が無い」と読まれてしまう。
+      const thinned =
+        depth === 'all'
+          ? ''
+          : ` · ${source
+              .tiers!.tiers.slice(0, depth + 1)
+              .map((t) => t.title)
+              .join('・')}のみ (ズーム${detail.buildingsMinZoom}ですべて)`;
+      statuses.push([source, count + thinned + sourceLodNote(source, bounds)]);
     }
     await mapSource.setData({ type: 'FeatureCollection', features });
     for (const [source, text] of statuses) showBuildingStatus(source, text);
   };
+
+  /**
+   * このズームで建物をどこまで出すか。`'all'` = 全部、数字 = その順位の段まで (間引き)、
+   * `null` = 建物は出さない (整備範囲を出すか、寄れと言う)。
+   *
+   * **1ズーム引くごとに1段減らす。** 画面の面積は1ズームで4倍になるので、
+   * 段を1つ落とすことで読む量を抑える。実測 (東京駅・1280×720):
+   * z13 で公共施設だけなら1.0万棟・1.9MB (全部なら22万棟・31MB)、
+   * z14 で商業・業務までなら1.7万棟・2.5MB。
+   * 段の列 (`lod_column`) を持たない出所は間引けないので、全部か無しか。
+   */
+  const buildingDepth = (source: BuildingSource, zoom: number): 'all' | number | null => {
+    const steps = Math.ceil(detail.buildingsMinZoom - zoom);
+    if (steps <= 0) return 'all';
+    const tiers = source.tiers;
+    if (!tiers?.lod_column) return null;
+    const rank = tiers.tiers.length - 1 - steps;
+    return rank >= 0 ? rank : null;
+  };
+
+  /** その出所の建物が出始めるズーム (間引いた段を含む)。 */
+  const firstVisibleZoom = (source: BuildingSource): number =>
+    source.tiers?.lod_column
+      ? detail.buildingsMinZoom - (source.tiers.tiers.length - 1)
+      : detail.buildingsMinZoom;
 
   const requestRefresh = () => {
     refreshBuildings().catch((e: unknown) => {
@@ -4128,6 +4727,66 @@ async function main() {
     });
   };
 
+  // ---- 送電線・川 (名前と種別だけの線) -----------------------------------------
+  //
+  // 道路と同じく**ズームで隠さない**。引いた表示では粗い段 (名前・種別・タイルで
+  // 束ねて簡略化したもの) を引く。上限は道路と共有する (同じ太さの線なので)。
+  const lineTokens = new Map<string, number>();
+  const lineShown = new Set<string>();
+
+  const refreshLine = async (source: LineSource) => {
+    const mapSource = map.getSource(`line-${source.kind}`) as GeoJSONSource | undefined;
+    if (!mapSource) return;
+    if (!isLayerVisible(source.id)) {
+      if (lineShown.has(source.id)) {
+        await mapSource.setData(EMPTY_FEATURE_COLLECTION);
+        lineShown.delete(source.id);
+      }
+      setLayerStatus(source.id, '');
+      return;
+    }
+    const zoom = map.getZoom();
+    const lod = lodForZoom(source, zoom);
+    const token = (lineTokens.get(source.id) ?? 0) + 1;
+    lineTokens.set(source.id, token);
+    const features = await busy(`${source.title}を読み込み中…`, async () => {
+      await source.ensure();
+      return fetchLinesInView(conn, source, currentBounds(), detail.roadLimit, lod);
+    });
+    if (lineTokens.get(source.id) !== token) return;
+
+    lineShown.add(source.id);
+    await mapSource.setData({
+      type: 'FeatureCollection',
+      features: features.map((feature) => ({
+        type: 'Feature',
+        properties: {
+          name: feature.name,
+          lineClass: LINE_CLASS_LABELS[feature.lineClass] ?? feature.lineClass,
+          origin: source.id,
+        },
+        geometry: feature.geojson,
+      })),
+    });
+    const capped = features.length >= detail.roadLimit;
+    setLayerStatus(
+      source.id,
+      features.length === 0
+        ? 'この範囲にありません'
+        : `${features.length.toLocaleString()} ${lod === COARSE_LOD ? '本' : '区間'}` +
+            lodNote(source, lod) +
+            (capped ? ' (表示上限)' : ''),
+    );
+  };
+
+  const requestLineRefresh = (source: LineSource) => () => {
+    refreshLine(source).catch((e: unknown) => {
+      console.error('[line] failed', source.id, e);
+      showFailure(`${source.title}の読み込みに失敗しました`);
+    });
+  };
+  for (const source of lineSources) map.on('moveend', requestLineRefresh(source));
+
   const requestRailwayRefresh = () => {
     refreshRailway().catch((e: unknown) => {
       console.error('[railway] failed', e);
@@ -4322,6 +4981,15 @@ async function main() {
         // 鉄道と同じく「寄る」ボタンは出さない。
         layers.push({ ...base, settings: roadSectionEl, refresh: requestRoadRefresh });
         break;
+      case 'power_line':
+      case 'waterway': {
+        const source = lineSources.find((s) => s.id === collection.id);
+        if (!source) break;
+        // 絞り込みが無いので、設定の中身は空 (⚙ ではCollectionの中身だけが出る)。
+        const settings = document.createElement('div');
+        layers.push({ ...base, settings, refresh: requestLineRefresh(source) });
+        break;
+      }
       default:
         // 検索の裏方と整備範囲は行にしない (「検索できるもの」と建物の ⚙ に出る)。
         break;
@@ -4364,6 +5032,235 @@ async function main() {
    * 絞り込みだけでは、行の裏にあるのがどのCollectionで、何ファイルあって、
    * 元のJSONはどこか、が画面から辿れない。
    */
+  /** 切り出しで書き出す行の上限。DuckDB-WASM のメモリの中にファイルを作るため。 */
+  const MAX_EXPORT_ROWS = 300_000;
+
+  /**
+   * **この範囲を取得** — 3通り。
+   *
+   * 1. **この範囲の GeoParquet**: 表示範囲で切り出して保存する (ブラウザの中で書く)。
+   *    出典と規約を KV メタデータに入れて、切り出したファイルにも条件が付いて回るようにする
+   * 2. **ファイルごと**: 範囲に重なるファイル (配信している GeoParquet) と、その配布元
+   * 3. **CityGML** (PLATEAUだけ): 公式の配信サービスで、表示範囲のメッシュ単位のGMLを
+   *    直接リンクし、付属ファイル込みのZIPにもまとめられる (pack)
+   *
+   * 開いたときの表示範囲で作る (開くまで何も読まない)。
+   */
+  const downloadSection = (collection: Collection): HTMLElement => {
+    const section = document.createElement('details');
+    section.className = 'download-section';
+    const summary = document.createElement('summary');
+    summary.textContent = 'この範囲を取得';
+    const body = document.createElement('div');
+    section.append(summary, body);
+    section.addEventListener('toggle', () => {
+      if (section.open) void fillDownloads(collection, body);
+    });
+    return section;
+  };
+
+  const fillDownloads = async (collection: Collection, body: HTMLElement) => {
+    body.replaceChildren(document.createTextNode('範囲のファイルを調べています…'));
+    const bounds = currentBounds();
+    const items = (await collection.items()).filter(({ feature }) => {
+      const bbox = feature.bbox?.length === 4 ? (feature.bbox as Bbox) : null;
+      return !bbox || bboxOverlaps(bbox, bounds);
+    });
+    const files = items.map(itemFile);
+    body.replaceChildren();
+    if (files.length === 0) {
+      body.append('この範囲にはファイルがありません');
+      return;
+    }
+
+    // 1. この範囲の GeoParquet。
+    const status = document.createElement('p');
+    status.className = 'download-status';
+    const clip = document.createElement('button');
+    clip.type = 'button';
+    clip.className = 'download-clip';
+    clip.textContent = 'この範囲を GeoParquet で保存';
+    clip.addEventListener('click', () => {
+      void (async () => {
+        clip.disabled = true;
+        try {
+          status.textContent = '数えています…';
+          await ensureSpatial();
+          // 表示で使っていないファイルもあるので登録する (済んでいるものは何もしない)。
+          await registerFiles(files);
+          const list = files.map((file) => `'${file}'`).join(', ');
+          // 線の粗い段 (統合・簡略化した行) は**原寸と重なる複製**なので書き出さない。
+          // 建物の段 (lod) は行の振り分けで重複は無いが、配信の都合の列なので外す。
+          const exact = collection.coarseLodToleranceM !== undefined ? `lod = ${EXACT_LOD} AND` : '';
+          const exclude = collection.columns.has('lod') ? ' EXCLUDE (lod)' : '';
+          const where = `${exact} bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}
+            AND bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}`;
+          const counted = await conn.query(`SELECT count(*) AS n FROM read_parquet([${list}]) WHERE ${where};`);
+          const rows = Number((counted.toArray()[0].toJSON() as { n: number | bigint }).n);
+          if (rows === 0) {
+            status.textContent = 'この範囲にはありません';
+            return;
+          }
+          if (rows > MAX_EXPORT_ROWS) {
+            status.textContent = `${rows.toLocaleString()} 件あり、多すぎます (上限 ${MAX_EXPORT_ROWS.toLocaleString()} 件)。寄ってから保存してください`;
+            return;
+          }
+          status.textContent = `${rows.toLocaleString()} 件を書き出しています…`;
+          const bytes = await exportParquet(`SELECT *${exclude} FROM read_parquet([${list}]) WHERE ${where}`, {
+            'duck:attribution': collection.attribution,
+            'duck:terms': collection.terms ? `${collection.terms.name} ${collection.terms.url}` : collection.license,
+            'duck:source': `${collection.id} (${dataUrl(collection.path)})`,
+            'duck:clip_bbox': `${bounds.west},${bounds.south},${bounds.east},${bounds.north}`,
+            ...(collection.vintage ? { 'duck:vintage': collection.vintage } : {}),
+          });
+          saveBytes(bytes, `${collection.id}_${new Date().toISOString().slice(0, 10)}.parquet`);
+          status.textContent = `${rows.toLocaleString()} 件・${formatBytes(bytes.length)} を保存しました (出典と規約をファイルのメタデータに入れています)`;
+        } catch (e) {
+          console.error('[download] failed', e);
+          status.textContent = '書き出せませんでした';
+        } finally {
+          clip.disabled = false;
+        }
+      })();
+    });
+    body.append(clip, status);
+
+    // 2. ファイルごと (配信している GeoParquet と配布元)。
+    const fileList = document.createElement('ul');
+    fileList.className = 'download-files';
+    const shown = items.slice(0, 12);
+    for (const item of shown) {
+      const li = document.createElement('li');
+      const ours = document.createElement('a');
+      ours.href = dataUrl(itemFile(item));
+      ours.textContent = item.feature.id;
+      ours.download = '';
+      li.append(ours);
+      const via = item.feature.links?.find((link) => link.rel === 'via')?.href ?? collection.via;
+      if (via) li.append(' · ', externalLink(via, '配布元'));
+      fileList.append(li);
+    }
+    const fileHead = document.createElement('p');
+    fileHead.className = 'download-head';
+    fileHead.textContent =
+      `ファイルごと (${items.length.toLocaleString()} 件` +
+      (items.length > shown.length ? `、先頭 ${shown.length} 件を表示` : '') +
+      ')';
+    body.append(fileHead, fileList);
+
+    // 3. CityGML (PLATEAU だけ)。
+    if (collection.kind === 'plateau_buildings') body.append(cityGmlSection(bounds));
+  };
+
+  /** CityGML の取得。メッシュ単位の直リンクと、公式 pack の ZIP。 */
+  const cityGmlSection = (bounds: ViewBounds): HTMLElement => {
+    const box = document.createElement('div');
+    box.className = 'citygml-section';
+    const head = document.createElement('p');
+    head.className = 'download-head';
+    head.textContent = 'CityGML (PLATEAU配信サービス)';
+    const find = document.createElement('button');
+    find.type = 'button';
+    find.className = 'citygml-find';
+    find.textContent = 'この範囲の CityGML を探す';
+    const result = document.createElement('div');
+    box.append(head, find, result);
+
+    find.addEventListener('click', () => {
+      void (async () => {
+        const codes = meshCodesInView(bounds);
+        if (!codes) {
+          result.textContent = '範囲が広すぎます。寄ってから探してください';
+          return;
+        }
+        find.disabled = true;
+        result.textContent = '探しています…';
+        try {
+          const files = await fetchCityGmlFiles(codes);
+          renderCityGml(result, files);
+        } catch (e) {
+          console.error('[citygml] failed', e);
+          result.textContent = 'PLATEAU配信サービスから取れませんでした';
+        } finally {
+          find.disabled = false;
+        }
+      })();
+    });
+    return box;
+  };
+
+  const renderCityGml = (container: HTMLElement, files: CityGmlFile[]) => {
+    container.replaceChildren();
+    if (files.length === 0) {
+      container.textContent = 'この範囲にはありません';
+      return;
+    }
+    const types = [...new Set(files.map((f) => f.type))].sort(
+      (a, b) => (a === 'bldg' ? -1 : b === 'bldg' ? 1 : a.localeCompare(b)),
+    );
+    const select = document.createElement('select');
+    select.className = 'citygml-type';
+    for (const type of types) {
+      const option = document.createElement('option');
+      option.value = type;
+      const count = files.filter((f) => f.type === type).length;
+      option.textContent = `${CITYGML_TYPES[type] ?? type} (${type}) · ${count} ファイル`;
+      select.append(option);
+    }
+    const list = document.createElement('ul');
+    list.className = 'citygml-files';
+    const pack = document.createElement('button');
+    pack.type = 'button';
+    pack.className = 'citygml-pack';
+    const packStatus = document.createElement('p');
+    packStatus.className = 'download-status';
+
+    const show = () => {
+      const chosen = files.filter((f) => f.type === select.value);
+      const total = chosen.reduce((sum, f) => sum + (f.fileSize ?? 0), 0);
+      list.replaceChildren(
+        ...chosen.map((file) => {
+          const li = document.createElement('li');
+          const link = externalLink(file.url, `${file.code}`);
+          li.append(
+            link,
+            ` · LOD${file.maxLod}` +
+              (file.features ? ` · ${file.features.toLocaleString()} 件` : '') +
+              (file.fileSize ? ` · ${formatBytes(file.fileSize)}` : ''),
+          );
+          return li;
+        }),
+      );
+      pack.textContent = `ZIPにまとめる (コードリスト・テクスチャ込み${total ? `、約 ${formatBytes(total)}` : ''})`;
+      packStatus.textContent = '';
+    };
+    select.addEventListener('change', show);
+    pack.addEventListener('click', () => {
+      void (async () => {
+        const urls = files.filter((f) => f.type === select.value).map((f) => f.url);
+        pack.disabled = true;
+        packStatus.textContent = 'PLATEAU配信サービスにまとめてもらっています…';
+        try {
+          const zip = await packCityGml(urls, (progress) => {
+            packStatus.textContent = `まとめています… ${Math.round(progress * 100)}%`;
+          });
+          packStatus.replaceChildren(externalLink(zip, 'ZIPをダウンロード'));
+        } catch (e) {
+          console.error('[citygml pack] failed', e);
+          packStatus.textContent = 'まとめられませんでした';
+        } finally {
+          pack.disabled = false;
+        }
+      })();
+    });
+    show();
+    const note = document.createElement('p');
+    note.className = 'download-note';
+    note.textContent =
+      'GMLはメッシュ単位の原典そのもの。用途などのコードを読むにはコードリストが要るので、変換ツールに渡すならZIPにまとめたものを使ってください。';
+    container.append(select, list, pack, packStatus, note);
+  };
+
   const collectionCard = (collection: Collection): HTMLElement => {
     const card = document.createElement('div');
     card.className = 'collection-card';
@@ -4425,6 +5322,9 @@ async function main() {
     columns.append(summary, list);
 
     card.append(head, description, facts, columns);
+    if (collection.itemsPath && collection.columns.has('geometry')) {
+      card.append(downloadSection(collection));
+    }
     return card;
   };
 
@@ -4815,18 +5715,39 @@ async function main() {
   // 待ち受け中は十字、建物の上ではポインタ。どちらも同じ canvas の style を
   // 触るので、条件をここに集めて一箇所から書く。
   let picking = false;
+  /** 周辺検索の待ち受け中。📍と同じく、押してから地図をクリックする。 */
+  let nearbyMode = false;
   let hoveringBuilding = false;
   const updateCursor = () => {
-    map.getCanvas().style.cursor = picking ? 'crosshair' : hoveringBuilding ? 'pointer' : '';
+    map.getCanvas().style.cursor =
+      picking || nearbyMode ? 'crosshair' : hoveringBuilding ? 'pointer' : '';
   };
 
+  // 📍と◎は**どちらか一方だけ**。両方が待ち受けていると、1回のクリックで
+  // 判定と周辺検索が同時に走って、どちらの結果か分からなくなる。
   const setPicking = (on: boolean) => {
     picking = on;
     pickButton.setAttribute('aria-pressed', String(on));
+    if (on && nearbyMode) setNearbyMode(false);
+    updateCursor();
+  };
+  const setNearbyMode = (on: boolean) => {
+    nearbyMode = on;
+    nearbyButton.setAttribute('aria-pressed', String(on));
+    if (on && picking) setPicking(false);
+    // **押したらパネルを出して、何をすればいいかを言う。** 検索で選んだものがあれば、
+    // 地図をクリックせずにそれを起点にもできる。
+    if (on) {
+      nearbyPanel.hidden = false;
+      nearbyOriginEl.textContent = '地図の点・線・建物をクリックしてください';
+      nearbyResultsEl.replaceChildren();
+      nearbyFromSearch.hidden = lastSelection === null;
+    }
     updateCursor();
   };
 
   pickButton.addEventListener('click', () => setPicking(!picking));
+  nearbyButton.addEventListener('click', () => setNearbyMode(!nearbyMode));
 
   // Escの出口を1本にまとめる。押している最中なら解除が先、そうでなければ
   // 出ている結果を消す。window で拾うのは、判定した直後はフォーカスが地図側にあり、
@@ -4837,8 +5758,253 @@ async function main() {
       setPicking(false);
       return;
     }
+    if (nearbyMode) {
+      setNearbyMode(false);
+      return;
+    }
     clearSearch();
   });
+
+  // ---- 周辺検索 ---------------------------------------------------------------
+  //
+  // 起点は4通り: 検索で選んだもの / 地図上の点 / 地図上の線 / 建物。
+  // 地図上のものは◎を押してからクリックする。何も無いところなら点、
+  // 線や建物の上ならそれを起点にする。
+  let lastSelection: NearbyOrigin | null = null;
+  let currentOrigin: NearbyOrigin | null = null;
+  let nearbyToken = 0;
+
+  /** 検索で選んだものを覚えておく。周辺検索のパネルから起点にできる。 */
+  const rememberSelection = (label: string, geometry: GeoJSON.Geometry) => {
+    lastSelection = { label, geometry };
+    nearbyFromSearch.hidden = false;
+  };
+
+  /** 起点に使える地図上のレイヤーと、その呼び名・名前の属性。上ほど優先。 */
+  const ORIGIN_LAYERS: { layer: string; label: string; nameKey: string | null }[] = [
+    { layer: 'buildings-3d', label: '建物', nameKey: null },
+    { layer: 'line-power_line', label: '送電線', nameKey: 'name' },
+    { layer: 'line-waterway', label: '川', nameKey: 'name' },
+    { layer: 'railway-station', label: '駅', nameKey: 'stationName' },
+    { layer: 'railway-line', label: '鉄道', nameKey: 'lineName' },
+    { layer: 'road-line', label: '道路', nameKey: 'roadName' },
+  ];
+
+  /**
+   * クリックした場所の起点を決める。**線は同じ名前の区間をまとめて起点にする**
+   * (川や送電線は区間に切れているので、1区間だけだと「川沿い」にならない)。
+   * 名前は表示中のデータから集めるので、画面に出ている範囲の分になる。
+   */
+  const originAt = async (
+    point: { x: number; y: number },
+    lngLat: { lng: number; lat: number },
+  ): Promise<NearbyOrigin> => {
+    const layers = ORIGIN_LAYERS.filter(({ layer }) => map.getLayer(layer));
+    const hits = map.queryRenderedFeatures([point.x, point.y], {
+      layers: layers.map(({ layer }) => layer),
+    });
+    const hit = hits[0];
+    const spec = hit && layers.find(({ layer }) => layer === hit.layer.id);
+    if (!hit || !spec) {
+      return {
+        label: `地図上の点 (${lngLat.lat.toFixed(5)}, ${lngLat.lng.toFixed(5)})`,
+        geometry: { type: 'Point', coordinates: [lngLat.lng, lngLat.lat] },
+      };
+    }
+    if (spec.nameKey === null) {
+      return {
+        label: `${spec.label} ${(hit.properties.name as string | null) ?? '(名称なし)'}`,
+        geometry: hit.geometry,
+      };
+    }
+    const name = hit.properties[spec.nameKey] as string | null;
+    if (!name) return { label: `${spec.label} (名前なし)`, geometry: hit.geometry };
+    const data = await (map.getSource(hit.source) as GeoJSONSource).getData();
+    const lines: GeoJSON.Position[][] = [];
+    if (data.type === 'FeatureCollection') {
+      for (const feature of data.features) {
+        if (feature.properties?.[spec.nameKey] !== name) continue;
+        const g = feature.geometry;
+        if (g.type === 'LineString') lines.push(g.coordinates);
+        if (g.type === 'MultiLineString') lines.push(...g.coordinates);
+      }
+    }
+    return {
+      label: `${spec.label} ${name}`,
+      geometry: lines.length > 0 ? { type: 'MultiLineString', coordinates: lines } : hit.geometry,
+    };
+  };
+
+  map.on('click', (e) => {
+    if (!nearbyMode) return;
+    setNearbyMode(false);
+    void originAt(e.point, e.lngLat).then(runNearby);
+  });
+
+  const clearNearby = () => {
+    if (nearbyMode) setNearbyMode(false);
+    nearbyToken++;
+    currentOrigin = null;
+    nearbyPanel.hidden = true;
+    Promise.all([setSourceData('nearby-zone', null), setSourceData('nearby-hits', null)]).catch(
+      (e: unknown) => console.error('[nearby] clear failed', e),
+    );
+  };
+
+  /** 周辺を調べて、パネルと地図に出す。 */
+  const runNearby = async (origin: NearbyOrigin) => {
+    currentOrigin = origin;
+    nearbyPanel.hidden = false;
+    nearbyFromSearch.hidden = lastSelection === null;
+    const distance = Number(nearbyDistance.value);
+    nearbyOriginEl.textContent = `起点: ${origin.label} (${distance} m 以内)`;
+    nearbyResultsEl.textContent = '調べています…';
+    const token = ++nearbyToken;
+    const frame = nearbyFrame(origin, distance, currentBounds());
+
+    try {
+      const result = await busy('周辺を調べています…', async () => {
+        await ensureSpatial();
+        const zone = await conn.query(
+          `SELECT ST_AsGeoJSON(${fromMeters(frame, `ST_Buffer(${frame.origin}, ${distance})`)}) AS g;`,
+        );
+        const zoneGeometry = JSON.parse(
+          (zone.toArray()[0].toJSON() as { g: string }).g,
+        ) as GeoJSON.Geometry;
+
+        const buildings: NearbyBuildings[] = [];
+        for (const source of buildingSources) {
+          await source.ensure();
+          const found = await fetchNearbyBuildings(conn, source, frame);
+          if (found) buildings.push(found);
+        }
+        const names: [string, { names: string[]; total: number }][] = [];
+        for (const source of railwaySources) {
+          await source.ensure();
+          const expression =
+            source.kind === 'railway_station'
+              ? `station_name || '駅 (' || line_name || ')'`
+              : `line_name || ' (' || operator || ')'`;
+          names.push([
+            source.kind === 'railway_station' ? '駅' : '鉄道',
+            await fetchNearbyNames(conn, source, frame, expression),
+          ]);
+        }
+        if (roadSource) {
+          await roadSource.ensure();
+          names.push([
+            '道路',
+            await fetchNearbyNames(
+              conn,
+              roadSource,
+              frame,
+              `coalesce(nullif(array_to_string(route_names, '・'), ''), road_name)`,
+            ),
+          ]);
+        }
+        for (const source of lineSources) {
+          await source.ensure();
+          names.push([source.title, await fetchNearbyNames(conn, source, frame, 'name')]);
+        }
+        // 人口は**いちばん細かいメッシュ**で数える (粗いと範囲からはみ出す分が増える)。
+        let population: { population: number; cells: number; label: string } | null = null;
+        for (const source of [...meshSources].sort((a, b) => b.digits - a.digits)) {
+          if (!source.bbox || !bboxOverlaps(source.bbox, frame.bounds)) continue;
+          await source.ensure();
+          const found = await fetchNearbyPopulation(conn, source, frame);
+          if (found && found.cells > 0) {
+            population = { ...found, label: MESH_SIZE_LABELS[source.digits] ?? `${source.digits}桁` };
+            break;
+          }
+        }
+        return { zoneGeometry, buildings, names, population };
+      });
+      if (token !== nearbyToken) return;
+
+      await setSourceData('nearby-zone', result.zoneGeometry);
+      // 建物は1棟ずつ段の色で塗るので、属性ごと FeatureCollection で渡す。
+      const hitSource = map.getSource('nearby-hits') as GeoJSONSource | undefined;
+      await hitSource?.setData({
+        type: 'FeatureCollection',
+        features: result.buildings.flatMap((b) => b.features),
+      });
+      renderNearby(result, frame);
+    } catch (e) {
+      console.error('[nearby] failed', e);
+      if (token === nearbyToken) nearbyResultsEl.textContent = '調べられませんでした';
+    }
+  };
+
+  const renderNearby = (
+    result: {
+      buildings: NearbyBuildings[];
+      names: [string, { names: string[]; total: number }][];
+      population: { population: number; cells: number; label: string } | null;
+    },
+    frame: NearbyFrame,
+  ) => {
+    const list = document.createElement('dl');
+    const row = (term: string, ...value: (string | Node)[]) => {
+      const dt = document.createElement('dt');
+      dt.textContent = term;
+      const dd = document.createElement('dd');
+      dd.append(...value);
+      list.append(dt, dd);
+    };
+    if (result.buildings.length === 0 && buildingSources.length > 0) row('建物', 'なし');
+    for (const found of result.buildings) {
+      const group = collections.find((c) => c.id === found.source.id)?.group?.title;
+      const total = found.counts.reduce((sum, [, n]) => sum + n, 0);
+      const breakdown = found.counts
+        .filter(([, n]) => n > 0)
+        .map(([title, n]) => `${title} ${n.toLocaleString()}`)
+        .join(' · ');
+      row(`建物${group ? ` (${group})` : ''}`, `${total.toLocaleString()} 棟 — ${breakdown}`);
+      if (found.named.length > 0) {
+        const shown = found.named.slice(0, 10);
+        row(
+          '名前のある建物',
+          shown.join('、') + (found.named.length > shown.length ? ` ほか${found.named.length - shown.length}件` : ''),
+        );
+      }
+    }
+    for (const [label, { names, total }] of result.names) {
+      row(
+        label,
+        total === 0 ? 'なし' : names.join('、') + (total > names.length ? ` ほか${total - names.length}件` : ''),
+      );
+    }
+    if (result.population) {
+      row(
+        '人口',
+        `約 ${Math.round(result.population.population).toLocaleString()} 人 (${result.population.label}メッシュ ${result.population.cells.toLocaleString()} 個の合計)`,
+      );
+    }
+    const notes: string[] = [];
+    if (result.population) {
+      notes.push('人口は範囲に掛かるメッシュの値の合計なので、範囲より広い分を含みます。');
+    }
+    if (frame.clipped) {
+      notes.push('起点が画面より大きいので、表示範囲の中だけを数えています。');
+    }
+    if (result.buildings.some((b) => b.features.length >= NEARBY_DRAW_LIMIT)) {
+      notes.push(`地図に描く建物は${NEARBY_DRAW_LIMIT.toLocaleString()}件までです (数は全部)。`);
+    }
+    const note = document.createElement('p');
+    note.className = 'note';
+    note.textContent = notes.join(' ');
+    nearbyResultsEl.replaceChildren(list, ...(notes.length > 0 ? [note] : []));
+  };
+
+  nearbyDistance.addEventListener('change', () => {
+    if (currentOrigin) void runNearby(currentOrigin);
+  });
+  nearbyFromSearch.addEventListener('click', () => {
+    if (!lastSelection) return;
+    setNearbyMode(false);
+    void runNearby(lastSelection);
+  });
+  document.querySelector('#nearby-close')!.addEventListener('click', clearNearby);
 
   // ホバー用。マウスを追うだけなので閉じるボタンは出さない。
   const hoverPopup = new Popup({
@@ -5041,6 +6207,40 @@ async function main() {
     map.on('mouseleave', 'road-line', () => {
       hoveringBuilding = false;
       hoveredRoad = '';
+      updateCursor();
+      hoverPopup.remove();
+    });
+  }
+
+  // 送電線・川。道路と同じく、同じ線の上を動いている間は作り直さない (ちらつき防止)。
+  let hoveredLine = '';
+  for (const kind of LINE_KINDS) {
+    const layerId = `line-${kind}`;
+    map.on('mousemove', layerId, (e) => {
+      if (picking) return;
+      const feature = e.features?.[0];
+      if (!feature) return;
+      hoveringBuilding = true;
+      updateCursor();
+      hoverPopup.setLngLat(e.lngLat).addTo(map);
+
+      const props = feature.properties;
+      const identity = `${kind}|${props.name ?? ''}|${props.lineClass}`;
+      if (identity === hoveredLine) return;
+      hoveredLine = identity;
+      const origin = collections.find((c) => c.id === props.origin);
+      hoverPopup.setDOMContent(
+        hoverContent([
+          ['', (props.name as string | null) || '(名前なし)'],
+          ['種別', props.lineClass as string],
+          ['出所', origin?.group?.title ?? null],
+          ['時点', origin?.vintage ?? null],
+        ]),
+      );
+    });
+    map.on('mouseleave', layerId, () => {
+      hoveringBuilding = false;
+      hoveredLine = '';
       updateCursor();
       hoverPopup.remove();
     });

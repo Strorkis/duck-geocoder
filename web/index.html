@@ -30,6 +30,17 @@
           >
             📍
           </button>
+          <!-- 周辺検索。押してから地図の点・線・建物をクリックすると、そこから○m以内に
+               何があるかを出す。検索で選んだものは、出てくるパネルから起点にできる。 -->
+          <button
+            id="nearby-button"
+            type="button"
+            aria-pressed="false"
+            title="押してから地図の点・線・建物をクリックすると、その周辺に何があるかを調べます (Escで解除)"
+            disabled
+          >
+            ◎
+          </button>
         </div>
         <ul id="results"></ul>
       </div>
@@ -211,6 +222,22 @@
              畳んで入れると、出典の長い文言や技術の説明が細切れに折り返して読めない。 -->
         <button type="button" class="info-open" data-dialog="credits-dialog">出典</button>
         <button type="button" class="info-open" data-dialog="tech-dialog">使っている技術</button>
+      </div>
+      <!-- 周辺検索の結果。地図を隠さないよう右上に寄せる。 -->
+      <div id="nearby-panel" hidden>
+        <div class="nearby-head">
+          <strong>周辺</strong>
+          <select id="nearby-distance" title="起点からの距離">
+            <option value="50">50 m</option>
+            <option value="100" selected>100 m</option>
+            <option value="300">300 m</option>
+            <option value="500">500 m</option>
+          </select>
+          <button type="button" id="nearby-close" title="閉じる">×</button>
+        </div>
+        <p id="nearby-origin"></p>
+        <button type="button" id="nearby-from-search" hidden>検索で選んだものを起点にする</button>
+        <div id="nearby-results"></div>
       </div>
       <div id="loading">
         <div class="spinner"></div>

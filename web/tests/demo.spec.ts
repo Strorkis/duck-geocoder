@@ -7,7 +7,7 @@ type TestWindow = { __map?: MapLibreMap; __dataUrl?: (file: string) => string };
 /** 行政区域データセット。逆ジオコーディングと転送量の計測がこれを見る。 */
 const ADMIN_DATASET = 'overture_admin_jp';
 /** 建物データセット。無くても他の機能は動くので、無ければスキップする。 */
-const BUILDINGS_DATASET = 'overture_buildings_minato';
+const BUILDINGS_COLLECTION = 'overture-buildings';
 /** PLATEAUの建物。高さ・用途を持つので、絞り込みはこちらでしか出ない。 */
 const PLATEAU_DATASET = 'plateau_bldg_13103';
 
@@ -103,9 +103,22 @@ function resolveHref(href: string, base: string): string {
   return new URL(href, new URL(base, root)).href.slice(root.length);
 }
 
-/** 建物データが配信されているか。 */
+/**
+ * Overture の建物が配信されているか。**Collection の有無で見る。**
+ *
+ * 以前は港区のファイル (`overture_buildings_minato`) を名指ししていたが、全国にして
+ * QuadKey で分けたので、ファイル名は分け方で変わる。名指しのままだと、見つからずに
+ * 建物のテストが**失敗せずにスキップされる**。全国を覆っているので、Collection が
+ * あれば港区も入っている。
+ */
 async function hasBuildings(page: Page): Promise<boolean> {
-  return (await datasetUrl(page, BUILDINGS_DATASET)) !== null;
+  const response = await page.request.get(
+    await resolveDataUrl(page, `overture/${BUILDINGS_COLLECTION}.json`),
+  );
+  if (!response.ok()) return false;
+  // 開発サーバーは無いファイルに index.html を200で返すので、中身で確かめる。
+  const body = await response.text();
+  return body.includes(`"id": "${BUILDINGS_COLLECTION}"`) || body.includes(`"id":"${BUILDINGS_COLLECTION}"`);
 }
 
 async function hasPlateau(page: Page): Promise<boolean> {
@@ -215,6 +228,8 @@ const LAYER = {
   railway: 'ksj-railway',
   stations: 'ksj-railway-stations',
   road: 'overture-roads',
+  powerLines: 'overture-power-lines',
+  waterways: 'overture-waterways',
 } as const;
 
 /**
@@ -819,8 +834,8 @@ test('逆ジオコーディング中は合図が出る', async ({ page }) => {
     map.jumpTo({ center: [139.7671, 35.6812], zoom: 13 });
   });
   // 先に建物側を出し切って、合図が建物のものでないことを確かめられる状態にする。
-  // **このズームで出るのは整備範囲のメッシュ** (建物そのものはズーム15から)。
-  await expect.poll(() => sourceFeatureCount(page, 'buildings-coverage')).toBeGreaterThan(0);
+  // **このズームで出るのは段で間引いた建物** (公共施設だけ。全部はズーム15から)。
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
   await expect(page.locator('#busy')).toBeHidden();
 
   // 合図を確かめるまで行政区域を渡さない。
@@ -2456,18 +2471,18 @@ test('表示量を上げると、同じ表示のまま閾値の手前のもの�
   await detail.selectOption('low');
   await expect(summary).toContainText('2種別はズーム10から');
 
-  // 建物。標準だとズーム15から原寸なので、14.5では整備範囲が出る。
+  // 建物。標準だとズーム15から全部なので、14.5では**重要な段だけ** (間引き) が出る。
   await detail.selectOption('medium');
   await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7671, 35.6812], zoom: 14.5 });
   });
   const count = page.locator('#building-count');
-  await expect(count).toContainText('整備範囲');
+  await expect(count).toContainText('のみ', { timeout: 30_000 });
 
-  // 多めは14から原寸。**同じ場所・同じズームのまま**建物そのものに切り替わる。
+  // 多めは14から全部。**同じ場所・同じズームのまま**間引きが外れる。
   await detail.selectOption('high');
-  await expect(count).not.toContainText('整備範囲');
+  await expect(count).not.toContainText('のみ', { timeout: 30_000 });
   await expect(count).toContainText(/\d件/);
 
   // **覚えていること。** 端末で決まる設定なので、開くたびに選び直させない。
@@ -2665,4 +2680,363 @@ test('建物は出所ごとに出せて、両方出すと塗り分けられる',
   await hideLayer(page, LAYER.plateauBuildings);
   await expect.poll(async () => Object.keys(await byOrigin())).toEqual([LAYER.overtureBuildings]);
   await expect(page.locator(`[data-layer-status="${LAYER.plateauBuildings}"]`)).toHaveText('');
+});
+
+/**
+ * **送電線と川は、道路と同じく引いた表示でも出る** (粗い段)。寄れば原寸の区間になる。
+ *
+ * 出所は Overture (元は OpenStreetMap)。送電線は全国で8割が名前を持たないので、
+ * 粗い段は名前・種別・タイルで束ねてある (名前だけで束ねると引いた表示から8割が消える)。
+ * **件数ではなく数える単位で見分ける** — 粗い段は「本」、原寸は「区間」。
+ */
+for (const [layer, label] of [
+  [LAYER.powerLines, '送電線'],
+  [LAYER.waterways, '川'],
+] as const) {
+  test(`${label}は引いた表示で粗い段、寄ると原寸で出る`, async ({ page }) => {
+    const exists = page.locator(`[data-layer="${layer}"]`);
+    test.skip((await exists.count()) === 0, `${label}のデータが無い`);
+
+    const status = page.locator(`[data-layer-status="${layer}"]`);
+    const jump = (zoom: number) =>
+      page.evaluate((z) => {
+        (window as unknown as TestWindow).__map!.jumpTo({ center: [139.75, 35.65], zoom: z });
+      }, zoom);
+
+    await jump(7);
+    await showLayer(page, layer);
+    await expect(status).toContainText('本', { timeout: 30_000 });
+    await expect(status).toContainText('簡略表示');
+
+    await jump(14);
+    await expect(status).toContainText('区間', { timeout: 30_000 });
+    await expect(status).not.toContainText('簡略表示');
+
+    // ホバーで名前と種別が出る。地図に描かれていることも兼ねて確かめる。
+    const drawn = await page.evaluate(
+      (id) =>
+        (window as unknown as TestWindow).__map!.queryRenderedFeatures(undefined as never, {
+          layers: [id],
+        }).length,
+      `line-${layer === LAYER.powerLines ? 'power_line' : 'waterway'}`,
+    );
+    expect(drawn).toBeGreaterThan(0);
+  });
+}
+
+/**
+ * **引いた表示では、重要な段の建物から出る** (間引き)。1ズーム引くごとに1段減らす。
+ *
+ * 標準 (ズーム15から全部) なら、14.x で公共施設と商業・業務、13.x で公共施設だけ、
+ * それより引くと整備範囲のメッシュ。段は建物ファイルの `lod` 列 (段の順位) で、
+ * 段ごとに行グループが分かれているので、統計で読み飛ばせる。
+ */
+test('引いた表示では重要な段の建物だけが出る (間引き)', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+  const collection = (await (
+    await page.request.get(await resolveDataUrl(page, 'plateau/plateau-buildings.json'))
+  ).json()) as { 'duck:tiers': { lod_column?: string; tiers: { title: string }[] } };
+  test.skip(!collection['duck:tiers'].lod_column, '段の列 (lod) がまだ無いカタログ');
+  const titles = collection['duck:tiers'].tiers.map((t) => t.title);
+
+  const plateau = await datasetUrl(page, PLATEAU_DATASET);
+  let bytes = 0;
+  page.on('response', (response) => {
+    if (!response.url().endsWith('.parquet') || response.request().method() === 'HEAD') return;
+    if (!response.url().includes('/plateau_bldg_') || response.url().includes('coverage')) return;
+    bytes += Number(response.headers()['content-length'] ?? 0);
+  });
+
+  /** 描かれている建物の段の順位 (重複なし)。 */
+  const ranks = () =>
+    page.evaluate(async () => {
+      const map = (window as unknown as TestWindow).__map!;
+      const data = await (map.getSource('buildings') as GeoJSONSource).getData();
+      if (data.type !== 'FeatureCollection') return [];
+      return [...new Set(data.features.map((f) => f.properties?.tierRank as number))].sort();
+    });
+  const jump = (zoom: number) =>
+    page.evaluate((z) => {
+      (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7671, 35.6812], zoom: z });
+    }, zoom);
+  const count = page.locator(`[data-layer-status="${LAYER.plateauBuildings}"]`);
+
+  // 13.x: 公共施設だけ。
+  await jump(13.5);
+  await expect(count).toContainText(`${titles[0]}のみ`, { timeout: 60_000 });
+  expect(await ranks()).toEqual([0]);
+  console.log(`間引き (ズーム13.5) の建物の転送量: ${(bytes / 1024).toFixed(0)} KB`);
+  expect(bytes, '転送量を計測できていない').toBeGreaterThan(0);
+  // 全部読むとこの画面で30MB前後 (実測)。公共施設だけなら数MBに収まる。
+  expect(bytes).toBeLessThan(12 * 1024 * 1024);
+
+  // 14.x: 公共施設と商業・業務。
+  await jump(14.5);
+  await expect(count).toContainText(`${titles[0]}・${titles[1]}のみ`, { timeout: 60_000 });
+  expect((await ranks()).every((rank) => rank <= 1)).toBe(true);
+
+  // それより引くと整備範囲。
+  await jump(12.5);
+  await expect(count).toContainText('整備範囲', { timeout: 60_000 });
+  expect(plateau).not.toBeNull();
+});
+
+/** 周辺検索の待ち受けに入り、地図の点を押す。 */
+async function nearbyAt(page: Page, point: { x: number; y: number }) {
+  await page.locator('#nearby-button').click();
+  await expect(page.locator('#nearby-panel')).toBeVisible();
+  await expect(page.locator('#nearby-origin')).toContainText('クリック');
+  await page.locator('#map canvas').click({ position: point });
+}
+
+/**
+ * `from` の近くで、地物が何も描かれておらず、パネルにも覆われていない点。
+ * 内側から外へ渦を巻くように探す。
+ */
+async function emptyPointNear(page: Page, from: { x: number; y: number }) {
+  const point = await page.evaluate((from) => {
+    const map = (window as unknown as TestWindow).__map!;
+    const canvas = map.getCanvas();
+    const rect = canvas.getBoundingClientRect();
+    for (let radius = 0; radius <= 200; radius += 8) {
+      for (let angle = 0; angle < 360; angle += radius === 0 ? 360 : 30) {
+        const x = from.x + radius * Math.cos((angle * Math.PI) / 180);
+        const y = from.y + radius * Math.sin((angle * Math.PI) / 180);
+        const box: [[number, number], [number, number]] = [
+          [x - 4, y - 4],
+          [x + 4, y + 4],
+        ];
+        if (map.queryRenderedFeatures(box).length > 0) continue;
+        if (document.elementFromPoint(rect.left + x, rect.top + y) !== canvas) continue;
+        return { x: Math.round(x), y: Math.round(y) };
+      }
+    }
+    return null;
+  }, from);
+  expect(point, '地物の無い点が近くに見つからない').not.toBeNull();
+  return point!;
+}
+
+/** パネルの「建物」の行の合計 (「1,234 棟」)。無ければ0。 */
+async function nearbyBuildingTotal(page: Page): Promise<number> {
+  const text = (await page.locator('#nearby-results dd').first().textContent()) ?? '';
+  const match = text.match(/([\d,]+) 棟/);
+  return match ? Number(match[1].replace(/,/g, '')) : 0;
+}
+
+/**
+ * **周辺検索 — 地図上の点から。** ○m以内の建物 (段ごと)・駅・人口が出て、
+ * 範囲の輪郭と当たった建物が地図に重なる。**距離を広げると件数は減らない。**
+ */
+test('周辺検索: 地図上の点から、建物と駅が出て、距離を広げても減らない', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+  await page.evaluate(() => {
+    (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7671, 35.6812], zoom: 16 });
+  });
+  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
+
+  // 東京駅の近くで、地物が描かれていない (= 点が起点になる) ところを押す。
+  // 中心は駅舎の建物の上なので、押すと建物が起点になる。
+  await nearbyAt(page, await emptyPointNear(page, { x: 640, y: 360 }));
+  const results = page.locator('#nearby-results');
+  await expect(page.locator('#nearby-origin')).toContainText('地図上の点', { timeout: 60_000 });
+  await expect(results).toContainText('棟', { timeout: 60_000 });
+  await expect(results.locator('dt', { hasText: '駅' })).toBeVisible();
+  await expect(results).toContainText('東京駅');
+  expect(await sourceFeatureCount(page, 'nearby-zone')).toBe(1);
+  expect(await sourceFeatureCount(page, 'nearby-hits')).toBeGreaterThan(0);
+
+  const near = await nearbyBuildingTotal(page);
+  expect(near).toBeGreaterThan(0);
+  await page.locator('#nearby-distance').selectOption('300');
+  await expect(page.locator('#nearby-origin')).toContainText('300 m', { timeout: 60_000 });
+  await expect.poll(() => nearbyBuildingTotal(page), { timeout: 60_000 }).toBeGreaterThanOrEqual(near);
+
+  // 閉じれば地図から消える。
+  await page.locator('#nearby-close').click();
+  await expect(page.locator('#nearby-panel')).toBeHidden();
+  await expect.poll(() => sourceFeatureCount(page, 'nearby-zone')).toBe(0);
+});
+
+/** **建物を起点にできる。** 建物の上をクリックすると、その建物が起点になる。 */
+test('周辺検索: 建物を起点にできる', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+  await showPlateauBuildings(page);
+  // 描かれている建物の上で、パネルに覆われていない点を探す。
+  const point = await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    const canvas = map.getCanvas();
+    const rect = canvas.getBoundingClientRect();
+    for (let y = 200; y < canvas.clientHeight - 100; y += 20) {
+      for (let x = 400; x < canvas.clientWidth - 450; x += 20) {
+        if (document.elementFromPoint(rect.left + x, rect.top + y) !== canvas) continue;
+        const hit = map.queryRenderedFeatures([x, y] as never, { layers: ['buildings-3d'] });
+        if (hit.length > 0) return { x, y };
+      }
+    }
+    return null;
+  });
+  expect(point, '建物の上の点が見つからない').not.toBeNull();
+  await nearbyAt(page, point!);
+  await expect(page.locator('#nearby-origin')).toContainText('起点: 建物', { timeout: 60_000 });
+  await expect(page.locator('#nearby-results')).toContainText('棟', { timeout: 60_000 });
+});
+
+/**
+ * **線を起点にすると、同じ名前の区間をまとめて起点にする** (「〜線沿い」になる)。
+ * 1区間だけだと、川や鉄道は細かく切れているので沿線にならない。
+ */
+test('周辺検索: 線 (鉄道) を起点にすると同じ名前の区間をまとめる', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+  await showRailway(page, 14);
+  await page.locator('#layer-back').click();
+  const point = await page.evaluate(() => {
+    const map = (window as unknown as TestWindow).__map!;
+    const canvas = map.getCanvas();
+    const rect = canvas.getBoundingClientRect();
+    for (let y = 150; y < canvas.clientHeight - 100; y += 6) {
+      for (let x = 400; x < canvas.clientWidth - 450; x += 6) {
+        if (document.elementFromPoint(rect.left + x, rect.top + y) !== canvas) continue;
+        const hit = map.queryRenderedFeatures([x, y] as never, { layers: ['railway-line'] });
+        // 駅の上だと駅が起点になるので、路線だけのところを選ぶ。
+        const station = map.queryRenderedFeatures([x, y] as never, { layers: ['railway-station'] });
+        if (hit.length > 0 && station.length === 0 && hit[0].properties?.lineName) return { x, y };
+      }
+    }
+    return null;
+  });
+  expect(point, '路線の上の点が見つからない').not.toBeNull();
+  await nearbyAt(page, point!);
+  await expect(page.locator('#nearby-origin')).toContainText('起点: 鉄道', { timeout: 60_000 });
+  // 線の沿線には駅がある (同じ名前の区間をまとめているので、画面内の駅が拾える)。
+  await expect(page.locator('#nearby-results dt', { hasText: '駅' })).toBeVisible({ timeout: 60_000 });
+  await expect(
+    page.locator('#nearby-results dt', { hasText: '駅' }).locator('+ dd'),
+  ).not.toHaveText('なし');
+});
+
+/** **検索で選んだものを起点にできる。** ◎を押すとパネルに出てくる。 */
+test('周辺検索: 検索で選んだものを起点にできる', async ({ page }) => {
+  test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+  const input = page.locator('#search-input');
+  await input.fill('東京駅');
+  const candidate = page.locator('#results li', { hasText: '東京' }).first();
+  await expect(candidate).toBeVisible({ timeout: 30_000 });
+  await candidate.click();
+  await expect.poll(() => sourceFeatureCount(page, 'selected-point')).toBe(1);
+
+  await page.locator('#nearby-button').click();
+  const fromSearch = page.locator('#nearby-from-search');
+  await expect(fromSearch).toBeVisible();
+  await fromSearch.click();
+  await expect(page.locator('#nearby-origin')).toContainText('東京', { timeout: 60_000 });
+  await expect(page.locator('#nearby-results dt', { hasText: '駅' })).toBeVisible({ timeout: 60_000 });
+});
+
+/** ⚙ を開き、Collection カードの「この範囲を取得」を開く。 */
+async function openDownloads(page: Page, layer: string, collectionId: string) {
+  await openLayerSettings(page, layer);
+  const section = page.locator(`.collection-card[data-collection="${collectionId}"] .download-section`);
+  await section.locator('summary').click();
+  await expect(section).toContainText('ファイルごと', { timeout: 30_000 });
+  return section;
+}
+
+/**
+ * **この範囲を GeoParquet で保存できる。** ブラウザの中で切り出して書き、
+ * 出典と規約をファイルのメタデータに入れる (切り出したものにも条件が付いて回る)。
+ */
+test('この範囲を GeoParquet で保存でき、出典と規約がファイルに入る', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+  await page.evaluate(() => {
+    (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7454, 35.6586], zoom: 17 });
+  });
+  const section = await openDownloads(page, LAYER.plateauBuildings, LAYER.plateauBuildings);
+
+  const download = page.waitForEvent('download', { timeout: 60_000 });
+  await section.locator('.download-clip').click();
+  const file = await download;
+  expect(file.suggestedFilename()).toMatch(/^plateau-buildings_\d{4}-\d{2}-\d{2}\.parquet$/);
+  const path = await file.path();
+  const bytes = (await import('node:fs')).readFileSync(path!);
+  // Parquet は先頭と末尾が "PAR1"。
+  expect(bytes.subarray(0, 4).toString()).toBe('PAR1');
+  expect(bytes.subarray(-4).toString()).toBe('PAR1');
+  // フッターに GeoParquet の geo と、出典・規約が入っている。
+  const footer = bytes.subarray(Math.max(0, bytes.length - 64 * 1024)).toString('latin1');
+  expect(footer).toContain('geo');
+  expect(footer).toContain('duck:attribution');
+  expect(footer).toContain('duck:terms');
+  await expect(section.locator('.download-status')).toContainText('保存しました');
+
+  // ファイルごとのリンク (配信しているもの) と配布元。
+  await expect(section.locator('.download-files li').first()).toBeVisible();
+  await expect(section.locator('.download-files a', { hasText: '配布元' }).first()).toBeVisible();
+});
+
+/**
+ * **CityGML はメッシュ単位で直接リンクし、ZIPにもまとめられる** (PLATEAU配信サービス)。
+ * 配信サービスに負荷をかけないよう、**応答はテストの中で差し替える。**
+ * 確かめるのは、表示範囲のメッシュで問い合わせ、packの流れ (依頼→状態→ZIP) を辿ること。
+ */
+test('CityGML をメッシュ単位で探し、ZIPにまとめられる (配信サービスは差し替え)', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+  const asked: string[] = [];
+  await page.route('https://api.plateauview.mlit.go.jp/**', async (route) => {
+    const url = route.request().url();
+    asked.push(`${route.request().method()} ${url}`);
+    const json = (body: unknown) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'access-control-allow-origin': '*' },
+        body: JSON.stringify(body),
+      });
+    if (url.includes('/datacatalog/citygml/m:')) {
+      const code = decodeURIComponent(url.split('/m:')[1]).split(',')[0];
+      return json({
+        cities: [
+          {
+            files: {
+              bldg: [
+                {
+                  code,
+                  maxLod: 2,
+                  url: `https://assets.example.invalid/${code}_bldg_6697_op.gml`,
+                  fileSize: 1234567,
+                  features: 321,
+                },
+              ],
+              tran: [{ code, maxLod: 1, url: `https://assets.example.invalid/${code}_tran_6697_op.gml` }],
+            },
+          },
+        ],
+      });
+    }
+    if (url.endsWith('/citygml/pack')) return json({ id: 'abc' });
+    if (url.endsWith('/citygml/pack/abc/status')) return json({ status: 'succeeded', progress: 1 });
+    return route.fulfill({ status: 404 });
+  });
+
+  await page.evaluate(() => {
+    (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7454, 35.6586], zoom: 16 });
+  });
+  const section = await openDownloads(page, LAYER.plateauBuildings, LAYER.plateauBuildings);
+  // **押すまで配信サービスを呼ばない。**
+  expect(asked).toEqual([]);
+  await section.locator('.citygml-find').click();
+  await expect(section.locator('.citygml-files li').first()).toBeVisible({ timeout: 30_000 });
+  // 表示範囲 (港区) のメッシュで問い合わせている。港区は 5339 の1次メッシュ。
+  expect(asked.some((a) => a.includes('/datacatalog/citygml/m:5339'))).toBe(true);
+  // 種類を選べて、建物が先頭。
+  await expect(section.locator('.citygml-type option').first()).toContainText('建物');
+  await expect(section.locator('.citygml-files li').first()).toContainText('LOD2');
+
+  await section.locator('.citygml-pack').click();
+  await expect(section.locator('.download-status a', { hasText: 'ZIP' })).toHaveAttribute(
+    'href',
+    'https://api.plateauview.mlit.go.jp/citygml/pack/abc.zip',
+    { timeout: 30_000 },
+  );
+  expect(asked.some((a) => a.startsWith('POST') && a.endsWith('/citygml/pack'))).toBe(true);
 });
