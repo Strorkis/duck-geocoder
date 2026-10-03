@@ -148,56 +148,51 @@
 
     <div class="grid">
       <section class="you">
-        <h2>あなたの番</h2>
-        <ol>
+        <h2>次のアップロードで上げるもの</h2>
+        <p class="why" style="margin: 0 0 0.5rem; color: var(--sub); font-size: 0.85rem">
+          アップロードは切りの良いところでまとめて。作業のたびには上げない。
+          <b>pushはアップロードの後</b> (デプロイのCIがR2の実データで確かめるため)
+        </p>
+        <table>
+          <tr><th>plateau/</th><td>建物 306ファイル (段の <code>lod</code> 列を足した)・JSON — 3.8GB</td></tr>
+          <tr>
+            <th>overture/</th>
+            <td>
+              建物 392ファイル (全国、新規)・送電線・川 (新規)・行政区域・地名・道路・路線
+              (2026-09-23.1 で取り直し)・JSON — 5.7GB
+            </td>
+          </tr>
+          <tr><th>ほかのJSON</th><td>全サブカタログ・Collection (使う条件 <code>duck:terms</code> など)</td></tr>
+          <tr><th>catalog.json</th><td><b>最後に</b>上げて、続けて push</td></tr>
+        </table>
+        <p style="margin: 0.5rem 0 0">
+          手順は <a href="deploy.md">deploy.md</a> の「2026-10-03 の分」。今回は全部書き換わっているので
+          <b><code>--size-only</code> を外す</b>。手元の合計 9.6GB で<b>R2の無料枠 (10GB) にほぼ届く</b>
+        </p>
+        <h2 style="margin-top: 0.9rem">あとで片付けるもの (急がない)</h2>
+        <ul>
           <li>
-            <b>R2にJSONを2つ上げて、push</b> (公開中のサイトは止まらない)
-            <span class="why">建物の重要度の段の規則と名前が変わった。parquetは変わっていない</span>
-            <pre>cd ~/duck-geocoder
-R2=r2:duck-geocoder   # 前回と同じリモート名
-mise exec -- rclone copy data/output "$R2" \
-  --include '/plateau/plateau-buildings.json' \
-  --include '/overture/overture-buildings.json' -P
-git push</pre>
+            R2の <code>overture/overture_buildings_minato.parquet</code> と
+            <code>plateau/plateau_bldg_minato.parquet</code>
+            <span class="why">どこからも参照されない古い名前。新しいサイトが配られてから消す</span>
           </li>
           <li>
-            <b>片付け (急がない)</b>
-            <span class="why">
-              手元の <code>data/backup/r2-catalog-2026-10-01.json</code> (戻すための控え。もう不要) と、
-              R2の <code>plateau/plateau_bldg_minato.parquet</code> (どこからも参照されない古い名前)
-            </span>
+            手元の <code>data/backup/</code> (<code>r2-catalog-2026-10-01.json</code>・
+            <code>overture-2026-07-22.0/</code>)
+            <span class="why">戻すための控え。新しいデータで公開できたら不要</span>
           </li>
-          <li>
-            <b>決めてほしいこと</b>
-            <span class="why">下の「未決の問い」</span>
-          </li>
-        </ol>
+        </ul>
       </section>
 
       <section class="next">
         <h2>次にやること (この順)</h2>
         <ol>
           <li>
-            <b>建物の粗い段 (間引き)</b>
-            <span class="why">
-              重要度の段で間引き、引いた表示では公共施設から出す。多めでもズーム14が限界なのは
-              転送量のため (画面に要る量の3〜15倍を読んでいる)。まず23区と前橋で試作して測る
-            </span>
-          </li>
-          <li>
             <b>観点 (汎用の問い合わせのひな形)</b>
             <span class="why">
               複数のデータにまたがる条件に名前を付けたもの。条件はコードではなくデータで持ち、
-              用途ごとに組み替えられるようにする (ドローンは例の1つ)
+              用途ごとに組み替えられるようにする (ドローンは例の1つ)。周辺検索が土台になる
             </span>
-          </li>
-          <li>
-            <b>対象物の周辺検索</b>
-            <span class="why">線 (道路・鉄道・送電線・川) や点を選び、○m以内に何があるかを出す</span>
-          </li>
-          <li>
-            <b>ライセンスと商用利用の可否を一目で分かるように</b>
-            <span class="why">いまは識別子と出典だけ。「商用可か・表示義務・改変の扱い」を出したい</span>
           </li>
           <li>
             <b>国土数値情報を足す</b>
@@ -206,11 +201,30 @@ git push</pre>
               P04/P14 は許諾が未確認。<b>河川 W05 は使えない</b> (非商用・承認番号付き・2009年度で停止)
             </span>
           </li>
-          <li>
-            <b>Overtureの版を上げる</b>
-            <span class="why">使っている 2026-07-22.0 がS3から消えた。取り直すときに要る。送電線もここから取る</span>
-          </li>
         </ol>
+        <h2 style="margin-top: 0.9rem">済み (2026-10-03、まだ公開していない)</h2>
+        <ul>
+          <li>
+            <b>段で間引く</b>
+            <span class="why">標準なら z14 で公共施設・商業・業務、z13 で公共施設だけ。東京駅 z13 で約30MB → 約2MB</span>
+          </li>
+          <li>
+            <b>周辺検索 (◎)</b>
+            <span class="why">起点は点・建物・線 (同じ名前をまとめる)・検索結果。50〜500m以内の建物・駅・送電線・川・人口</span>
+          </li>
+          <li>
+            <b>使う条件のバッジ</b>
+            <span class="why">商用可か・出典表示・加工の明記・継承を、カードと出典のダイアログに</span>
+          </li>
+          <li>
+            <b>Overture: 版を上げ、建物を全国に、送電線と川を追加</b>
+            <span class="why">建物は QuadKey で392ファイル (5,419万棟)</span>
+          </li>
+          <li>
+            <b>ダウンロード</b>
+            <span class="why">表示範囲のGeoParquet・ファイル丸ごと・配布元・CityGML (メッシュ単位の直リンクと公式のZIP)</span>
+          </li>
+        </ul>
       </section>
 
       <section class="wait">
@@ -227,8 +241,8 @@ git push</pre>
         <h2 style="margin-top: 0.9rem">未決の問い</h2>
         <ul>
           <li>
-            <b>建物の間引きの基準</b>
-            <span class="why">重要度の段を軸にする方向。段の中 (例えば住宅) をさらにどう減らすか</span>
+            <b>建物の間引きの基準 (段の中)</b>
+            <span class="why">段では間引けた。住宅・その他 (全体の9割) をz15より手前で出すなら、段の中をどう減らすか</span>
           </li>
           <li>
             <b>リポジトリの名前</b>
@@ -265,7 +279,7 @@ git push</pre>
         <h2>いま配っているもの</h2>
         <table>
           <tr><th>PLATEAU</th><td>建物 306都市 (2,929万棟)・整備範囲メッシュ</td></tr>
-          <tr><th>Overture</th><td>行政区域・建物 (港区)・道路 (幹線、全国)</td></tr>
+          <tr><th>Overture</th><td>行政区域・建物 (港区)・道路 (幹線、全国) — 次の公開で建物が全国・送電線と川が加わる</td></tr>
           <tr><th>国土数値情報</th><td>鉄道 路線・駅 (全国)</td></tr>
           <tr><th>国勢調査</th><td>人口メッシュ 125m / 1km</td></tr>
           <tr><th>位置参照情報</th><td>大字・町丁目・街区 (住所検索)</td></tr>

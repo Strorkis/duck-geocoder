@@ -219,6 +219,39 @@ JSONは大きさで比べると取りこぼし、parquetは大きさで比べな
 rclone --password-command "secret-tool lookup rclone config" copy …
 ```
 
+### 2026-10-03 の分 (段の間引き・Overtureの取り直しと全国化)
+
+**plateau/ と overture/ の parquet は全部書き換わっている** (建物に `lod` 列を足した・
+Overtureを 2026-09-23.1 で取り直した)。大きさで比べると偶然揃ったものを取りこぼすので、
+**この2つは `--size-only` を外して上げる** (plateau 3.8GB + overture 5.7GB、707ファイル。
+ほぼ全部が上げ直しになる)。
+ksj/ estat/ isj/ は変えていない。
+
+```sh
+# 1. catalog.json 以外のJSON (いつもどおり)
+rclone copy data/output "$R2" \
+  --filter '- /catalog.json' --filter '+ *.json' --filter '- **' -P
+
+# 2. plateau/ と overture/ の parquet を、大きさで比べずに上げる
+rclone copy data/output "$R2" \
+  --filter '+ /plateau/*.parquet' --filter '+ /overture/*.parquet' --filter '- **' -P
+
+# 3. catalog.json を最後に上げ、続けて push
+rclone copy data/output/catalog.json "$R2" -P
+git push
+```
+
+- **R2の無料枠 (10GB) にほぼ届く。** 手元の `data/output` は9.6GB、R2には古い港区の
+  ファイル (下) なども残る。超えた分は払う方針 (上の節)
+- 公開中の古いバンドルは、知らない種別 (送電線・川) を読み飛ばすので、1で
+  サブカタログが先に変わっても壊れない
+- **R2に残る古いファイル:** `overture/overture_buildings_minato.parquet` (港区だけだった頃)。
+  新しいカタログからは参照されない。実サイトが新しいバンドルを配り始めてから消してよい
+
+```sh
+rclone delete "$R2/overture/overture_buildings_minato.parquet"
+```
+
 ### 平置きだった頃の古いJSONを消す
 
 `rclone copy` は消さないので、ルートに残る。`catalog.json` を差し替えれば
