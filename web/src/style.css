@@ -958,7 +958,8 @@ body,
 
 /* 絞り込み・色分け。**⚙ を押した行の下に開く** (地図を見ながら動かすので、地図を覆わない)。
    行の字下げに合わせ、左の線で「この行の設定」と分かるようにする。 */
-.layer-settings-slot {
+.layer-settings-slot,
+#terrain-slot {
   margin: 0.3rem 0 0.2rem 1.3rem;
   padding: 0.3rem 0 0.3rem 0.6rem;
   border-left: 2px solid #cde2fb;
@@ -1577,4 +1578,240 @@ body,
 
 #layer-support[hidden] {
   display: none;
+}
+
+/* ---- 一覧の区分 (データ / 地図タイル) ------------------------------------------ */
+
+/* 一覧ごと畳む見出し。押せることが分かるように、右に開閉の印を付ける。 */
+#data-panel-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 2rem;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: #333;
+  cursor: pointer;
+}
+
+.panel-toggle-mark::after {
+  content: '▾';
+  color: #666;
+}
+
+#data-panel-toggle[aria-expanded='false'] .panel-toggle-mark::after {
+  content: '▸';
+}
+
+#layer-body[hidden] {
+  display: none;
+}
+
+/* 区分の見出し。出所の見出し (PLATEAU…) より一段強く、区分の性格を小さく添える。 */
+.layer-section {
+  margin-top: 0.5rem;
+}
+
+.layer-section-title {
+  margin: 0 0 0.2rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 0.25rem;
+  background: #eef3f9;
+  font-weight: 700;
+  font-size: 0.8rem;
+  color: #14508c;
+}
+
+.layer-section-note {
+  margin-left: 0.3rem;
+  font-weight: normal;
+  font-size: 0.7rem;
+  color: #667;
+}
+
+/* しまってある地図タイル。区分の終わりに畳んでおく。 */
+#tile-catalog {
+  margin-top: 0.3rem;
+}
+
+#tile-catalog > summary {
+  min-height: 1.8rem;
+  line-height: 1.8rem;
+  font-size: 0.8rem;
+  color: #14508c;
+  cursor: pointer;
+}
+
+.tile-group {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+  border-bottom: 1px solid #eee;
+}
+
+.tile-group .layer-group-title {
+  flex: 1;
+}
+
+#terrain-row[hidden] {
+  display: none;
+}
+
+#terrain-source {
+  max-width: 100%;
+  margin-top: 0.15rem;
+  padding: 0.15rem 0.25rem;
+  font: inherit;
+  font-size: 0.75rem;
+  border: 1px solid #ccc;
+  border-radius: 0.25rem;
+  background: white;
+}
+
+#terrain-slot[hidden] {
+  display: none;
+}
+
+/* ---- 押しやすさ ------------------------------------------------------------------
+   行のボタンは小さすぎて押しにくかった。**28px角**を下限にし、指で触る端末では
+   **40px角** (タッチの的の目安) にする。チェックボックスも同じく大きくする。 */
+.layer-settings-button,
+.layer-detail-button,
+.layer-zoom-button,
+.layer-expander,
+.layer-move-button {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.75rem;
+  min-height: 1.75rem;
+  padding: 0 0.15rem;
+  border-radius: 0.3rem;
+  font-size: 0.95rem;
+}
+
+.layer-settings-button:hover,
+.layer-detail-button:hover,
+.layer-zoom-button:hover,
+.layer-expander:hover,
+.layer-move-button:hover:not(:disabled) {
+  background: #eef3f9;
+}
+
+.layer-move-button {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: #666;
+  cursor: pointer;
+}
+
+.layer-move-button:disabled {
+  color: #ccc;
+  cursor: default;
+}
+
+.layer-head input[type='checkbox'],
+.layer-part input[type='checkbox'] {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  flex: none;
+}
+
+@media (pointer: coarse) {
+  .layer-settings-button,
+  .layer-detail-button,
+  .layer-zoom-button,
+  .layer-expander,
+  .layer-move-button {
+    min-width: 2.5rem;
+    min-height: 2.5rem;
+    font-size: 1.1rem;
+  }
+
+  .layer-head input[type='checkbox'],
+  .layer-part input[type='checkbox'],
+  #nearby-results input[type='checkbox'] {
+    width: 1.35rem;
+    height: 1.35rem;
+  }
+
+  .layer-group-toggle,
+  #tile-catalog > summary,
+  .nearby-chip {
+    min-height: 2.5rem;
+  }
+}
+
+/* ---- スマホ幅 -------------------------------------------------------------------- */
+
+#info-menu-button {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  #search-panel {
+    top: 0.5rem;
+    left: 0.5rem;
+    width: calc(100vw - 4.2rem);
+    max-width: none;
+  }
+
+  #pick-location,
+  #nearby-button,
+  #info-menu-button {
+    width: 2.6rem;
+  }
+
+  #info-menu-button {
+    display: block;
+    flex: none;
+    border: 1px solid #ccc;
+    border-radius: 0.4rem;
+    background: white;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+    font-size: 1.1rem;
+    cursor: pointer;
+  }
+
+  /* 一覧は**画面の下の引き出し**。畳むと見出しの1行だけになる。 */
+  #data-panel {
+    left: 0.5rem;
+    right: 0.5rem;
+    bottom: calc(var(--attribution-space, 2rem) + 0.25rem);
+    width: auto;
+    max-height: 55vh;
+  }
+
+  /* 使い方・出典… は ☰ で開く。検索欄の下から出す。 */
+  #info-panel {
+    display: none;
+    top: 3.6rem;
+    right: 0.5rem;
+    bottom: auto;
+    z-index: 4;
+  }
+
+  #info-panel.open {
+    display: block;
+  }
+
+  /* 周辺検索の結果は横いっぱいに、検索欄の下へ。 */
+  #nearby-panel {
+    top: 3.6rem;
+    left: 0.5rem;
+    right: 0.5rem;
+    width: auto;
+    max-height: 40vh;
+  }
+
+  .info-dialog {
+    width: 96vw;
+  }
 }

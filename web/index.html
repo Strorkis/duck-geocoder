@@ -41,6 +41,8 @@
           >
             ◎
           </button>
+          <!-- スマホ幅だけ出す。右下の「使い方・出典…」を、ここから開く (画面の下は一覧が使う)。 -->
+          <button id="info-menu-button" type="button" aria-expanded="false" title="使い方・出典など">☰</button>
         </div>
         <ul id="results"></ul>
       </div>
@@ -73,7 +75,11 @@
         -->
         <div id="layer-view">
           <div id="layer-list">
-            <p class="layer-heading">この場所のデータ</p>
+            <!-- 見出しを押すと一覧ごと畳める (スマホ幅では畳んだ状態で始める。地図を広く見せるため)。 -->
+            <button id="data-panel-toggle" type="button" aria-expanded="true">
+              <span>データと地図</span><span class="panel-toggle-mark" aria-hidden="true"></span>
+            </button>
+            <div id="layer-body">
             <!-- 出所の並びのまま、同じ種類のものを横断して探す (「送電」で両方の送電線)。 -->
             <input
               id="layer-filter"
@@ -83,21 +89,51 @@
               autocomplete="off"
             />
             <p id="layer-filter-empty" class="layer-filter-empty" hidden>当てはまるものがありません</p>
-            <div id="layer-rows"></div>
-            <!-- 収録が無いものも出す。「無い」と分かるのも情報なので隠さない。 -->
-            <div id="layer-absent" hidden>
-              <p class="layer-heading">この範囲には無い</p>
-              <div id="layer-absent-rows"></div>
-            </div>
-            <!-- 背景地図と地形は**一覧の行** (QGISと同じく、重ねられるレイヤーの1つ)。
-                 出所 (国土地理院・Mapterhorn) の見出しの下に、データと同じ形で並ぶ。
-                 ここに残るのはレイヤーをまたぐ設定 (表示量) だけ。 -->
+            <!-- **データ**: SQL で引ける GeoParquet。出所ごとに開け閉めする。 -->
+            <section id="data-section" class="layer-section">
+              <p class="layer-section-title">データ <span class="layer-section-note">SQL で引ける</span></p>
+              <div id="layer-rows"></div>
+              <!-- 収録が無いものも出す。「無い」と分かるのも情報なので隠さない。 -->
+              <div id="layer-absent" hidden>
+                <p class="layer-heading">この範囲には無い</p>
+                <div id="layer-absent-rows"></div>
+              </div>
+            </section>
+            <!-- **地図タイル**: 見るだけのもの (ベクタータイル・背景地図・標高)。
+                 出しているものを**重ね順に**並べる (上の行ほど上に重なる。↑↓ で入れ替える)。
+                 「後から入れたものが上」の規則では、何が上にあるかが一覧から見えなかった。 -->
+            <section id="tile-section" class="layer-section">
+              <p class="layer-section-title">
+                地図タイル <span class="layer-section-note">上ほど上に重なる</span>
+              </p>
+              <div id="tile-rows"></div>
+              <p id="tile-empty" class="layer-filter-empty" hidden>出している地図タイルはありません</p>
+              <!-- 地形は**1つだけ**選ぶ (MapLibre は地形を1つしか持てない)。 -->
+              <div id="terrain-row" class="layer-row" data-layer="terrain" hidden>
+                <div class="layer-head">
+                  <input type="checkbox" id="terrain-toggle" />
+                  <label class="layer-name" for="terrain-toggle">地形 (立体)</label>
+                  <button type="button" id="terrain-settings" class="layer-settings-button" title="起伏の強調" aria-expanded="false">⚙</button>
+                  <button type="button" id="terrain-detail" class="layer-detail-button" title="この標高について (形式・出所)">ⓘ</button>
+                </div>
+                <!-- どの標高を使うか。2段目に置く (1段目に詰めると「地形」が押し潰された)。 -->
+                <div class="layer-sub">
+                  <select id="terrain-source" aria-label="地形に使う標高"></select>
+                </div>
+                <div id="terrain-slot" hidden></div>
+              </div>
+              <details id="tile-catalog">
+                <summary>地図タイルを足す (<span id="tile-catalog-count">0</span>)</summary>
+                <div id="tile-catalog-rows"></div>
+              </details>
+            </section>
             <div id="view-settings">
               <!-- 表示量もレイヤーをまたぐ設定なので、個別の⚙ではなくここに置く。 -->
               <div id="detail-section">
                 <p class="layer-heading">表示量</p>
                 <select id="detail-level" title="上限に当たったら上げる。重ければ下げる"></select>
               </div>
+            </div>
             </div>
           </div>
           <!-- 絞り込み・色分けの置き場。**一覧の行の ⚙ を押すと、その行の下へ移す**

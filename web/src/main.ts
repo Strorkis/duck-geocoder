@@ -11,6 +11,7 @@ import {
   setWorkerUrl,
   type ExpressionSpecification,
   type LayerSpecification,
+  type RasterDEMSourceSpecification,
   type RasterSourceSpecification,
   type StyleSpecification,
 } from 'maplibre-gl';
@@ -70,7 +71,11 @@ type DatasetKind =
   // **外部の地図タイル** (背景地図)。いちばん下に敷く。
   | 'raster_tiles'
   // **外部の標高タイル** (地形)。地図を立体にする。
-  | 'terrain';
+  | 'terrain'
+  // **3D Tiles** (Re:Earth Buildings)。この地図 (MapLibre) では描けない。ⓘ からビューアへ。
+  | '3d_tiles'
+  // **元データ** (基盤地図情報など)。配っていない。派生物の「作られた元」として辿るだけ。
+  | 'reference';
 
 /** ベクトルタイルの層1つ (`duck:themes[].layers[]`)。PMTiles のメタデータから来る。 */
 interface VectorLayerInfo {
@@ -97,6 +102,19 @@ interface VectorTheme {
   id: string;
   title: string;
   layers: VectorLayerInfo[];
+}
+
+/**
+ * 標高タイルの形式 (`duck:dem`)。**同じ「標高タイル」でも中身の約束が違う** ので、
+ * 使う側が読み方を決められるようにカタログに書く。
+ */
+interface DemInfo {
+  /** `terrarium` / `mapbox` (Terrain-RGB) / `gsi` (地理院の独自形式)。 */
+  encoding: string;
+  /** 高さの基準。`orthometric` (海面から) / `ellipsoid` (WGS84 楕円体から)。 */
+  vertical: string;
+  /** 人向けの説明 (計算式・値なしの扱い)。 */
+  description?: string;
 }
 
 /** STAC のアセット。外部のタイルセットは Collection が直接持つ。 */
@@ -187,6 +205,10 @@ interface StacCollection {
   'duck:zoom'?: [number, number];
   /** 地図タイルの大きさ (px)。 */
   'duck:tile_size'?: number;
+  /** 標高タイルの形式 (エンコード・高さの基準・値なしの扱い)。地形だけが持つ。 */
+  'duck:dem'?: DemInfo;
+  /** 同じ役割 (背景地図・地形) の中で既定に使うもの。 */
+  'duck:default'?: boolean;
   links: StacLink[];
 }
 
@@ -323,6 +345,16 @@ interface Collection {
   /** 地図タイルが実際にあるズーム [最小, 最大]。 */
   zoom: [number, number] | undefined;
   tileSize: number | undefined;
+  /** 標高タイルの形式。地形だけが持つ。 */
+  dem: DemInfo | undefined;
+  /** **何から作られたか** (`rel: "derived_from"` の行き先。配信の起点からのパス)。 */
+  derivedFrom: string[];
+  /** 公式のビューア (この地図で描けないもの)。`rel: "alternate"` の HTML。 */
+  viewer: string | undefined;
+  /** 同じ役割 (背景地図・地形) の中で既定に使うもの (`duck:default`)。 */
+  isDefault: boolean;
+  /** 標高のエンコード (`dem.encoding` の近道)。 */
+  demEncoding: string | undefined;
   /** Itemを読む。**Collectionごとに1回だけ**通信する。 */
   items: () => Promise<LocatedItem[]>;
 }
@@ -637,9 +669,18 @@ function toCollection(
     ),
     themes: document['duck:themes'],
     generatorOptions: document['duck:generator_options'],
-    tileLink: document.links.find((link) => link.rel === 'xyz' || link.rel === 'tilejson'),
+    tileLink: document.links.find(
+      (link) => link.rel === 'xyz' || link.rel === 'tilejson' || link.rel === '3d-tiles',
+    ),
+    derivedFrom: document.links
+      .filter((link) => link.rel === 'derived_from')
+      .map((link) => resolveHref(link.href, path)),
+    viewer: document.links.find((link) => link.rel === 'alternate' && link.type === 'text/html')?.href,
+    isDefault: document['duck:default'] === true,
     zoom: document['duck:zoom'],
     tileSize: document['duck:tile_size'],
+    dem: document['duck:dem'],
+    demEncoding: document['duck:dem']?.encoding,
     bbox,
     summaries: document.summaries ?? {},
     columns: new Set(
@@ -2970,6 +3011,19 @@ const VECTOR_THEME_LOOKS: Record<string, VectorLook> = {
 };
 const DEFAULT_VECTOR_LOOK: VectorLook = { color: '#666666' };
 
+/** 標高のエンコードの呼び名。 */
+const DEM_ENCODING_LABELS: Record<string, string> = {
+  terrarium: 'Terrarium (Mapzen)',
+  mapbox: 'Terrain-RGB (Mapbox)',
+  gsi: '地理院の独自形式 (このアプリが読み込むときに Terrarium へ詰め直す)',
+};
+
+/** 高さの基準の呼び名。 */
+const DEM_VERTICAL_LABELS: Record<string, string> = {
+  orthometric: '海面から (標高)',
+  ellipsoid: 'WGS84 楕円体から (楕円体高)',
+};
+
 /** 形の種類の呼び名。 */
 const GEOMETRY_LABELS: Record<string, string> = { Point: '点', LineString: '線', Polygon: '面' };
 
@@ -3071,6 +3125,8 @@ interface VectorOverlay {
   apply: () => Promise<void>;
   /** 地図の描画の層ID → タイルの層ID。ホバーで使う。 */
   styleLayers: Map<string, string>;
+  /** タイルの層を描く地図の層ID (重ね順を並べ替えるため)。まだ読んでいなければ空。 */
+  layerIds: (sourceLayers: string[]) => string[];
 }
 
 function createVectorOverlay(map: MapLibreMap, collection: Collection, beforeId: string): VectorOverlay {
@@ -3117,7 +3173,9 @@ function createVectorOverlay(map: MapLibreMap, collection: Collection, beforeId:
     }
   };
 
-  return { collection, visible, apply, styleLayers };
+  const layerIds = (sourceLayers: string[]) => sourceLayers.flatMap((id) => bySourceLayer.get(id) ?? []);
+
+  return { collection, visible, apply, styleLayers, layerIds };
 }
 
 /**
@@ -3135,6 +3193,107 @@ function basemapSource(collection: Collection): RasterSourceSpecification {
 }
 
 /**
+ * 同じ役割 (背景地図・地形) の中で**既定に使うもの**。カタログの `duck:default` が示す
+ * (並び順に頼ると、サブカタログの順で変わる — 地理院が Mapterhorn より先に並ぶ)。
+ * 示されていなければ先頭。
+ */
+function defaultOf(collections: Collection[], kind: DatasetKind): Collection | undefined {
+  const candidates = collections.filter((c) => c.kind === kind && c.tileLink);
+  return candidates.find((c) => c.isDefault) ?? candidates[0];
+}
+
+/**
+ * 地形 (標高) のソース。カタログのリンクが TileJSON なら、タイルのURL・エンコードは
+ * TileJSON から読ませる (個別に書き写すと、向こうが変えたときに黙ってずれる)。
+ * **範囲はカタログの `duck:zoom`** — Mapterhorn の TileJSON は maxzoom を宣言していないが、
+ * 実際は z16 までしか無い (止めないと建物を見るズームで404を撃ち続ける)。
+ */
+function terrainSource(collection: Collection): RasterDEMSourceSpecification {
+  const link = collection.tileLink!;
+  if (link.rel === 'tilejson') {
+    return { type: 'raster-dem', url: link.href, maxzoom: collection.zoom?.[1] ?? 16 };
+  }
+  // 地理院の独自形式は、読み込むときに Terrarium へ詰め直す ([`registerGsiDem`])。
+  const gsi = collection.demEncoding === 'gsi';
+  if (gsi) registerGsiDem();
+  return {
+    type: 'raster-dem',
+    tiles: [gsi ? `${GSI_DEM_PROTOCOL}://${link.href}` : link.href],
+    tileSize: collection.tileSize ?? 256,
+    minzoom: collection.zoom?.[0] ?? 0,
+    maxzoom: collection.zoom?.[1] ?? 14,
+    encoding: collection.demEncoding === 'mapbox' ? 'mapbox' : 'terrarium',
+  };
+}
+
+/** 地理院の標高タイルを Terrarium に詰め直して渡す、MapLibre の取得の仕組み。 */
+const GSI_DEM_PROTOCOL = 'gsidem';
+let gsiDemRegistered = false;
+
+/**
+ * 地理院の標高を1画素ずつ高さ (m) に直す。**独自の形式**で、線形の部分は Terrain-RGB と
+ * 同じ形 (x = R×2¹⁶ + G×2⁸ + B、高さ = x × 0.01 m) だが、そのままでは読めない値が2つある:
+ *
+ * - **値なし** (x = 2²³ = (128,0,0)。海など): そのまま読むと 83,886 m の針が立つ → 0 m にする
+ * - **負の値** (x > 2²³、2の補数): そのまま読むと 8万m台に化ける → (x − 2²⁴) × 0.01 m
+ */
+function gsiDemHeight(r: number, g: number, b: number): number {
+  const x = r * 65536 + g * 256 + b;
+  if (x === 8388608) return 0;
+  return (x < 8388608 ? x : x - 16777216) * 0.01;
+}
+
+/** 高さ (m) を Terrarium の画素にする (高さ = R×256 + G + B/256 − 32768)。 */
+function terrariumPixel(height: number): [number, number, number] {
+  const v = Math.max(0, height + 32768);
+  const r = Math.floor(v / 256);
+  const g = Math.floor(v) % 256;
+  const b = Math.floor((v - Math.floor(v)) * 256);
+  return [r, g, b];
+}
+
+function registerGsiDem() {
+  if (gsiDemRegistered) return;
+  gsiDemRegistered = true;
+  /** 無いタイル (404。日本の外や海) は 0 m の平らなタイルにする。1枚だけ作って使い回す。 */
+  let flat: Promise<ArrayBuffer> | undefined;
+  const flatTile = () =>
+    (flat ??= (async () => {
+      const canvas = new OffscreenCanvas(256, 256);
+      const ctx = canvas.getContext('2d')!;
+      const [r, g, b] = terrariumPixel(0);
+      ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+      ctx.fillRect(0, 0, 256, 256);
+      return (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer();
+    })());
+  addProtocol(GSI_DEM_PROTOCOL, async (params, abortController) => {
+    const url = params.url.slice(`${GSI_DEM_PROTOCOL}://`.length);
+    const response = await fetch(url, { signal: abortController.signal });
+    if (response.status === 404) return { data: await flatTile() };
+    if (!response.ok) throw new Error(`標高タイルを読めません (${response.status}): ${url}`);
+    // **色を変えずに読む** (色空間の変換や乗算済みアルファが入ると、値が狂う)。
+    const bitmap = await createImageBitmap(await response.blob(), {
+      colorSpaceConversion: 'none',
+      premultiplyAlpha: 'none',
+    });
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+    ctx.drawImage(bitmap, 0, 0);
+    const image = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+    const pixels = image.data;
+    for (let i = 0; i < pixels.length; i += 4) {
+      const [r, g, b] = terrariumPixel(gsiDemHeight(pixels[i], pixels[i + 1], pixels[i + 2]));
+      pixels[i] = r;
+      pixels[i + 1] = g;
+      pixels[i + 2] = b;
+      pixels[i + 3] = 255;
+    }
+    ctx.putImageData(image, 0, 0);
+    return { data: await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer() };
+  });
+}
+
+/**
  * 地図の土台。**背景地図と地形のソースはカタログから組む。**
  *
  * 背景地図はすべて層まで作っておき、**先頭のもの (淡色地図) だけを出す**
@@ -3142,20 +3301,11 @@ function basemapSource(collection: Collection): RasterSourceSpecification {
  */
 function baseStyle(collections: Collection[]): StyleSpecification {
   const basemaps = collections.filter((c) => c.kind === 'raster_tiles' && c.tileLink);
-  const terrain = collections.find((c) => c.kind === 'terrain' && c.tileLink);
+  const terrain = defaultOf(collections, 'terrain');
+  const firstBasemap = defaultOf(collections, 'raster_tiles');
   const sources: StyleSpecification['sources'] = {};
   for (const collection of basemaps) sources[basemapLayerId(collection)] = basemapSource(collection);
-  if (terrain) {
-    sources[TERRAIN_SOURCE] = {
-      type: 'raster-dem',
-      // tiles / encoding (terrarium) / tileSize は tilejson から読ませる。
-      // 個別に書き写すと、向こうが変えたときに黙ってずれる。
-      url: terrain.tileLink!.href,
-      // tilejson が maxzoom を宣言していないのに、実際は z16 までしか無い。
-      // カタログに書いた範囲で止める (止めないと建物を見るズームで404を撃ち続ける)。
-      maxzoom: terrain.zoom?.[1] ?? 16,
-    };
-  }
+  if (terrain) sources[TERRAIN_SOURCE] = terrainSource(terrain);
   return {
     version: 8,
     sources,
@@ -3164,7 +3314,7 @@ function baseStyle(collections: Collection[]): StyleSpecification {
       id: basemapLayerId(collection),
       type: 'raster' as const,
       source: basemapLayerId(collection),
-      layout: { visibility: collection === basemaps[0] ? ('visible' as const) : ('none' as const) },
+      layout: { visibility: collection === firstBasemap ? ('visible' as const) : ('none' as const) },
     })),
     // ここに terrain を書かないこと。スタイルに書くと地形タイルの取得が
     // map の 'load' の条件に入り、**Mapterhornが落ちていると起動できなくなる**
@@ -4074,6 +4224,12 @@ async function main() {
   const layerRowsEl = document.querySelector<HTMLDivElement>('#layer-rows')!;
   const layerAbsentEl = document.querySelector<HTMLDivElement>('#layer-absent')!;
   const layerAbsentRowsEl = document.querySelector<HTMLDivElement>('#layer-absent-rows')!;
+  // 地図タイルの区分。出しているもの (重ね順) と、しまってあるもの。
+  const tileRowsEl = document.querySelector<HTMLDivElement>('#tile-rows')!;
+  const tileEmptyEl = document.querySelector<HTMLParagraphElement>('#tile-empty')!;
+  const tileCatalogEl = document.querySelector<HTMLDetailsElement>('#tile-catalog')!;
+  const tileCatalogCountEl = document.querySelector<HTMLSpanElement>('#tile-catalog-count')!;
+  const tileCatalogRowsEl = document.querySelector<HTMLDivElement>('#tile-catalog-rows')!;
   /** 「検索できるもの」を開くボタン。裏方が揃ってから出す。中身はダイアログにある。 */
   const layerSupportEl = document.querySelector<HTMLButtonElement>('#layer-support')!;
   const layerSupportRowsEl = document.querySelector<HTMLDivElement>('#layer-support-rows')!;
@@ -4091,11 +4247,36 @@ async function main() {
   // 技術の謝辞はカタログに依らないので、初期化を待たずに出す (失敗しても読める)。
   renderTechCredits(document.querySelector<HTMLDivElement>('#tech-credits')!);
 
+  // ---- 小さい画面 (スマホ) ----------------------------------------------------
+  //
+  // **一覧は見出しを押すと畳める。** スマホ幅では畳んだ状態で始める (地図を広く見せる)。
+  // 右下の「使い方・出典…」は、スマホ幅では検索欄の横の ☰ から開く (画面の下は一覧が使う)。
+  const narrowScreen = window.matchMedia('(max-width: 640px)');
+  const dataPanelToggle = document.querySelector<HTMLButtonElement>('#data-panel-toggle')!;
+  const layerBodyEl = document.querySelector<HTMLDivElement>('#layer-body')!;
+  const setDataPanelOpen = (open: boolean) => {
+    layerBodyEl.hidden = !open;
+    dataPanelToggle.setAttribute('aria-expanded', String(open));
+  };
+  setDataPanelOpen(!narrowScreen.matches);
+  dataPanelToggle.addEventListener('click', () => setDataPanelOpen(layerBodyEl.hidden === true));
+
+  const infoMenuButton = document.querySelector<HTMLButtonElement>('#info-menu-button')!;
+  const infoPanelEl = document.querySelector<HTMLDivElement>('#info-panel')!;
+  const setInfoMenuOpen = (open: boolean) => {
+    infoPanelEl.classList.toggle('open', open);
+    infoMenuButton.setAttribute('aria-expanded', String(open));
+  };
+  infoMenuButton.addEventListener('click', () => setInfoMenuOpen(!infoPanelEl.classList.contains('open')));
+
   // 出典・使っている技術のダイアログ。右下のパネルは幅が狭く、長い文言が細切れに
   // 折り返して読めないので、押したらダイアログで広く出す。
   for (const button of document.querySelectorAll<HTMLButtonElement>('.info-open')) {
     const dialog = document.getElementById(button.dataset.dialog!) as HTMLDialogElement;
-    button.addEventListener('click', () => dialog.showModal());
+    button.addEventListener('click', () => {
+      setInfoMenuOpen(false);
+      dialog.showModal();
+    });
   }
   for (const dialog of document.querySelectorAll<HTMLDialogElement>('.info-dialog')) {
     dialog.querySelector('.info-dialog-close')!.addEventListener('click', () => dialog.close());
@@ -5277,10 +5458,12 @@ async function main() {
      */
     parts?: { overlay: VectorOverlay; layers: VectorLayerInfo[] };
     /**
-     * 背景 (地図タイル・地形)。**出所の見出しを既定で開く理由にしない** —
-     * 既定で淡色地図と地形が出ているので、数えると国土地理院とMapterhornが常に開く。
+     * **地図タイル** (ベクタータイルのテーマ・背景地図)。データ (GeoParquet) と区分を分け、
+     * 出しているものを**重ね順に並べる** (上の行ほど上)。`mapLayerIds` はその行を描く地図の層。
      */
-    background?: boolean;
+    tile?: { mapLayerIds: () => string[] };
+    /** この地図では描けない理由 (3D Tiles)。あればチェックを押せなくし、行に理由を書く。 */
+    viewOnly?: string;
   }
 
   /** 中の層を開いている行。**描き直しても開いたまま**にする (一覧は moveend ごとに作り直す)。 */
@@ -5296,23 +5479,52 @@ async function main() {
   /** 外部のベクトルタイル。ホバーで引き当てるために持っておく。 */
   const vectorOverlays: VectorOverlay[] = [];
 
-  // ---- 背景地図と地形 (一覧の行) ----------------------------------------------
+  // ---- 地図タイル (背景地図・ベクタータイル) と地形 ---------------------------------
   //
-  // **QGISと同じく、背景地図も重ねられるレイヤーの1つ。** 以前は select で1つ選ぶだけで、
-  // どこの何を使っているか (出所・使う条件) が画面から見えなかった。
+  // **QGISと同じく、背景地図も重ねられるレイヤーの1つ。** 出しているものを一覧に
+  // **重ね順で**並べる (上の行ほど上)。以前は「後から入れたものが上」という規則で
+  // 重ねていたが、一覧から順番が見えないので、何が上にあるかが分からなかった。
 
-  const basemapIds = new Set(
-    collections.filter((c) => c.kind === 'raster_tiles').map((c) => basemapLayerId(c)),
-  );
+  /** 出している地図タイルの行ID。**先頭がいちばん上。** */
+  let tileOrder: string[] = [];
 
   /**
-   * **入れた背景地図を、背景地図の中でいちばん上にする。** 不透明な地図同士なので、
-   * カタログの並び順で重ねると、入れたのに下に隠れて「切り替わらない」ように見える。
+   * 重ね順を地図に写す。**下から順に、データのいちばん下の層の直下へ動かす**
+   * (動かすたびにその直下へ入るので、最後に動かしたものがいちばん上になる)。
+   * データ (GeoParquet) は地図タイルより常に上。
    */
-  const raiseBasemap = (id: string) => {
-    const above = map.getStyle().layers.find((l) => !basemapIds.has(l.id));
-    map.moveLayer(id, above?.id);
+  function applyTileOrder() {
+    if (!map.getLayer(VECTOR_OVERLAY_BEFORE)) return;
+    for (const id of [...tileOrder].reverse()) {
+      const layer = layers.find((l) => l.id === id);
+      for (const mapLayer of layer?.tile?.mapLayerIds() ?? []) {
+        if (map.getLayer(mapLayer)) map.moveLayer(mapLayer, VECTOR_OVERLAY_BEFORE);
+      }
+    }
+  }
+
+  /** 出した行は**いちばん上に**加え、外した行は順番から外す。 */
+  const syncTileOrder = (layer: Layer) => {
+    const shown = tileOrder.includes(layer.id);
+    if (layer.visible && !shown) tileOrder = [layer.id, ...tileOrder];
+    if (!layer.visible && shown) tileOrder = tileOrder.filter((id) => id !== layer.id);
   };
+
+  /** ↑↓ で1つ動かす。 */
+  const moveTile = (layer: Layer, delta: -1 | 1) => {
+    const index = tileOrder.indexOf(layer.id);
+    const target = index + delta;
+    if (index < 0 || target < 0 || target >= tileOrder.length) return;
+    const next = [...tileOrder];
+    [next[index], next[target]] = [next[target], next[index]];
+    tileOrder = next;
+    applyTileOrder();
+    renderLayerList();
+  };
+
+  /** 地形に使える標高 (Mapterhorn・Re:Earth・地理院…)。**1つだけ**選ぶ。 */
+  const terrainCollections: Collection[] = [];
+
 
   /** 範囲つきのスライダー1つ (不透明度・起伏の強調)。地図を見ながら動かすので行の下に開く。 */
   const sliderSettings = (
@@ -5344,10 +5556,6 @@ async function main() {
     return settings;
   };
 
-  /** 地形の起伏の強調。行の ⚙ で変え、切って入れ直しても保つ。 */
-  let terrainExaggeration = 1;
-  /** 地形の行。TerrainControl (地図右上のボタン) で切られたときに、行を追随させる。 */
-  let terrainLayer: Layer | undefined;
   /** 外部のベクトルタイルは、うちのデータでいちばん下の層 (人口メッシュ) のさらに下に敷く。 */
   const VECTOR_OVERLAY_BEFORE = 'population-mesh-fill';
 
@@ -5427,48 +5635,41 @@ async function main() {
       case 'raster_tiles': {
         if (!collection.tileLink) break;
         const id = basemapLayerId(collection);
-        const first = collections.find((c) => c.kind === 'raster_tiles' && c.tileLink);
+        const first = defaultOf(collections, 'raster_tiles');
         layers.push({
           ...base,
           // **先頭の背景地図 (淡色地図) だけ既定で出す** (スタイルを組むときと同じ規則)。
           visible: collection === first,
           // 何のソースかを行で言う (データの行が版を添えるのと同じ場所)。
-          vintage: `地図タイル (XYZ) · ズーム${collection.zoom?.join('〜') ?? ''}`,
-          background: true,
+          vintage: `${collection.group?.title ?? ''} · 地図タイル (XYZ) · ズーム${collection.zoom?.join('〜') ?? ''}`,
           settings: sliderSettings('不透明度', 0, 100, 5, 100, (v) => `${v}%`, (v) =>
             map.setPaintProperty(id, 'raster-opacity', v / 100),
           ),
           refresh: () => {
-            const visible = isLayerVisible(collection.id);
-            map.setLayoutProperty(id, 'visibility', visible ? 'visible' : 'none');
-            if (visible) raiseBasemap(id);
+            map.setLayoutProperty(id, 'visibility', isLayerVisible(collection.id) ? 'visible' : 'none');
+            applyTileOrder();
           },
+          tile: { mapLayerIds: () => [id] },
         });
         break;
       }
-      case 'terrain': {
-        if (!collection.tileLink) break;
-        const apply = () =>
-          map.setTerrain(
-            isLayerVisible(collection.id)
-              ? { source: TERRAIN_SOURCE, exaggeration: terrainExaggeration }
-              : null,
-          );
-        terrainLayer = {
-          ...base,
-          // 起動時に有効にしている (initMap)。
-          visible: map.getTerrain() !== null,
-          vintage: `標高タイル (TileJSON) · ズーム${collection.zoom?.join('〜') ?? ''}`,
-          background: true,
-          settings: sliderSettings('起伏の強調', 1, 3, 0.5, 1, (v) => `×${v}`, (v) => {
-            terrainExaggeration = v;
-            if (map.getTerrain()) apply();
-          }),
-          refresh: apply,
-        };
-        layers.push(terrainLayer);
+      case 'terrain':
+        // 地形は**1つだけ**選ぶ (MapLibre は地形を1つしか持てない)。行ではなく、
+        // 地図タイルの区分の「地形」の欄で、出すかとどの標高かを選ぶ。
+        if (collection.tileLink) terrainCollections.push(collection);
         break;
-      }
+      case '3d_tiles':
+        // **この地図では描けない** (MapLibre は 3D Tiles を描かない)。それでも、カタログに
+        // 何があるかは見せる — 行を出してチェックは押せなくし、ⓘ からビューアへ案内する。
+        layers.push({
+          ...base,
+          vintage: `${collection.group?.title ?? ''} · 3D Tiles`,
+          settings: document.createElement('div'),
+          refresh: () => {},
+          tile: { mapLayerIds: () => [] },
+          viewOnly: 'この地図では描けません (3D Tiles)。ⓘ から公式のビューアで見られます',
+        });
+        break;
       case 'vector_tiles': {
         // **テーマごとに1行。** 層はテーマの中に入れ、行を開くと出てくる。
         const overlay = createVectorOverlay(map, collection, VECTOR_OVERLAY_BEFORE);
@@ -5482,15 +5683,19 @@ async function main() {
             id: rowId,
             title: theme.title,
             // 出所 (見出し) が同じでも、どのタイルセットの層かを版と一緒に添える。
-            vintage: [collection.title, collection.vintage].filter(Boolean).join(' · '),
+            vintage: [collection.group?.title, collection.title, collection.vintage].filter(Boolean).join(' · '),
             settings,
             refresh: () => {
-              overlay.apply().catch((e: unknown) => {
-                console.error('[vector] apply failed', e);
-                setLayerStatus(rowId, '読めませんでした');
-              });
+              overlay
+                .apply()
+                .then(applyTileOrder)
+                .catch((e: unknown) => {
+                  console.error('[vector] apply failed', e);
+                  setLayerStatus(rowId, '読めませんでした');
+                });
             },
             parts: { overlay, layers: theme.layers },
+            tile: { mapLayerIds: () => overlay.layerIds(theme.layers.map((l) => l.id)) },
           });
         }
         break;
@@ -5844,21 +6049,62 @@ async function main() {
     fact: (term: string, ...value: (string | Node)[]) => HTMLElement,
   ) => {
     const link = collection.tileLink;
-    if (link) {
+    if (link?.rel === '3d-tiles') {
+      fact('形式', '3D Tiles ', externalLink(link.href, 'tileset.json'));
+    } else if (link) {
       const tileJson = link.rel === 'tilejson';
       // XYZ のテンプレートはそのままでは開けないので、文字で見せる (TileJSON はリンク)。
       const where = tileJson ? externalLink(link.href, 'TileJSON') : document.createElement('code');
       if (!tileJson) where.textContent = link.href;
-      fact('形式', tileJson ? '標高タイル (TileJSON) ' : '地図タイル (XYZ) ', where);
+      const kind = collection.kind === 'terrain' ? '標高タイル' : '地図タイル';
+      fact('形式', `${kind} (${tileJson ? 'TileJSON' : 'XYZ'}) `, where);
     }
-    if (collection.zoom) {
+    // **標高の中身の約束** (エンコード・高さの基準・値なしの扱い)。同じ「標高タイル」でも違う。
+    if (collection.dem) {
+      fact('標高の形式', DEM_ENCODING_LABELS[collection.dem.encoding] ?? collection.dem.encoding);
+      fact('高さの基準', DEM_VERTICAL_LABELS[collection.dem.vertical] ?? collection.dem.vertical);
+      if (collection.dem.description) fact('読み方', collection.dem.description);
+    }
+    if (collection.zoom && collection.kind !== 'reference') {
       fact('ズーム', `${collection.zoom[0]}〜${collection.zoom[1]} (それより寄ると拡大して描く)`);
     }
-    fact(
-      '引き方',
-      collection.kind === 'terrain' ? '地図を立体にするだけ。SQL では引けない' : '下に敷いて見るだけ。SQL では引けない',
-    );
+    const use: Partial<Record<DatasetKind, string>> = {
+      terrain: '地図を立体にするだけ。SQL では引けない',
+      raster_tiles: '下に敷いて見るだけ。SQL では引けない',
+      '3d_tiles': 'この地図 (MapLibre) では描けない。公式のビューアで見る',
+      reference: 'このカタログからは配っていない (作られた元として載せている)',
+    };
+    if (use[collection.kind]) fact('引き方', use[collection.kind]!);
+    if (collection.viewer) fact('ビューア', externalLink(collection.viewer, '公式のビューアで開く'));
     if (collection.bbox) fact('範囲', formatBbox(collection.bbox));
+  };
+
+  /**
+   * **作られた元** (`derived_from`)。押すとその Collection のカードに移る (カタログを辿れる)。
+   * 「Mapterhorn の日本は基盤地図情報」のような関係を、画面から追えるようにする。
+   */
+  const derivedFromFact = (
+    collection: Collection,
+    fact: (term: string, ...value: (string | Node)[]) => HTMLElement,
+  ) => {
+    if (collection.derivedFrom.length === 0) return;
+    const buttons = collection.derivedFrom.map((path) => {
+      const target = collections.find((c) => c.path === path);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'json-link derived-from';
+      button.textContent = target ? `${target.group?.title ?? ''} › ${target.title}` : path;
+      button.addEventListener('click', () => {
+        if (!target) {
+          openStac(path);
+          return;
+        }
+        layerDetailTitleEl.textContent = `${target.group?.title ?? ''} › ${target.title}`;
+        layerCatalogEl.replaceChildren(collectionCard(target));
+      });
+      return button;
+    });
+    fact('作られた元', ...buttons.flatMap((button, i) => (i === 0 ? [button] : [' · ', button])));
   };
 
   const collectionCard = (collection: Collection): HTMLElement => {
@@ -5905,7 +6151,13 @@ async function main() {
       card.append(head, description, facts, ...vectorTilesFacts(collection, fact));
       return card;
     }
-    if (collection.kind === 'raster_tiles' || collection.kind === 'terrain') {
+    derivedFromFact(collection, fact);
+    if (
+      collection.kind === 'raster_tiles' ||
+      collection.kind === 'terrain' ||
+      collection.kind === '3d_tiles' ||
+      collection.kind === 'reference'
+    ) {
       tileFacts(collection, fact);
       card.append(head, description, facts);
       return card;
@@ -5973,11 +6225,11 @@ async function main() {
       layer.visible = toggle.checked;
       if (parts) {
         for (const part of parts.layers) parts.overlay.visible.set(part.id, toggle.checked);
-        layer.refresh();
-        renderLayerList();
-        return;
       }
+      // 地図タイルは、出したら重ね順のいちばん上へ、外したら順番から外す。
+      if (layer.tile) syncTileOrder(layer);
       layer.refresh();
+      if (parts || layer.tile) renderLayerList();
     });
 
     const name = document.createElement('label');
@@ -5991,6 +6243,11 @@ async function main() {
     status.className = 'layer-status';
     status.dataset.layerStatus = layer.id;
     status.textContent = layerStatus.get(layer.id) ?? '';
+    // この地図で描けないものは、チェックを押せなくして理由を書く。
+    if (layer.viewOnly) {
+      toggle.disabled = true;
+      status.textContent = layer.viewOnly;
+    }
 
     // 出所は見出し (サブカタログ) が言うので、行には版だけを添える。
     const source = document.createElement('span');
@@ -6042,6 +6299,24 @@ async function main() {
     const head = document.createElement('div');
     head.className = 'layer-head';
     head.append(toggle, name, zoomIn, settings, detail);
+    // 出している地図タイルは**重ね順を ↑↓ で入れ替えられる** (上の行ほど上に重なる)。
+    const order = tileOrder.indexOf(layer.id);
+    if (layer.tile && order >= 0) {
+      const move = (delta: -1 | 1, label: string, disabled: boolean) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'layer-move-button';
+        button.textContent = delta < 0 ? '↑' : '↓';
+        button.title = label;
+        button.disabled = disabled;
+        button.addEventListener('click', () => moveTile(layer, delta));
+        return button;
+      };
+      head.append(
+        move(-1, '上へ (上に重ねる)', order === 0),
+        move(1, '下へ (下に重ねる)', order === tileOrder.length - 1),
+      );
+    }
 
     const sub = document.createElement('div');
     sub.className = 'layer-sub';
@@ -6119,6 +6394,8 @@ async function main() {
       box.checked = parts.overlay.visible.get(part.id) ?? false;
       box.addEventListener('change', () => {
         parts.overlay.visible.set(part.id, box.checked);
+        layer.visible = parts.layers.some((p) => parts.overlay.visible.get(p.id));
+        if (layer.tile) syncTileOrder(layer);
         layer.refresh();
         renderLayerList();
       });
@@ -6153,17 +6430,77 @@ async function main() {
    */
   const openGroups = new Set(
     layers
-      .filter((layer) => layer.visible && layer.group && !layer.background)
+      .filter((layer) => layer.visible && layer.group && !layer.tile)
       .map((layer) => layer.group!.id),
   );
+  // 既定で出している地図タイル (淡色地図) から重ね順を始める。
+  tileOrder = layers.filter((layer) => layer.tile && layer.visible).map((layer) => layer.id);
 
-  // 地図右上の地形ボタンで切られたら、一覧の行を追随させる (逆は行の refresh が切る)。
+  // ---- 地形 ---------------------------------------------------------------------
+  //
+  // **1つだけ選ぶ。** 出すか (チェック) と、どの標高か (選択) を1行で。地図右上の
+  // 地形ボタン (TerrainControl) と同じものを切るので、どちらで切っても追随する。
+  const terrainRowEl = document.querySelector<HTMLDivElement>('#terrain-row')!;
+  const terrainToggle = document.querySelector<HTMLInputElement>('#terrain-toggle')!;
+  const terrainSelect = document.querySelector<HTMLSelectElement>('#terrain-source')!;
+  const terrainSettingsButton = document.querySelector<HTMLButtonElement>('#terrain-settings')!;
+  const terrainDetailButton = document.querySelector<HTMLButtonElement>('#terrain-detail')!;
+  const terrainSlotEl = document.querySelector<HTMLDivElement>('#terrain-slot')!;
+  let terrainExaggeration = 1;
+  let terrainChoice = defaultOf(terrainCollections, 'terrain');
+  /** 標高を差し替えている最中 (その間の「地形が外れた」通知は、チェックに写さない)。 */
+  let switchingTerrain = false;
+  terrainRowEl.hidden = terrainCollections.length === 0;
+  for (const collection of terrainCollections) {
+    const option = document.createElement('option');
+    option.value = collection.id;
+    option.textContent = `${collection.title} (${collection.group?.title ?? ''})`;
+    terrainSelect.append(option);
+  }
+  if (terrainChoice) terrainSelect.value = terrainChoice.id;
+  terrainToggle.checked = map.getTerrain() !== null;
+
+  const applyTerrain = () =>
+    map.setTerrain(
+      terrainToggle.checked && terrainChoice
+        ? { source: TERRAIN_SOURCE, exaggeration: terrainExaggeration }
+        : null,
+    );
+  terrainToggle.addEventListener('change', applyTerrain);
+  terrainSelect.addEventListener('change', () => {
+    const next = terrainCollections.find((c) => c.id === terrainSelect.value);
+    if (!next || next === terrainChoice) return;
+    terrainChoice = next;
+    // **ソースごと差し替える** (URL もエンコードも範囲も標高ごとに違う)。差し替えのために
+    // いったん外すが、その通知でチェックを外さない (外すと、付け直されずに地形が消えた)。
+    switchingTerrain = true;
+    map.setTerrain(null);
+    if (map.getSource(TERRAIN_SOURCE)) map.removeSource(TERRAIN_SOURCE);
+    map.addSource(TERRAIN_SOURCE, terrainSource(next));
+    switchingTerrain = false;
+    applyTerrain();
+  });
+  // 起伏の強調は ⚙ で行の下に開く (地図を見ながら動かすもの)。
+  terrainSlotEl.append(
+    sliderSettings('起伏の強調', 1, 3, 0.5, 1, (v) => `×${v}`, (v) => {
+      terrainExaggeration = v;
+      if (map.getTerrain()) applyTerrain();
+    }),
+  );
+  terrainSettingsButton.addEventListener('click', () => {
+    terrainSlotEl.hidden = !terrainSlotEl.hidden;
+    terrainSettingsButton.setAttribute('aria-expanded', String(!terrainSlotEl.hidden));
+  });
+  terrainDetailButton.addEventListener('click', () => {
+    if (!terrainChoice) return;
+    layerDetailTitleEl.textContent = `地形 › ${terrainChoice.group?.title ?? ''} › ${terrainChoice.title}`;
+    layerCatalogEl.replaceChildren(collectionCard(terrainChoice));
+    layerDetailDialog.showModal();
+  });
+  // 地図右上の地形ボタンで切られたら、一覧のチェックを追随させる。
   map.on('terrain', () => {
-    if (!terrainLayer) return;
-    const on = map.getTerrain() !== null;
-    if (terrainLayer.visible === on) return;
-    terrainLayer.visible = on;
-    renderLayerList();
+    if (switchingTerrain) return;
+    terrainToggle.checked = map.getTerrain() !== null;
   });
 
   const groupHeading = (group: CatalogGroup, rows: Layer[], open: boolean): HTMLElement => {
@@ -6298,14 +6635,53 @@ async function main() {
     // (戻さないと、閉じたときに作り直す前の行と一緒にDOMから外れたままになる)。
     for (const layer of layers) layerSettingsStoreEl.append(layer.settings);
     const matches = layerMatcher();
-    const rows = matches ? layers.filter((layer) => matches(layerHaystack(layer))) : layers;
-    const present = rows.filter(isPresent);
-    const absent = rows.filter((layer) => !isPresent(layer));
+    const hit = (layer: Layer) => !matches || matches(layerHaystack(layer));
+
+    // **データ** (SQL で引ける GeoParquet)。出所ごとに開け閉めする。
+    const data = layers.filter((layer) => !layer.tile && hit(layer));
+    const present = data.filter(isPresent);
+    const absent = data.filter((layer) => !isPresent(layer));
     layerRowsEl.replaceChildren(...withHeadings(present, true, matches));
     layerAbsentRowsEl.replaceChildren(...withHeadings(absent, false, matches));
     layerAbsentEl.hidden = absent.length === 0;
-    layerFilterEmptyEl.hidden = !matches || rows.length > 0;
+
+    // **地図タイル。** 出しているものを重ね順に (上の行ほど上)、出していないものは
+    // 「地図タイルを足す」に出所ごとにしまう。
+    const shown = tileOrder
+      .map((id) => layers.find((layer) => layer.id === id))
+      .filter((layer): layer is Layer => layer !== undefined && hit(layer));
+    const spare = layers.filter((layer) => layer.tile && !tileOrder.includes(layer.id) && hit(layer));
+    tileRowsEl.replaceChildren(...shown.map((layer) => layerRow(layer, true, matches)));
+    tileEmptyEl.hidden = shown.length > 0 || matches !== undefined;
+    tileCatalogCountEl.textContent = String(spare.length);
+    tileCatalogRowsEl.replaceChildren(...catalogRows(spare, matches));
+    // 絞り込み中は、しまってあるものも開いて見せる。
+    if (matches && spare.length > 0) tileCatalogEl.open = true;
+
+    layerFilterEmptyEl.hidden = !matches || data.length + shown.length + spare.length > 0;
   }
+
+  /** しまってある地図タイルを出所ごとに並べる (見出しは開け閉めしない — 既に畳んだ中にある)。 */
+  const catalogRows = (rows: Layer[], matches?: (text: string) => boolean): HTMLElement[] => {
+    const nodes: HTMLElement[] = [];
+    let previous: string | undefined;
+    for (const layer of rows) {
+      if (layer.group && layer.group.id !== previous) {
+        const heading = document.createElement('div');
+        heading.className = 'tile-group';
+        heading.dataset.group = layer.group.id;
+        heading.title = layer.group.description;
+        const title = document.createElement('span');
+        title.className = 'layer-group-title';
+        title.textContent = layer.group.title;
+        heading.append(title, jsonLink(layer.group.path, 'Catalog'));
+        nodes.push(heading);
+        previous = layer.group.id;
+      }
+      nodes.push(layerRow(layer, true, matches));
+    }
+    return nodes;
+  };
 
   /** 整備範囲を持つ行について、表示範囲にセルがあるかを聞き直す。 */
   const refreshPresence = async () => {

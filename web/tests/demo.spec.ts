@@ -187,6 +187,16 @@ async function revealLayer(page: Page, layer: string) {
   const row = page.locator(`[data-layer="${layer}"]`).first();
   await expect(row).toBeAttached();
   if (await row.isVisible()) return;
+  // しまってある地図タイル (「地図タイルを足す」の中) なら、それを開く。
+  const inCatalog = await page.evaluate(
+    (id) => document.querySelector(`#tile-catalog [data-layer="${id}"]`) !== null,
+    layer,
+  );
+  if (inCatalog) {
+    await page.locator('#tile-catalog').evaluate((el) => ((el as HTMLDetailsElement).open = true));
+    await expect(row).toBeVisible();
+    return;
+  }
   // 行の直前にある見出し = その行の出所。**ページの中で1回で探す** — 一覧は moveend ごとに
   // 作り直されるので、行を掴んでから辿ると、その間に外れた要素を辿ることがある。
   const group = await page.evaluate((id) => {
@@ -275,7 +285,8 @@ async function useOvertureBuildings(page: Page) {
 
 /** 初期化 (DuckDB + 地図) の完了を待つ。 */
 async function waitForReady(page: Page) {
-  await expect(page.locator('#loading')).toBeHidden();
+  // 単独なら5秒前後だが、並列で流して CPU を取り合うと15秒を超えることがあった。
+  await expect(page.locator('#loading')).toBeHidden({ timeout: 30_000 });
   await expect(page.locator('#search-input')).toBeEnabled();
 }
 
@@ -871,7 +882,9 @@ test('逆ジオコーディング中は合図が出る', async ({ page }) => {
   });
   // 先に建物側を出し切って、合図が建物のものでないことを確かめられる状態にする。
   // **このズームで出るのは段で間引いた建物** (公共施設だけ。全部はズーム15から)。
-  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
+  await expect
+    .poll(() => sourceFeatureCount(page, 'buildings'), { timeout: 60_000 })
+    .toBeGreaterThan(0);
   await expect(page.locator('#busy')).toBeHidden();
 
   // 合図を確かめるまで行政区域を渡さない。
@@ -898,8 +911,23 @@ const BASEMAP = {
   pale: 'gsi-pale',
   photo: 'gsi-photo',
   blank: 'gsi-blank',
-  terrain: 'mapterhorn-terrain',
+  /** 地形の欄 (標高を1つ選ぶ)。行ID。 */
+  terrain: 'terrain',
 } as const;
+
+/** 地形に使える標高 (カタログの Collection ID)。 */
+const TERRAIN = {
+  mapterhorn: 'mapterhorn-terrain',
+  reearth: 'reearth-terrain',
+  gsi: 'gsi-dem',
+} as const;
+
+/** 出している地図タイルの行ID (一覧の上から = 上に重なる順)。 */
+function shownTiles(page: Page): Promise<string[]> {
+  return page
+    .locator('#tile-rows > [data-layer]')
+    .evaluateAll((rows) => rows.map((row) => (row as HTMLElement).dataset.layer!));
+}
 
 /** 背景地図の地図上の層の並び (下から)。出しているものだけ。 */
 function visibleBasemaps(page: Page): Promise<string[]> {
@@ -957,9 +985,16 @@ test('背景地図と地形の出所が ⓘ で分かる', async ({ page }) => {
   await expect(blank.locator('.terms-badge', { hasText: '商用可' })).toBeVisible();
 
   await openLayerDetails(page, BASEMAP.terrain);
-  const terrain = page.locator(`.collection-card[data-collection="${BASEMAP.terrain}"]`);
+  const terrain = page.locator(`.collection-card[data-collection="${TERRAIN.mapterhorn}"]`);
   await expect(page.locator('#layer-detail-title')).toContainText('Mapterhorn');
   await expect(terrain.locator('a', { hasText: 'TileJSON' })).toHaveAttribute('href', /tilejson\.json$/);
+  // **標高の形式と高さの基準**が読める。
+  await expect(terrain).toContainText('Terrarium');
+  await expect(terrain).toContainText('海面から');
+  // **作られた元**を辿れる: Mapterhorn の日本は基盤地図情報 (地理院)。押すとそのカードへ。
+  await terrain.locator('.derived-from', { hasText: '基盤地図情報' }).click();
+  const source = page.locator('.collection-card[data-collection="gsi-dem-source"]');
+  await expect(source).toContainText('測量法');
 });
 
 /**
@@ -998,14 +1033,88 @@ test('地形を切っても地図は変わらず、一覧の行も追随する',
     .toBe(null);
 
   expect(await visibleBasemaps(page)).toContain(BASEMAP.photo);
-  await revealLayer(page, BASEMAP.terrain);
-  await expect(page.locator(`#layer-toggle-${BASEMAP.terrain}`)).not.toBeChecked();
+  await expect(page.locator('#terrain-toggle')).not.toBeChecked();
 
   // 一覧から入れ直せる。
-  await showLayer(page, BASEMAP.terrain);
+  await page.locator('#terrain-toggle').check();
   await expect
     .poll(() => page.evaluate(() => (window as unknown as TestWindow).__map!.getTerrain() !== null))
     .toBe(true);
+});
+
+/**
+ * **地形は1つだけ選ぶ** (Mapterhorn・Re:Earth Terrain・地理院の標高)。選び直すと、
+ * そのタイルを取りに行く。地理院の標高は独自形式なので、読み込むときに直す:
+ * 値なし (海) を 0 m に、負の値を負のまま。そのまま読むと 8万m台の針が立つ。
+ */
+test('地形の標高を選び直せ、地理院の標高は値なしと負の値を直して使う', async ({ page }) => {
+  const options = await page
+    .locator('#terrain-source option')
+    .evaluateAll((els) => els.map((el) => (el as HTMLOptionElement).value));
+  expect(options).toEqual(expect.arrayContaining([TERRAIN.mapterhorn, TERRAIN.reearth, TERRAIN.gsi]));
+
+  const asked: string[] = [];
+  page.on('request', (request) => {
+    if (/reearth|dem_png/.test(request.url())) asked.push(request.url());
+  });
+  await page.evaluate(() => {
+    // 富士山の山頂付近と、東京湾 (海 = 値なし)。
+    (window as unknown as TestWindow).__map!.jumpTo({ center: [138.73, 35.36], zoom: 11, pitch: 0 });
+  });
+  await page.locator('#terrain-source').selectOption(TERRAIN.reearth);
+  await expect.poll(() => asked.some((url) => url.includes('terrain.reearth.land'))).toBe(true);
+  // **選び直しても地形は付いたまま** (差し替えのためにいったん外した通知で、
+  // チェックが外れて地形が消えていた)。
+  await expect(page.locator('#terrain-toggle')).toBeChecked();
+  expect(
+    await page.evaluate(() => (window as unknown as TestWindow).__map!.getTerrain() !== null),
+  ).toBe(true);
+
+  await page.locator('#terrain-source').selectOption(TERRAIN.gsi);
+  // タイルの取得はブラウザのキャッシュから出ると記録に現れないので、地形のソースの中身で見る。
+  // 独自形式なので、読み込むときに直す仕組み (gsidem://) を通す。
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const source = (window as unknown as TestWindow).__map!.getSource('terrain') as unknown as {
+          tiles?: string[];
+        };
+        return source?.tiles?.[0] ?? '';
+      }),
+    )
+    .toMatch(/^gsidem:\/\/https:\/\/cyberjapandata\.gsi\.go\.jp\/xyz\/dem_png\//);
+  const elevation = (lng: number, lat: number) =>
+    page.evaluate(
+      ([lng, lat]) => (window as unknown as TestWindow).__map!.queryTerrainElevation([lng, lat]),
+      [lng, lat],
+    );
+  // 富士山頂 (3,776 m) の近く。読み込みを待つ。
+  await expect.poll(() => elevation(138.7274, 35.3606), { timeout: 30_000 }).toBeGreaterThan(3000);
+  expect(await elevation(138.7274, 35.3606)).toBeLessThan(4000);
+
+  // 海 (値なし) は 0 m 付近。針 (8万m) が立っていない。
+  await page.evaluate(() => {
+    (window as unknown as TestWindow).__map!.jumpTo({ center: [139.85, 35.5], zoom: 11 });
+  });
+  await expect.poll(() => elevation(139.85, 35.5), { timeout: 30_000 }).not.toBeNull();
+  const sea = (await elevation(139.85, 35.5)) as number;
+  expect(Math.abs(sea)).toBeLessThan(10);
+});
+
+/**
+ * **3D Tiles (Re:Earth Buildings) は、この地図では描けない。** それでもカタログにあることは
+ * 見せる: 行のチェックは押せず、理由を書き、ⓘ から公式のビューアへ案内する。
+ */
+test('3D Tiles は描けない理由を出し、ⓘ からビューアへ案内する', async ({ page }) => {
+  await revealLayer(page, 'reearth-buildings');
+  const row = page.locator('[data-layer="reearth-buildings"]');
+  await expect(row.locator('input[type="checkbox"]').first()).toBeDisabled();
+  await expect(row).toContainText('描けません');
+  await openLayerDetails(page, 'reearth-buildings');
+  const card = page.locator('.collection-card[data-collection="reearth-buildings"]');
+  await expect(card.locator('a', { hasText: 'ビューア' })).toHaveAttribute('href', 'https://buildings.reearth.land/');
+  await expect(card).toContainText('楕円体');
+  await expect(card.locator('.derived-from', { hasText: '建物' })).toBeVisible();
 });
 
 test('地形が有効になっていて、コンパスの下のボタンで切れる', async ({ page }) => {
@@ -2308,15 +2417,31 @@ test('検索していないときは左上が地図を塞がない', async ({ pa
  * 背景地図と地形は**出所の見出しの下の行**。既定で出ているが、それを理由に見出しは開かない
  * (開くと国土地理院とMapterhornが常に開いて一覧が伸びる)。見出しの件数で出ていると分かる。
  */
-test('背景地図と地形は出所の見出しの下にあり、既定では見出しを開かない', async ({ page }) => {
-  const gsi = page.locator('#layer-rows .layer-group[data-group="duck-geocoder-gsi"]');
-  const mapterhorn = page.locator('#layer-rows .layer-group[data-group="duck-geocoder-mapterhorn"]');
-  await expect(gsi.locator('.layer-group-toggle')).toHaveAttribute('aria-expanded', 'false');
-  await expect(gsi).toContainText('1件表示中');
-  await expect(mapterhorn).toContainText('1件表示中');
-  await revealLayer(page, BASEMAP.pale);
-  await expect(page.locator(`#layer-toggle-${BASEMAP.pale}`)).toBeChecked();
+test('地図タイルは出しているものを重ね順に並べ、↑↓ で入れ替えられる', async ({ page }) => {
+  // 既定では淡色地図だけ。しまってあるものは「地図タイルを足す」の中 (閉じている)。
+  expect(await shownTiles(page)).toEqual([BASEMAP.pale]);
+  await expect(page.locator('#tile-catalog')).not.toHaveAttribute('open', '');
+  await expect(page.locator('#terrain-toggle')).toBeChecked();
   await expect(page.locator(`[data-layer="${BASEMAP.pale}"]`)).toContainText('地図タイル');
+
+  // 足すと**いちばん上**に入り、一覧でも上に並ぶ (何が上かが一覧で見える)。
+  await showLayer(page, BASEMAP.photo);
+  expect(await shownTiles(page)).toEqual([BASEMAP.photo, BASEMAP.pale]);
+  expect(await visibleBasemaps(page)).toEqual([BASEMAP.pale, BASEMAP.photo]);
+
+  // ↓ で写真を下へ。地図の重ね順も入れ替わる。
+  await page.locator(`[data-layer="${BASEMAP.photo}"] .layer-move-button`, { hasText: '↓' }).click();
+  expect(await shownTiles(page)).toEqual([BASEMAP.pale, BASEMAP.photo]);
+  await expect.poll(() => visibleBasemaps(page)).toEqual([BASEMAP.photo, BASEMAP.pale]);
+  // いちばん上の ↑ と、いちばん下の ↓ は押せない。
+  await expect(
+    page.locator(`[data-layer="${BASEMAP.pale}"] .layer-move-button`, { hasText: '↑' }),
+  ).toBeDisabled();
+
+  // 外すと順番から外れ、しまってある方へ戻る。
+  await hideLayer(page, BASEMAP.photo);
+  expect(await shownTiles(page)).toEqual([BASEMAP.pale]);
+  await expect(page.locator(`#tile-catalog [data-layer="${BASEMAP.photo}"]`)).toBeAttached();
 });
 
 /**
@@ -3290,7 +3415,9 @@ test('地理院のベクトルタイルをテーマごとに重ねられる', as
     if (request.url().includes('optimal_bvmap')) asked.push(request.url());
   });
 
-  await expect(page.locator('[data-group="duck-geocoder-gsi"]')).toBeVisible();
+  // テーマは地図タイルの区分の「地図タイルを足す」の中に、出所 (国土地理院) の見出しの下で並ぶ。
+  await page.locator('#tile-catalog > summary').click();
+  await expect(page.locator('#tile-catalog .tile-group[data-group="duck-geocoder-gsi"]')).toBeVisible();
   await expect(page.locator(`[data-layer^="${GSI_VECTOR}--"]`)).toHaveCount(9);
   // 入れるまでは読まない。
   expect(asked).toEqual([]);
@@ -3379,7 +3506,10 @@ test('地理院のベクトルタイルは、ズームを変えても層ごと�
  */
 test('一覧を語で絞り込める (出所をまたいで、中の層にも当たる)', async ({ page }) => {
   const filter = page.locator('#layer-filter');
-  const rows = page.locator('#layer-rows [data-layer], #layer-absent-rows [data-layer]');
+  // データの行と、地図タイルの行 (出しているもの・しまってあるもの)。
+  const rows = page.locator(
+    '#layer-rows [data-layer], #layer-absent-rows [data-layer], #tile-rows [data-layer], #tile-catalog-rows [data-layer]',
+  );
   const all = await rows.count();
 
   await filter.fill('送電');
