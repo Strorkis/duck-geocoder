@@ -788,6 +788,34 @@ Collection にした (`pipeline/src/external.rs` の `EXTERNAL_RASTERS`)。タ�
 maxzoom が宣言されていないので、カタログの `duck:zoom` に `[0, 16]` を書き、UI はそれで止める。
 入れないと、建物を見るズーム (15以上) で404を撃ち続ける (地理院の白地図も同じで、5〜14しか無い)。
 
+### Re:Earth Terrain と Re:Earth Buildings (2026-10-04)
+
+参考: `.reference/github.com/reearth/reearth-terrain`・`reearth-buildings` の README。
+どちらもブラウザから直接読める (CORS `*`)。コードは MIT、**データの条件は中身に付いて回る**。
+
+| | 中身 | 条件 | ここでの扱い |
+| --- | --- | --- | --- |
+| **Re:Earth Terrain** | Mapterhorn の標高に EGM2008 (ジオイド) を足して配り直したもの。海面から (elevation) と楕円体から (ellipsoid) を選べる。Terrarium / Terrain-RGB / quantized-mesh | Mapterhorn (CC BY 4.0) と EGM2008 (NGA、パブリックドメイン) の出典表示 | **地形の選択肢の1つ** (海面からの版。MapLibre の地形は海面からを前提にする) |
+| **Re:Earth Buildings** | Overture の建物を 3D Tiles 1.1 (glTF) にしたもの。地盤の高さは Re:Earth Terrain の楕円体高で焼き込み済み | ODbL の **Produced Work** (表示に出典が要る。継承は及ばない) | **カタログに載せるだけ** (公式のビューアへ案内)。MapLibre は 3D Tiles を描けない |
+
+**Re:Earth Buildings を地図に出さない理由。** 高さはジオイド高 (日本で37〜40m前後) を引けば
+合わせられる (Re:Earth Terrain の heights.json が返す) が、その前に **MapLibre が 3D Tiles を
+描けない**。描くには deck.gl などを足すことになり、Portolan (ベクタは GeoParquet + PMTiles)
+の範囲からも外れる。STAC には `rel: "3d-tiles"` で載せられるので、カタログとしては指しておく。
+
+### 地理院の標高タイル (2026-10-04)
+
+[標高タイル](https://maps.gsi.go.jp/development/demtile.html) (`dem_png`。ズーム1〜14・10m) を
+地形の選択肢に足した。z15 は `dem5a_png` (5m)、z17 は `dem1a_png` (1m) が別にある。
+**元データは基盤地図情報 (数値標高モデル)** で、Mapterhorn の日本の部分と同じ。カタログでは
+両方の `derived_from` が元データの Collection (`gsi-dem-source`。配っていない) を指す。
+
+**独自の形式。** x = R×2¹⁶ + G×2⁸ + B、高さ = x × 0.01 m。線形の部分は Terrain-RGB と同じ形で、
+MapLibre の `encoding: "custom"` (係数 655.36 / 2.56 / 0.01) でも読めるが、**値なし**
+(128,0,0。海など) と**負の値** (2の補数。江東区や八郎潟など海抜ゼロm地帯) はそのままでは
+読めず、8万m台の針が立つ。UI が読み込むときに1枚ずつ Terrarium へ詰め直している
+(富士山頂付近で 3,718 m、東京湾で 0 m 付近になることを E2E で見ている)。
+
 ### PLATEAUのDEMを表示に使わない理由
 
 PLATEAUのCityGMLには地形モデル (`dem:TINRelief`) が同梱されているが、**表示には使わない。**

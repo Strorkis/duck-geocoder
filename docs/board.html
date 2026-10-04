@@ -331,7 +331,7 @@
       </div>
       <div class="card kpi">
         <div class="label">公開待ちのコミット</div>
-        <div class="value">13 <small>件</small></div>
+        <div class="value">18 <small>件</small></div>
         <span class="status you">R2へのアップロード → push 待ち</span>
       </div>
       <div class="card kpi">
@@ -341,9 +341,9 @@
       </div>
       <div class="card kpi">
         <div class="label">カタログ</div>
-        <div class="value">7 <small>出所 · 21 Collection</small></div>
+        <div class="value">8 <small>出所 · 25 Collection</small></div>
         <div class="sub">
-          GeoParquet 761 ファイル + 外部 6 (地理院の地図タイル4・ベクトルタイル1、Mapterhorn の標高1。複製しない)
+          GeoParquet 761 ファイル + 外部 10 (地図タイル4・ベクトルタイル1・標高3・3D Tiles 1・元データ1。複製しない)
         </div>
       </div>
     </section>
@@ -361,7 +361,7 @@
         </li>
         <li>
           <b>テスト</b><span class="status done">済み</span>
-          <span class="sub">E2E 110件 (開発サーバー・本番ビルドとも)、パイプライン 188件</span>
+          <span class="sub">E2E 112件 (開発サーバー・本番ビルドとも)、パイプライン 189件、remote-zip 11件</span>
         </li>
         <li class="current">
           <b>R2へアップロード</b><span class="status you">あなたの番</span>
@@ -404,8 +404,9 @@
             <tr><td>国勢調査</td><td class="num">48</td><td class="num">0.08 GB</td><td>JSON だけ</td></tr>
             <tr><td>位置参照情報</td><td class="num">4</td><td class="num">0.02 GB</td><td>JSON だけ</td></tr>
             <tr><td>国土数値情報</td><td class="num">2</td><td class="num">0.01 GB</td><td>JSON だけ</td></tr>
-            <tr><td>国土地理院</td><td class="num">0</td><td class="num">—</td><td>JSON 6つ (新規。タイルは地理院が配信)</td></tr>
+            <tr><td>国土地理院</td><td class="num">0</td><td class="num">—</td><td>JSON 8つ (新規。タイルは地理院が配信)</td></tr>
             <tr><td>Mapterhorn</td><td class="num">0</td><td class="num">—</td><td>JSON 2つ (新規。標高は Mapterhorn が配信)</td></tr>
+            <tr><td>Re:Earth</td><td class="num">0</td><td class="num">—</td><td>JSON 3つ (新規。標高と 3D Tiles は Re:Earth が配信)</td></tr>
           </tbody>
         </table>
         <p class="sub">
@@ -426,8 +427,8 @@
           <tbody>
             <tr class="group"><th colspan="2">配り方 (パイプライン)</th></tr>
             <tr>
-              <td><a href="../pipeline/src/remote_zip.rs">remote_zip.rs</a></td>
-              <td>HTTP Range を <code>Read + Seek</code> に見せ、zip の中身を落とさず取る。切り出す構想の核</td>
+              <td><a href="../crates/remote-zip/src/">crates/remote-zip</a></td>
+              <td>HTTP Range を <code>Read + Seek</code> に見せ、zip の中身を落とさず取る。<b>単体のクレートに切り出した</b> (CLI 付き)</td>
             </tr>
             <tr>
               <td><a href="../pipeline/src/spatial_pack.rs">spatial_pack.rs</a> / <a href="../pipeline/src/repack.rs">repack.rs</a></td>
@@ -482,6 +483,14 @@
               <td><code>setNearbyFocus</code></td>
               <td>周辺検索で、ほかの層の不透明度を元の値を覚えて下げ、閉じたら戻す</td>
             </tr>
+            <tr>
+              <td><code>applyTileOrder</code></td>
+              <td>地図タイルの重ね順を一覧の並びから地図に写す (下から順に、データの直下へ動かす)</td>
+            </tr>
+            <tr>
+              <td><code>gsiDemHeight</code> · <code>registerGsiDem</code></td>
+              <td>地理院の標高タイル (独自形式) を、読み込むときに Terrarium へ詰め直す (値なし・負の値)</td>
+            </tr>
             <tr class="group"><th colspan="2">判断の記録 (docs)</th></tr>
             <tr>
               <td><a href="duckdb-wasm-range-requests.md">duckdb-wasm-range-requests.md</a></td>
@@ -506,12 +515,16 @@
         <h2>次にやること</h2>
         <ol class="tasks">
           <li>
-            <b>周辺検索の見直し (続き)</b>
-            <span class="sub">起点の強調と「結果だけを目立たせる」は入れた。触ってみての指摘を待っている</span>
+            <b>表示部分のライブラリ化</b>
+            <span class="sub">web/src/main.ts (約7,000行) を、カタログ・問い合わせ・地図・画面の部品に分ける (リファクタリング)</span>
           </li>
           <li>
-            <b>一覧の長さ</b>
-            <span class="sub">国土地理院の見出しの下が13行 (地図4 + テーマ9)。開くと長いので、さらに束ねるか様子を見る</span>
+            <b>周辺検索の見直し (続き)</b>
+            <span class="sub">立体で描く・種類ごとの出し入れ・名前で寄る・Esc を入れた。触ってみての指摘を待っている</span>
+          </li>
+          <li>
+            <b>データの重ね順</b>
+            <span class="sub">地図タイルは一覧で並べ替えられるようにした。データ (建物・道路…) も同じ扱いにするか</span>
           </li>
           <li>
             <b>描き方 (スタイル) の置き場所</b>
@@ -557,8 +570,8 @@
         <h2>構想 / やらないこと</h2>
         <ul class="tasks">
           <li>
-            <b>Range で zip の一部だけ取る道具を切り出す</b>
-            <span class="sub">API が無くても Range に応える配信元なら使える</span>
+            <b>remote-zip を別リポジトリへ出す</b>
+            <span class="sub">crates/remote-zip に切り出し済み (CLI 付き)。API が無くても Range に応える配信元なら使える</span>
           </li>
           <li><span class="sub">やらない: 動的データ・点群の生データ・航路の設計そのもの・認証が要る取得経路</span></li>
         </ul>

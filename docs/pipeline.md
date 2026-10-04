@@ -1201,6 +1201,35 @@ UI では背景地図ではなく**重ねるレイヤー**として扱う (背�
   attribution.json を見て直す
 - サブカタログ `mapterhorn/` を足した。`gsi/` の中は背景地図がベクトルタイルより先に並ぶ
 
+#### 標高を3つに、元データと 3D Tiles も (2026-10-04)
+
+地形に使える標高を **Mapterhorn・Re:Earth Terrain・地理院の標高タイル** の3つにした
+(UI は1つ選ぶ)。あわせて、配っていない**元データ**と、この地図で描けない **3D Tiles** も載せた。
+
+| Collection | `duck:kind` | リンク | 中身 |
+| --- | --- | --- | --- |
+| `mapterhorn-terrain` | `terrain` | `tilejson` | Terrarium、海面から。**既定** (`duck:default`) |
+| `reearth-terrain` | `terrain` | `tilejson` | Mapterhorn を配り直したもの。海面から (楕円体高の版もある) |
+| `gsi-dem` | `terrain` | `xyz` | **地理院の独自形式** (下)。ズーム1〜14 (10m) |
+| `gsi-dem-source` | `reference` | (無し) | 基盤地図情報 数値標高モデル。**配っていない** (承認が要る) |
+| `reearth-buildings` | `3d_tiles` | `3d-tiles` | Overture の建物の 3D Tiles 1.1。高さは楕円体から |
+
+- **`duck:dem`** に標高の形式を書く (`encoding`: `terrarium` / `mapbox` / `gsi`、
+  `vertical`: `orthometric` / `ellipsoid`、読み方の説明)。同じ「標高タイル」でも約束が違うため
+- **`rel: "derived_from"`** で作られた元を辿れる: Mapterhorn と地理院の標高タイル → 基盤地図情報、
+  Re:Earth Terrain → Mapterhorn、Re:Earth Buildings → Overture の建物と Re:Earth Terrain。
+  行き先がカタログに無ければ `build_catalog` が止まる
+- **`duck:default`**: 同じ役割の中で既定に使うもの (背景地図は淡色地図、地形は Mapterhorn)。
+  並び順に頼ると、サブカタログの順 (国土地理院が Mapterhorn より先) で変わってしまう
+- 3D Tiles は公式のビューアを `rel: "alternate"` (`text/html`) で添える
+
+**地理院の標高タイルの形式。** x = R×2¹⁶ + G×2⁸ + B、高さ = x × 0.01 m。
+線形の部分は Terrain-RGB と同じ形だが、そのままでは読めない値が2つある:
+**値なし** (x = 2²³ = (128,0,0)。海など) と **負の値** (x > 2²³ の2の補数)。
+そのまま読むと 8万m台の針が立つので、UI は読み込むときに1枚ずつ Terrarium に詰め直す
+(値なし → 0 m、負の値 → (x − 2²⁴) × 0.01 m)。ズーム15 (5m、`dem5a_png`) と
+17 (1m、`dem1a_png`) は別のタイルで、まだ使っていない。
+
 ## テスト
 
 ```sh
