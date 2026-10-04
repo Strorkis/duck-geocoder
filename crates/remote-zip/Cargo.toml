@@ -1,0 +1,17 @@
+[package]
+name = "remote-zip"
+version = "0.1.0"
+edition = "2024"
+description = "HTTP Range で、置いてある zip を落とさずに中身の一部だけ取り出す"
+license = "MIT"
+publish = false
+
+# **このクレートは duck-geocoder に依存しない。** 「API が無くても、Range に応える配信元なら
+# zip の中身を部分的に取れる」という単体の道具として、いずれ別リポジトリへ切り出すため。
+# パイプライン (pipeline/) はパス依存で使う。
+
+[dependencies]
+anyhow = "1.0.104"
+# パイプラインと版を揃える (同じ型を受け渡すので、ずれると別の型になる)。
+zip = "8.6.0"
+ureq = { version = "3.4.1", features = ["rustls"] }

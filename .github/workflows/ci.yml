@@ -20,6 +20,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Range で zip の一部だけ取る道具。パイプラインから切り出してあり、単体で検証する
+  # (PROJ を要らないので、パイプラインより早く終わる)。
+  remote-zip:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/remote-zip
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/remote-zip
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
   pipeline:
     runs-on: ubuntu-latest
     defaults:

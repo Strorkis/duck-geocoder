@@ -38,3 +38,6 @@ serde_json = "1.0.151"
 wkb = "0.9"
 zip = "8.6.0"
 ureq = { version = "3.4.1", features = ["rustls"] }
+# **置いてある zip を Range で部分的に読む道具。** 単体の道具として切り出してある
+# (crates/remote-zip。いずれ別リポジトリへ)。`duck_geocoder::remote_zip` で再エクスポートする。
+remote-zip = { path = "../crates/remote-zip" }

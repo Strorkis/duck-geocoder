@@ -21,7 +21,9 @@ pub mod plateau;
 pub mod plateau_catalog;
 pub mod pmtiles;
 pub mod quadkey;
-pub mod remote_zip;
+/// Range で置いてある zip を部分的に読む道具 (crates/remote-zip)。呼び方を変えないよう、
+/// 以前のモジュールと同じ名前で再エクスポートする。
+pub use remote_zip;
 pub mod repack;
 pub mod spatial_pack;
 pub mod stac;
@@ -141,40 +143,14 @@ pub fn for_each_zip_entry(
 /// ものを渡せば**zipを落とさずに**中身を取り出せる ([`remote_zip`] を参照)。
 /// PLATEAUのCityGMLは全国で1,385GBあり、落としてから読む道が無いためこの形にしてある。
 ///
-/// `label` はエラーに出す名前 (パスやURL)。
+/// `label` はエラーに出す名前 (パスやURL)。中身は切り出した道具 ([`remote_zip::for_each_entry`])。
 pub fn for_each_zip_entry_in(
     source: impl std::io::Read + std::io::Seek,
     label: &str,
     matches: impl Fn(&str) -> bool,
-    mut handle: impl FnMut(&str, Vec<u8>) -> Result<()>,
+    handle: impl FnMut(&str, Vec<u8>) -> Result<()>,
 ) -> Result<()> {
-    let mut archive =
-        zip::ZipArchive::new(source).with_context(|| format!("zipとして読めません: {label}"))?;
-
-    // 名前を先に集める。読み出し中は archive を可変で借りるため、
-    // 反復しながら by_name を呼べない。
-    let mut names: Vec<String> = (0..archive.len())
-        .map(|i| Ok(archive.by_index(i)?.name().to_string()))
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .filter(|name| matches(name))
-        .collect();
-    names.sort();
-
-    if names.is_empty() {
-        bail!("一致するエントリがありません: {label}");
-    }
-
-    for name in &names {
-        let mut entry = archive
-            .by_name(name)
-            .with_context(|| format!("エントリを開けません: {name}"))?;
-        let mut buf = Vec::with_capacity(entry.size() as usize);
-        std::io::copy(&mut entry, &mut buf)
-            .with_context(|| format!("エントリを読めません: {name}"))?;
-        handle(name, buf)?;
-    }
-    Ok(())
+    remote_zip::for_each_entry(source, label, matches, handle)
 }
 
 /// Shift-JISのバイト列をUTF-8の文字列にデコードする。

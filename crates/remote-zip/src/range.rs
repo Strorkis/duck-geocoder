@@ -4,9 +4,8 @@
 //! 必要なエントリだけを取り出せる。PLATEAUのCityGMLは1都市で数百MB〜250GBあり、
 //! 全国では1,385GBになるので、落としてから読む道は無い。
 //!
-//! **このモジュールは他のモジュールを参照しない。** zipにもPLATEAUにも依存せず、
-//! 「範囲を取れるもの」を `Read + Seek` に見せるだけにしてある。
-//! いずれ別のクレートへ出すため。
+//! **このモジュールは zip に依存しない。** 「範囲を取れるもの」を `Read + Seek` に
+//! 見せるだけにしてある (zip の扱いはクレートの根 [`crate`] にある)。
 use anyhow::{Context, Result, bail};
 use std::io::{self, Read, Seek, SeekFrom};
 // 辿った先のURLを取るために要る (get_uri)。
