@@ -3007,18 +3007,30 @@ test('周辺検索: 地図上の点から、建物と駅が出て、距離を広
     ).length;
   });
   expect(outside).toBe(0);
-  // **結果だけを目立たせる** (既定で入っている)。ほかのデータ (建物の立体) を薄くする。
-  const extrusionOpacity = () =>
-    page.evaluate(() =>
-      (window as unknown as TestWindow).__map!.getPaintProperty('buildings-3d', 'fill-extrusion-opacity'),
+  // **結果だけを目立たせる** (既定で入っている)。元の建物の立体は隠し (当たった建物を
+  // 同じ場所に立体で描くので、残すと壁が重なってちらつく)、ほかのデータは薄くする。
+  const buildingsShown = () =>
+    page.evaluate(
+      () => (window as unknown as TestWindow).__map!.getLayoutProperty('buildings-3d', 'visibility') !== 'none',
     );
   await expect(page.locator('#nearby-focus')).toBeChecked();
-  expect(await extrusionOpacity()).toBeLessThan(0.2);
+  expect(await buildingsShown()).toBe(false);
   // 外せば元に戻る。
   await page.locator('#nearby-focus').uncheck();
-  const restored = await extrusionOpacity();
-  expect(restored === undefined || (restored as number) > 0.2).toBe(true);
+  expect(await buildingsShown()).toBe(true);
   await page.locator('#nearby-focus').check();
+  // **種類ごとに地図への表示を切り替えられる。** 駅を外すと、当たった線から駅が消える。
+  const kindsDrawn = () =>
+    page.evaluate(() => {
+      const map = (window as unknown as TestWindow).__map!;
+      return [
+        ...new Set(map.queryRenderedFeatures({ layers: ['nearby-hit-lines'] }).map((f) => f.properties.kind)),
+      ];
+    });
+  await expect.poll(kindsDrawn).toContain('駅');
+  await page.locator('#nearby-results input[data-nearby-kind="駅"]').uncheck();
+  await expect.poll(kindsDrawn).not.toContain('駅');
+  await page.locator('#nearby-results input[data-nearby-kind="駅"]').check();
 
   const near = await nearbyBuildingTotal(page);
   expect(near).toBeGreaterThan(0);
@@ -3026,15 +3038,26 @@ test('周辺検索: 地図上の点から、建物と駅が出て、距離を広
   await expect(page.locator('#nearby-origin')).toContainText('300 m', { timeout: 60_000 });
   await expect.poll(() => nearbyBuildingTotal(page), { timeout: 60_000 }).toBeGreaterThanOrEqual(near);
 
-  // 閉じれば地図から消え、薄くしたデータも戻る。調べ終わってから閉じる
-  // (結果を描いている途中だとパネルの中身が動き、並列で流すと閉じるボタンを押し損ねた)。
+  // **名前の札を押すと、それだけを残して寄る。** もう一度押すと戻る。
   await expect(page.locator('#busy')).toBeHidden({ timeout: 60_000 });
-  await page.locator('#nearby-close').click();
+  // 駅の札は「東京駅 (総武線)」の形 (建物の「東京駅丸の内駅舎」と取り違えない)。
+  const station = page.locator('#nearby-results .nearby-chip', { hasText: /^東京駅 \(/ }).first();
+  const before = await page.evaluate(() => (window as unknown as TestWindow).__map!.getCenter().toArray());
+  await station.click();
+  await expect(station).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(kindsDrawn).toEqual(['駅']);
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as TestWindow).__map!.getCenter().toArray()))
+    .not.toEqual(before);
+  await station.click();
+  await expect(station).toHaveAttribute('aria-pressed', 'false');
+
+  // 閉じれば地図から消え、隠した建物も戻る。**Esc でも閉じる** (× を探させない)。
+  await page.keyboard.press('Escape');
   await expect(page.locator('#nearby-panel')).toBeHidden();
   await expect.poll(() => sourceFeatureCount(page, 'nearby-zone')).toBe(0);
   expect(await sourceFeatureCount(page, 'nearby-origin')).toBe(0);
-  const after = await extrusionOpacity();
-  expect(after === undefined || (after as number) > 0.2).toBe(true);
+  expect(await buildingsShown()).toBe(true);
 });
 
 /** **建物を起点にできる。** 建物の上をクリックすると、その建物が起点になる。 */

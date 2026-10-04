@@ -2142,6 +2142,8 @@ interface NearbyOrigin {
   /** 何を起点にしたか (「山手線」「地図上の点」など)。 */
   label: string;
   geometry: GeoJSON.Geometry;
+  /** 起点が建物なら、その高さ (立体で強調するため)。 */
+  height?: number | null;
 }
 
 /**
@@ -2289,18 +2291,26 @@ async function fetchNearbyBuildings(
     return row?.names ? Array.from(row.names as ArrayLike<unknown>, String) : [];
   });
 
+  // 高さも取る。当たった建物は**立体で**描く (地面に塗るだけだと、立体の建物に埋もれる)。
+  const height = source.hasHeight ? 'height' : 'NULL';
   const drawn = await conn.query(`
-    SELECT ST_AsGeoJSON(geometry) AS geojson, name, ${tier} AS tier
+    SELECT ST_AsGeoJSON(geometry) AS geojson, name, ${tier} AS tier, ${height} AS height
     FROM read_parquet([${list}])
     WHERE ${where}
     LIMIT ${NEARBY_DRAW_LIMIT};
   `);
   const features = drawn.toArray().map((row) => {
-    const r = row.toJSON() as { geojson: string; name: string | null; tier: string };
+    const r = row.toJSON() as { geojson: string; name: string | null; tier: string; height: number | null };
     const rank = order.findIndex((t) => t.id === r.tier);
     return {
       type: 'Feature' as const,
-      properties: { name: r.name, tierRank: source.tiers ? rank : -1 },
+      properties: {
+        name: r.name,
+        tierRank: source.tiers ? rank : -1,
+        // 種類ごとの表示の切り替えに使う (段の題名。段の無い出所は「すべて」)。
+        tier: order[rank]?.title ?? 'すべて',
+        height: r.height,
+      },
       geometry: JSON.parse(r.geojson) as GeoJSON.Geometry,
     };
   });
@@ -3865,13 +3875,26 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
       map.addSource('nearby-hits', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
       map.addLayer({
         id: 'nearby-hits',
-        type: 'fill',
+        // **立体で描く。** 地面に塗るだけだと、立体の建物 (薄くしても) の中に埋もれて
+        // 見えなかった。元の建物より少しだけ高くして、重なった面がちらつかないようにする。
+        type: 'fill-extrusion',
         source: 'nearby-hits',
         // 重要度で色分けと同じ色。段の無い出所は橙。
         paint: {
-          'fill-color': ['match', ['get', 'tierRank'], 0, '#c0392b', 1, '#e09a3e', 2, '#8a94a0', '#ff6600'],
-          'fill-opacity': 0.75,
-          'fill-outline-color': '#ffffff',
+          'fill-extrusion-color': [
+            'match',
+            ['get', 'tierRank'],
+            0,
+            '#c0392b',
+            1,
+            '#e09a3e',
+            2,
+            '#8a94a0',
+            '#ff6600',
+          ],
+          'fill-extrusion-height': ['+', ['coalesce', ['get', 'height'], 3], 0.5],
+          'fill-extrusion-base': 0,
+          'fill-extrusion-opacity': 0.95,
         },
       });
       // 範囲に入った線 (駅・鉄道・道路・送電線・川)。種類ごとの色は一覧の線と揃える。
@@ -3902,23 +3925,33 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
       });
       // **起点** (押したもの)。結果より上に、太く縁取って描く。何を起点にしたかが一目で分かるように。
       map.addSource('nearby-origin', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
+      // 起点が建物 (面) なら**青い立体**で。地面に枠を引くと、立体表示では建物の足元に
+      // 線が出るだけで、どの建物かが分かりにくかった。
       map.addLayer({
         id: 'nearby-origin-fill',
-        type: 'fill',
+        type: 'fill-extrusion',
         source: 'nearby-origin',
         filter: ['==', ['geometry-type'], 'Polygon'],
-        paint: { 'fill-color': '#1f3a93', 'fill-opacity': 0.35 },
+        paint: {
+          'fill-extrusion-color': '#1f3a93',
+          'fill-extrusion-height': ['+', ['coalesce', ['get', 'height'], 3], 1],
+          'fill-extrusion-base': 0,
+          'fill-extrusion-opacity': 0.95,
+        },
       });
+      // 線 (鉄道・川など) は白い縁取りの太線で。面には引かない (上の立体で示す)。
       map.addLayer({
         id: 'nearby-origin-casing',
         type: 'line',
         source: 'nearby-origin',
+        filter: ['!=', ['geometry-type'], 'Polygon'],
         paint: { 'line-color': '#ffffff', 'line-width': 7, 'line-opacity': 0.9 },
       });
       map.addLayer({
         id: 'nearby-origin-line',
         type: 'line',
         source: 'nearby-origin',
+        filter: ['!=', ['geometry-type'], 'Polygon'],
         paint: { 'line-color': '#1f3a93', 'line-width': 4 },
       });
       map.addLayer({
@@ -6536,6 +6569,11 @@ async function main() {
       setNearbyMode(false);
       return;
     }
+    // 周辺検索の結果を出していれば、それを先に閉じる (× を探させない)。
+    if (!nearbyPanel.hidden) {
+      clearNearby();
+      return;
+    }
     clearSearch();
   });
 
@@ -6546,6 +6584,68 @@ async function main() {
   // 線や建物の上ならそれを起点にする。
   let lastSelection: NearbyOrigin | null = null;
   let currentOrigin: NearbyOrigin | null = null;
+
+  /**
+   * 結果の見せ方。**種類ごとに地図への表示を切り替え** (`hidden`)、**名前を押すとそれだけを
+   * 残して寄る** (`focus`)。「当たった川はどこか」「当たった駅だけ見たい」に答えるため。
+   *
+   * `hidden` の鍵は種類の名前 (「鉄道」「駅」…)、建物全体は「建物」、建物の段は `段:公共施設`。
+   */
+  let nearbyView: { hidden: Set<string>; focus: { kind: string; name: string } | null } = {
+    hidden: new Set(),
+    focus: null,
+  };
+  /** 最後に描いた結果 (名前を押したときに寄る先を探す)。 */
+  let nearbyDrawn: { buildings: GeoJSON.Feature[]; lines: GeoJSON.Feature[] } = { buildings: [], lines: [] };
+
+  const TRUE: ExpressionSpecification = ['==', 1, 1];
+  const FALSE: ExpressionSpecification = ['==', 1, 0];
+
+  /** 見せ方を地図の絞り込み (filter) に写す。 */
+  const applyNearbyView = () => {
+    const { hidden, focus } = nearbyView;
+    const tiers = [...hidden].filter((key) => key.startsWith('段:')).map((key) => key.slice(2));
+    const onlyName = (kind: string): ExpressionSpecification =>
+      focus ? (focus.kind === kind ? ['==', ['get', 'name'], focus.name] : FALSE) : TRUE;
+    if (map.getLayer('nearby-hits')) {
+      map.setFilter('nearby-hits', [
+        'all',
+        hidden.has('建物') ? FALSE : TRUE,
+        ['!', ['in', ['get', 'tier'], ['literal', tiers]]],
+        onlyName('建物'),
+      ]);
+    }
+    if (map.getLayer('nearby-hit-lines')) {
+      map.setFilter('nearby-hit-lines', [
+        'all',
+        ['!', ['in', ['get', 'kind'], ['literal', [...hidden]]]],
+        focus ? ['all', ['==', ['get', 'kind'], focus.kind], ['==', ['get', 'name'], focus.name]] : TRUE,
+      ]);
+    }
+  };
+
+  /** 名前を押したとき: それだけを残し、そこへ寄る。もう一度押すと戻す。 */
+  const focusNearby = (kind: string, name: string) => {
+    const same = nearbyView.focus?.kind === kind && nearbyView.focus.name === name;
+    nearbyView.focus = same ? null : { kind, name };
+    applyNearbyView();
+    if (!same) {
+      const pool = kind === '建物' ? nearbyDrawn.buildings : nearbyDrawn.lines;
+      const matched = pool.filter(
+        (f) => f.properties?.name === name && (kind === '建物' || f.properties?.kind === kind),
+      );
+      const box = unionBbox(matched.map((f) => geometryBbox(f.geometry)));
+      if (box) {
+        map.fitBounds(
+          [
+            [box[0], box[1]],
+            [box[2], box[3]],
+          ],
+          { padding: 80, maxZoom: 17, duration: 600 },
+        );
+      }
+    }
+  };
   let nearbyToken = 0;
 
   /** 検索で選んだものを覚えておく。周辺検索のパネルから起点にできる。 */
@@ -6589,6 +6689,7 @@ async function main() {
       return {
         label: `${spec.label} ${(hit.properties.name as string | null) ?? '(名称なし)'}`,
         geometry: hit.geometry,
+        height: (hit.properties.height as number | null | undefined) ?? null,
       };
     }
     const name = hit.properties[spec.nameKey] as string | null;
@@ -6623,7 +6724,6 @@ async function main() {
   const DIM_PROPERTIES: Record<string, PaintProperty[]> = {
     fill: ['fill-opacity'],
     line: ['line-opacity'],
-    'fill-extrusion': ['fill-extrusion-opacity'],
     circle: ['circle-opacity', 'circle-stroke-opacity'],
     symbol: ['text-opacity', 'icon-opacity'],
   };
@@ -6644,6 +6744,9 @@ async function main() {
   const dimmed = new Map<string, [PaintProperty, PaintValue][]>();
   const nearbyFocusInput = document.querySelector<HTMLInputElement>('#nearby-focus')!;
 
+  /** 隠した立体の層 (戻すため)。 */
+  const hiddenExtrusions = new Set<string>();
+
   const setNearbyFocus = (on: boolean) => {
     if (!on) {
       for (const [id, properties] of dimmed) {
@@ -6651,10 +6754,22 @@ async function main() {
         for (const [property, value] of properties) map.setPaintProperty(id, property, value);
       }
       dimmed.clear();
+      for (const id of hiddenExtrusions) {
+        if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'visible');
+      }
+      hiddenExtrusions.clear();
       return;
     }
     for (const layer of map.getStyle().layers) {
-      if (NEARBY_KEEP.test(layer.id) || dimmed.has(layer.id)) continue;
+      if (NEARBY_KEEP.test(layer.id) || dimmed.has(layer.id) || hiddenExtrusions.has(layer.id)) continue;
+      // **立体は薄くせず隠す。** 当たった建物を同じ場所に立体で重ねるので、薄くした元の
+      // 建物と壁が重なって縞模様にちらついた。薄い立体は手がかりとしても読みにくい。
+      if (layer.type === 'fill-extrusion') {
+        if (layer.layout?.visibility === 'none') continue;
+        hiddenExtrusions.add(layer.id);
+        map.setLayoutProperty(layer.id, 'visibility', 'none');
+        continue;
+      }
       const properties = DIM_PROPERTIES[layer.type];
       if (!properties) continue;
       dimmed.set(
@@ -6684,6 +6799,9 @@ async function main() {
 
   /** 周辺を調べて、パネルと地図に出す。 */
   const runNearby = async (origin: NearbyOrigin) => {
+    // 起点が変わったら、種類ごとの表示の切り替えと絞り込みを戻す
+    // (距離を変えただけなら、選んでいた見せ方を保つ)。
+    if (origin !== currentOrigin) nearbyView = { hidden: new Set(), focus: null };
     currentOrigin = origin;
     nearbyPanel.hidden = false;
     nearbyFromSearch.hidden = lastSelection === null;
@@ -6693,7 +6811,11 @@ async function main() {
     const token = ++nearbyToken;
     const frame = nearbyFrame(origin, distance, currentBounds());
     // **押したものをすぐ強調する** (結果を待たずに、何を起点にしたかが分かるように)。
-    void setSourceData('nearby-origin', origin.geometry);
+    void (map.getSource('nearby-origin') as GeoJSONSource | undefined)?.setData({
+      type: 'Feature',
+      properties: { height: origin.height ?? null },
+      geometry: origin.geometry,
+    });
     // 周辺検索の層を**いちばん上へ**。地図を作るときは早く足すので、あとから足した
     // 建物 (立体)・鉄道・地理院の層の下に隠れていた。下から 範囲 → 結果 → 起点 の順。
     for (const id of NEARBY_LAYERS) if (map.getLayer(id)) map.moveLayer(id);
@@ -6759,19 +6881,18 @@ async function main() {
 
       await setSourceData('nearby-zone', result.zoneGeometry);
       // 建物は1棟ずつ段の色で塗るので、属性ごと FeatureCollection で渡す。
-      const hitSource = map.getSource('nearby-hits') as GeoJSONSource | undefined;
-      await hitSource?.setData({
-        type: 'FeatureCollection',
-        features: result.buildings.flatMap((b) => b.features),
-      });
-      // 線は種類 (駅・鉄道・道路・送電線・川) で塗り分ける。
-      const lineHits = map.getSource('nearby-hit-lines') as GeoJSONSource | undefined;
-      await lineHits?.setData({
-        type: 'FeatureCollection',
-        features: result.names.flatMap(([kind, found]) =>
+      nearbyDrawn = {
+        buildings: result.buildings.flatMap((b) => b.features),
+        // 線は種類 (駅・鉄道・道路・送電線・川) で塗り分け、種類ごとに切り替える。
+        lines: result.names.flatMap(([kind, found]) =>
           found.features.map((feature) => ({ ...feature, properties: { ...feature.properties, kind } })),
         ),
-      });
+      };
+      const hitSource = map.getSource('nearby-hits') as GeoJSONSource | undefined;
+      await hitSource?.setData({ type: 'FeatureCollection', features: nearbyDrawn.buildings });
+      const lineHits = map.getSource('nearby-hit-lines') as GeoJSONSource | undefined;
+      await lineHits?.setData({ type: 'FeatureCollection', features: nearbyDrawn.lines });
+      applyNearbyView();
       setNearbyFocus(nearbyFocusInput.checked);
       renderNearby(result, frame);
     } catch (e) {
@@ -6789,40 +6910,120 @@ async function main() {
     frame: NearbyFrame,
   ) => {
     const list = document.createElement('dl');
-    const row = (term: string, ...value: (string | Node)[]) => {
+    /**
+     * 1種類ぶんの行。見出しに**地図に出すかのチェック** (`key` があるとき)、中身に件数と名前。
+     * 件数は数字を大きく出して、名前は押せる札にする (押すとそれだけを残して寄る)。
+     */
+    const row = (term: string, key: string | null, ...value: (string | Node)[]) => {
       const dt = document.createElement('dt');
-      dt.textContent = term;
+      if (key) {
+        const label = document.createElement('label');
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.checked = !nearbyView.hidden.has(key);
+        box.dataset.nearbyKind = key;
+        box.title = '地図に出す';
+        box.addEventListener('change', () => {
+          if (box.checked) nearbyView.hidden.delete(key);
+          else nearbyView.hidden.add(key);
+          applyNearbyView();
+        });
+        label.append(box, term);
+        dt.append(label);
+      } else {
+        dt.textContent = term;
+      }
       const dd = document.createElement('dd');
       dd.append(...value);
       list.append(dt, dd);
     };
-    if (result.buildings.length === 0 && buildingSources.length > 0) row('建物', 'なし');
+    const count = (n: number, unit: string) => {
+      const strong = document.createElement('strong');
+      strong.className = 'nearby-count';
+      strong.textContent = `${n.toLocaleString()} ${unit}`;
+      return strong;
+    };
+    /** 押せる名前の札。押すとそれだけを残して寄る (もう一度で戻る)。 */
+    const chips = (kind: string, names: string[], rest: number): HTMLElement => {
+      const box = document.createElement('div');
+      box.className = 'nearby-chips';
+      for (const name of names) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'nearby-chip';
+        chip.textContent = name;
+        chip.title = 'これだけを地図に残して寄る';
+        const pressed = nearbyView.focus?.kind === kind && nearbyView.focus.name === name;
+        chip.setAttribute('aria-pressed', String(pressed));
+        chip.addEventListener('click', () => {
+          focusNearby(kind, name);
+          // 名前の札だけを戻す (段の札は出し入れの印なので触らない)。
+          for (const other of nearbyResultsEl.querySelectorAll('.nearby-chip:not(.tier)')) {
+            other.setAttribute('aria-pressed', 'false');
+          }
+          chip.setAttribute('aria-pressed', String(nearbyView.focus !== null));
+        });
+        box.append(chip);
+      }
+      if (rest > 0) {
+        const more = document.createElement('span');
+        more.className = 'nearby-more';
+        more.textContent = `ほか${rest}件`;
+        box.append(more);
+      }
+      return box;
+    };
+    /** 建物の段ごとの件数。押すと、その段を地図に出すかを切り替える。 */
+    const tierToggles = (counts: [string, number][]): HTMLElement => {
+      const box = document.createElement('div');
+      box.className = 'nearby-chips';
+      counts.forEach(([title, n], rank) => {
+        if (n === 0) return;
+        const key = `段:${title}`;
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'nearby-chip tier';
+        chip.dataset.rank = String(rank);
+        chip.textContent = `${title} ${n.toLocaleString()}`;
+        chip.title = 'この段を地図に出す / 隠す';
+        chip.setAttribute('aria-pressed', String(!nearbyView.hidden.has(key)));
+        chip.addEventListener('click', () => {
+          if (nearbyView.hidden.has(key)) nearbyView.hidden.delete(key);
+          else nearbyView.hidden.add(key);
+          chip.setAttribute('aria-pressed', String(!nearbyView.hidden.has(key)));
+          applyNearbyView();
+        });
+        box.append(chip);
+      });
+      return box;
+    };
+
+    if (result.buildings.length === 0 && buildingSources.length > 0) row('建物', null, 'なし');
     for (const found of result.buildings) {
       const group = collections.find((c) => c.id === found.source.id)?.group?.title;
       const total = found.counts.reduce((sum, [, n]) => sum + n, 0);
-      const breakdown = found.counts
-        .filter(([, n]) => n > 0)
-        .map(([title, n]) => `${title} ${n.toLocaleString()}`)
-        .join(' · ');
-      row(`建物${group ? ` (${group})` : ''}`, `${total.toLocaleString()} 棟 — ${breakdown}`);
-      if (found.named.length > 0) {
-        const shown = found.named.slice(0, 10);
-        row(
-          '名前のある建物',
-          shown.join('、') + (found.named.length > shown.length ? ` ほか${found.named.length - shown.length}件` : ''),
-        );
-      }
+      const shown = found.named.slice(0, 10);
+      row(
+        `建物${group ? ` (${group})` : ''}`,
+        '建物',
+        count(total, '棟'),
+        tierToggles(found.counts),
+        ...(shown.length > 0 ? [chips('建物', shown, found.named.length - shown.length)] : []),
+      );
     }
     for (const [label, { names, total }] of result.names) {
-      row(
-        label,
-        total === 0 ? 'なし' : names.join('、') + (total > names.length ? ` ほか${total - names.length}件` : ''),
-      );
+      if (total === 0) {
+        row(label, null, 'なし');
+        continue;
+      }
+      row(label, label, count(total, '件'), chips(label, names, total - names.length));
     }
     if (result.population) {
       row(
         '人口',
-        `約 ${Math.round(result.population.population).toLocaleString()} 人 (${result.population.label}メッシュ ${result.population.cells.toLocaleString()} 個の合計)`,
+        null,
+        count(Math.round(result.population.population), '人'),
+        ` (概算。${result.population.label}メッシュ ${result.population.cells.toLocaleString()} 個の合計)`,
       );
     }
     const notes: string[] = [];

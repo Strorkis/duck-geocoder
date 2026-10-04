@@ -136,16 +136,110 @@ body,
   cursor: pointer;
 }
 
+/* 結果は**種類ごとの段**にする。見出し (地図に出すかのチェック) の下に、件数と名前の札。
+   2列の表にすると、名前が細い列で何行にも折り返して読めなかった。 */
 #nearby-results dl {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.25rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
   margin: 0;
 }
 
 #nearby-results dt {
-  color: #666;
+  margin-top: 0.35rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid #eee;
+  font-weight: 600;
 }
+
+#nearby-results dt:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+#nearby-results dt label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+}
+
+.nearby-count {
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.nearby-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+}
+
+/* 押せる名前の札。押すとそれだけを地図に残して寄る。 */
+.nearby-chip {
+  max-width: 100%;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid #ccd5df;
+  border-radius: 999px;
+  background: white;
+  font: inherit;
+  font-size: 0.75rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nearby-chip:hover {
+  border-color: #14508c;
+}
+
+.nearby-chip[aria-pressed='true'] {
+  border-color: #1f3a93;
+  background: #1f3a93;
+  color: white;
+}
+
+/* 建物の段の札は、地図の色と同じ印を付ける。押すと出し入れ (外すと薄く)。 */
+.nearby-chip.tier::before {
+  content: '';
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  margin-right: 0.3rem;
+  border-radius: 2px;
+  vertical-align: -0.05rem;
+  background: #ff6600;
+}
+
+.nearby-chip.tier[data-rank='0']::before {
+  background: #c0392b;
+}
+
+.nearby-chip.tier[data-rank='1']::before {
+  background: #e09a3e;
+}
+
+.nearby-chip.tier[data-rank='2']::before {
+  background: #8a94a0;
+}
+
+.nearby-chip.tier[aria-pressed='true'] {
+  border-color: #ccd5df;
+  background: white;
+  color: inherit;
+}
+
+.nearby-chip.tier[aria-pressed='false'] {
+  opacity: 0.45;
+}
+
+.nearby-more {
+  align-self: center;
+  font-size: 0.72rem;
+  color: #888;
+}
+
 
 #nearby-results dd {
   margin: 0;
