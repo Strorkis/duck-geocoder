@@ -1,344 +1,572 @@
 <!doctype html>
 <!--
-  利用者が見るべきことを1枚にまとめたボード。**作業の区切りごとに更新する** (AGENTS.md)。
+  利用者が見るべきことを1枚にまとめたダッシュボード。**作業の区切りごとに更新する** (AGENTS.md)。
   細かい経緯や根拠はここに書かず、各ドキュメントへのリンクにする。
   ブラウザで直接開く (file://)。ビルドもサーバーも要らない。
+
+  数字は手で写している (file:// からは data/ を読めない)。出どころ:
+  - 配信データの量: du -sb data/output/<出所>
+  - 建物の数: */…-buildings-items.json の table:row_count の合計
+  - 公開待ちのコミット: git rev-list --count origin/main..main
+  色はカテゴリの3色 (青・橙・緑) を検証済み (明・暗とも。緑は明るい面で3:1未満なので、
+  バーには必ず数字のラベルと表を添える)。状態の色はアイコンと文字と一緒にだけ使う。
 -->
 <html lang="ja">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>duck-geocoder ボード</title>
+    <title>duck-geocoder ダッシュボード</title>
     <style>
       :root {
-        --ink: #222;
-        --sub: #666;
-        --line: #e3e8ee;
-        --accent: #14508c;
-        --you: #b4531a;
-        --wait: #7a6a00;
+        --page: #f9f9f7;
+        --surface: #fcfcfb;
+        --ink: #0b0b0b;
+        --ink-2: #52514e;
+        --muted: #898781;
+        --hairline: #e1e0d9;
+        --ring: rgba(11, 11, 11, 0.1);
+        --accent: #2a78d6;
+        --accent-track: #cde2fb;
+        --s1: #2a78d6;
+        --s2: #eb6834;
+        --s3: #1baf7a;
+        --good: #0ca30c;
+        --good-text: #006300;
+        --warning: #fab219;
+        --serious: #ec835a;
+        --critical: #d03b3b;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --page: #0d0d0d;
+          --surface: #1a1a19;
+          --ink: #ffffff;
+          --ink-2: #c3c2b7;
+          --muted: #898781;
+          --hairline: #2c2c2a;
+          --ring: rgba(255, 255, 255, 0.1);
+          --accent: #3987e5;
+          --accent-track: #184f95;
+          --s1: #3987e5;
+          --s2: #d95926;
+          --s3: #199e70;
+          --good-text: #0ca30c;
+        }
+      }
+      * {
+        box-sizing: border-box;
       }
       body {
         margin: 0;
-        padding: 1.5rem;
+        padding: 1.25rem 1.5rem 2rem;
         font-family: system-ui, 'Hiragino Sans', 'Noto Sans JP', sans-serif;
         color: var(--ink);
-        background: #f4f6f8;
-        line-height: 1.6;
+        background: var(--page);
+        line-height: 1.55;
+      }
+      a {
+        color: var(--accent);
+      }
+      code {
+        font-size: 0.85em;
+        padding: 0 0.25rem;
+        border-radius: 0.2rem;
+        background: var(--hairline);
       }
       header {
         display: flex;
         flex-wrap: wrap;
         align-items: baseline;
-        gap: 0.4rem 1rem;
+        gap: 0.3rem 1rem;
         margin-bottom: 1rem;
       }
       h1 {
         margin: 0;
-        font-size: 1.3rem;
+        font-size: 1.25rem;
       }
-      .updated {
-        color: var(--sub);
+      .meta {
+        color: var(--muted);
         font-size: 0.85rem;
-      }
-      .lede {
-        margin: 0 0 1.2rem;
-        color: var(--sub);
-      }
-      .grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
-        gap: 1rem;
-        align-items: start;
-      }
-      section {
-        background: white;
-        border: 1px solid var(--line);
-        border-radius: 0.5rem;
-        padding: 0.9rem 1.1rem;
-      }
-      section.you {
-        border-left: 4px solid var(--you);
-      }
-      section.next {
-        border-left: 4px solid var(--accent);
-      }
-      section.wait {
-        border-left: 4px solid var(--wait);
       }
       h2 {
-        margin: 0 0 0.5rem;
-        font-size: 1rem;
+        margin: 0 0 0.6rem;
+        font-size: 0.95rem;
       }
-      section.you h2 {
-        color: var(--you);
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--ring);
+        border-radius: 0.6rem;
+        padding: 0.9rem 1.1rem;
       }
-      section.next h2 {
-        color: var(--accent);
+      .sub {
+        color: var(--ink-2);
+        font-size: 0.82rem;
       }
-      section.wait h2 {
-        color: var(--wait);
+
+      /* ---- KPI ---- */
+      .kpis {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(13.5rem, 1fr));
+        gap: 0.8rem;
+        margin-bottom: 0.8rem;
       }
-      ol,
-      ul {
-        margin: 0;
-        padding-left: 1.3rem;
-      }
-      li {
-        margin: 0.35rem 0;
-      }
-      li .why {
-        display: block;
-        color: var(--sub);
-        font-size: 0.85rem;
-      }
-      code {
-        background: #f0f2f5;
-        padding: 0 0.25rem;
-        border-radius: 0.2rem;
-        font-size: 0.85em;
-      }
-      pre {
-        background: #f0f2f5;
-        padding: 0.5rem 0.7rem;
-        border-radius: 0.3rem;
-        overflow-x: auto;
+      .kpi .label {
+        color: var(--ink-2);
         font-size: 0.8rem;
       }
-      table {
-        border-collapse: collapse;
-        width: 100%;
-        font-size: 0.9rem;
+      .kpi .value {
+        margin: 0.15rem 0;
+        font-size: 1.9rem;
+        font-weight: 650;
+        line-height: 1.15;
       }
-      td,
-      th {
-        border-top: 1px solid var(--line);
-        padding: 0.3rem 0.4rem;
+      .kpi .value small {
+        font-size: 0.9rem;
+        font-weight: 500;
+        color: var(--ink-2);
+      }
+      .meter {
+        position: relative;
+        height: 0.5rem;
+        margin: 0.4rem 0 0.25rem;
+        border-radius: 999px;
+        background: var(--accent-track);
+        overflow: hidden;
+      }
+      .meter > span {
+        position: absolute;
+        inset: 0 auto 0 0;
+        border-radius: 999px;
+      }
+
+      /* ---- 状態 (アイコン + 文字。色だけで言わない) ---- */
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        font-size: 0.8rem;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      .status::before {
+        display: inline-grid;
+        place-items: center;
+        width: 1.05rem;
+        height: 1.05rem;
+        border-radius: 50%;
+        color: #fff;
+        font-size: 0.7rem;
+        line-height: 1;
+      }
+      .status.done::before {
+        content: '✓';
+        background: var(--good);
+      }
+      .status.you::before {
+        content: '!';
+        background: var(--warning);
+        color: #0b0b0b;
+      }
+      .status.todo::before {
+        content: '';
+        border: 2px solid var(--muted);
+        background: transparent;
+      }
+
+      /* ---- 公開までの段階 ---- */
+      .steps {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 0.5rem;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .steps li {
+        padding: 0.55rem 0.65rem;
+        border-radius: 0.45rem;
+        border: 1px solid var(--hairline);
+      }
+      .steps li.current {
+        border-color: var(--warning);
+        box-shadow: inset 0 0 0 1px var(--warning);
+      }
+      .steps b {
+        display: block;
+        font-size: 0.88rem;
+      }
+      .steps .sub {
+        display: block;
+        margin-top: 0.15rem;
+      }
+
+      /* ---- レイアウト ---- */
+      .row {
+        display: grid;
+        gap: 0.8rem;
+        margin-bottom: 0.8rem;
+      }
+      .row.two {
+        grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+        align-items: start;
+      }
+      .row.four {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+      @media (max-width: 64rem) {
+        .row.two,
+        .row.four,
+        .steps {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      /* ---- 容量の内訳 (積み上げ横棒 + 上限の線) ---- */
+      .stack {
+        position: relative;
+        display: flex;
+        gap: 2px;
+        height: 1.6rem;
+        margin: 1.4rem 0 0.4rem;
+      }
+      .stack > span {
+        height: 100%;
+        border-radius: 4px;
+      }
+      .stack .limit {
+        position: absolute;
+        top: -1.25rem;
+        bottom: -0.3rem;
+        border-left: 2px dashed var(--ink-2);
+      }
+      .stack .limit::after {
+        content: attr(data-label);
+        position: absolute;
+        top: 0;
+        right: 0.3rem;
+        font-size: 0.72rem;
+        color: var(--ink-2);
+        white-space: nowrap;
+      }
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.2rem 0.9rem;
+        margin: 0.3rem 0 0.6rem;
+        font-size: 0.8rem;
+        color: var(--ink-2);
+      }
+      .legend i {
+        display: inline-block;
+        width: 0.7rem;
+        height: 0.7rem;
+        margin-right: 0.3rem;
+        border-radius: 2px;
+        vertical-align: -0.05rem;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.84rem;
+      }
+      th,
+      td {
+        padding: 0.35rem 0.45rem;
+        border-top: 1px solid var(--hairline);
         text-align: left;
         vertical-align: top;
       }
-      th {
+      thead th {
+        border-top: none;
+        color: var(--muted);
+        font-weight: 500;
+        font-size: 0.78rem;
+      }
+      td.num,
+      th.num {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
         white-space: nowrap;
-        color: var(--sub);
-        font-weight: normal;
       }
-      .tag {
-        display: inline-block;
-        padding: 0 0.4rem;
-        border-radius: 0.6rem;
-        font-size: 0.75rem;
-        background: #eef3f9;
+      tr.group th {
+        padding-top: 0.7rem;
         color: var(--accent);
+        font-size: 0.8rem;
       }
-      a {
-        color: var(--accent);
+
+      ol.tasks,
+      ul.tasks {
+        margin: 0;
+        padding-left: 1.2rem;
+        font-size: 0.86rem;
+      }
+      .tasks li {
+        margin: 0.4rem 0;
+      }
+      .tasks .sub {
+        display: block;
       }
     </style>
   </head>
   <body>
     <header>
-      <h1>duck-geocoder ボード</h1>
-      <span class="updated">更新: 2026-10-03</span>
+      <h1>duck-geocoder ダッシュボード</h1>
+      <span class="meta">更新 2026-10-04</span>
+      <span class="meta">
+        <a href="https://strorkis.github.io/duck-geocoder/">公開サイト</a> ·
+        <a href="roadmap.md">方針 (roadmap.md)</a> · STAC 配布形式の実験
+      </span>
     </header>
-    <p class="lede">
-      置いてあるデータを動かさずに、必要な分だけ取って、その場で使えるようにする実験。
-      サーバーを持たず、静的ファイル (STAC + GeoParquet) をブラウザの DuckDB-WASM で直接読む。
-      <a href="https://strorkis.github.io/duck-geocoder/">公開サイト</a>
-    </p>
 
-    <div class="grid">
-      <section class="you">
-        <h2>次のアップロードで上げるもの</h2>
-        <p class="why" style="margin: 0 0 0.5rem; color: var(--sub); font-size: 0.85rem">
-          アップロードは切りの良いところでまとめて。作業のたびには上げない。
-          <b>pushはアップロードの後</b> (デプロイのCIがR2の実データで確かめるため)
+    <!-- ===== KPI ===== -->
+    <section class="kpis" aria-label="主な数字">
+      <div class="card kpi">
+        <div class="label">配信データ (手元の data/output)</div>
+        <div class="value">9.60 <small>GB / 無料枠 10 GB</small></div>
+        <div class="meter" role="img" aria-label="無料枠の96%">
+          <span style="width: 96%; background: var(--warning)"></span>
+        </div>
+        <span class="status you">無料枠の96% (超えた分は払う方針)</span>
+      </div>
+      <div class="card kpi">
+        <div class="label">公開待ちのコミット</div>
+        <div class="value">9 <small>件</small></div>
+        <span class="status you">R2へのアップロード → push 待ち</span>
+      </div>
+      <div class="card kpi">
+        <div class="label">建物</div>
+        <div class="value">8,348 <small>万棟</small></div>
+        <div class="sub">PLATEAU 2,929万 (306都市) · Overture 5,419万 (全国)</div>
+      </div>
+      <div class="card kpi">
+        <div class="label">カタログ</div>
+        <div class="value">6 <small>出所 · 16 Collection</small></div>
+        <div class="sub">GeoParquet 761 ファイル + 外部の PMTiles 1 (地理院、複製しない)</div>
+      </div>
+    </section>
+
+    <!-- ===== 公開までの段階 ===== -->
+    <section class="card row" aria-label="公開までの段階">
+      <h2>公開までの段階 (いまのまとまり)</h2>
+      <ol class="steps">
+        <li>
+          <b>実装</b><span class="status done">済み</span>
+          <span class="sub">
+            間引き・周辺検索・使う条件・Overture全国・取得・地理院 (データだけで描く)・
+            一覧の開け閉め・使い方のダイアログ・白地図
+          </span>
+        </li>
+        <li>
+          <b>テスト</b><span class="status done">済み</span>
+          <span class="sub">E2E 108件 (開発サーバー・本番ビルドとも)、パイプライン 187件</span>
+        </li>
+        <li class="current">
+          <b>R2へアップロード</b><span class="status you">あなたの番</span>
+          <span class="sub">まとめて1回。手順は <a href="deploy.md">deploy.md</a> の「2026-10-03 の分」</span>
+        </li>
+        <li>
+          <b>push</b><span class="status todo">まだ</span>
+          <span class="sub">アップロードの直後に (CIがR2の実データで確かめる)</span>
+        </li>
+        <li>
+          <b>公開を確かめる</b><span class="status todo">まだ</span>
+          <span class="sub">実サイトで間引き・地理院・周辺検索を触る</span>
+        </li>
+      </ol>
+    </section>
+
+    <div class="row two">
+      <!-- ===== 容量の内訳 ===== -->
+      <section class="card" aria-label="R2の容量の内訳">
+        <h2>R2 の容量 — 何が占めているか</h2>
+        <div class="stack" role="img" aria-label="Overture 5.70GB、PLATEAU 3.79GB、その他 0.11GB。無料枠10GB">
+          <span style="flex: 5.7; background: var(--s1)" title="Overture Maps 5.70 GB (400 ファイル)"></span>
+          <span style="flex: 3.79; background: var(--s2)" title="PLATEAU 3.79 GB (307 ファイル)"></span>
+          <span style="flex: 0.11; background: var(--s3)" title="国土数値情報・国勢調査・位置参照情報 0.11 GB"></span>
+          <span style="flex: 0.4"></span>
+          <span class="limit" style="left: 96.1%" data-label="無料枠 10 GB"></span>
+        </div>
+        <div class="legend">
+          <span><i style="background: var(--s1)"></i>Overture 5.70 GB</span>
+          <span><i style="background: var(--s2)"></i>PLATEAU 3.79 GB</span>
+          <span><i style="background: var(--s3)"></i>その他 0.11 GB</span>
+        </div>
+        <table>
+          <thead>
+            <tr><th>出所</th><th class="num">ファイル</th><th class="num">大きさ</th><th>次のアップロード</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Overture Maps</td><td class="num">400</td><td class="num">5.70 GB</td><td>全部 (取り直し・建物は新規)</td></tr>
+            <tr><td>PLATEAU</td><td class="num">307</td><td class="num">3.79 GB</td><td>全部 (段の <code>lod</code> 列を足した)</td></tr>
+            <tr><td>国勢調査</td><td class="num">48</td><td class="num">0.08 GB</td><td>JSON だけ</td></tr>
+            <tr><td>位置参照情報</td><td class="num">4</td><td class="num">0.02 GB</td><td>JSON だけ</td></tr>
+            <tr><td>国土数値情報</td><td class="num">2</td><td class="num">0.01 GB</td><td>JSON だけ</td></tr>
+            <tr><td>国土地理院</td><td class="num">0</td><td class="num">—</td><td>JSON 2つ (新規。タイルは地理院が配信)</td></tr>
+          </tbody>
+        </table>
+        <p class="sub">
+          plateau/ と overture/ は全部書き換わったので <code>--size-only</code> を外す。
+          catalog.json は最後。R2に残る古い <code>*_minato.parquet</code> は、新しいサイトが配られてから消す。
+        </p>
+      </section>
+
+      <!-- ===== 見てほしい箇所 ===== -->
+      <section class="card" aria-label="見てほしいコードとドキュメント">
+        <h2>見てほしい箇所 — ありふれていない部分</h2>
+        <p class="sub" style="margin: -0.3rem 0 0.5rem">
+          どこかで見たことのある書き方ではなく、<b>このリポジトリ独自の判断が入っている所</b>。
+          壊れたときに直せる人が要る順。
         </p>
         <table>
-          <tr><th>plateau/</th><td>建物 306ファイル (段の <code>lod</code> 列を足した)・JSON — 3.8GB</td></tr>
-          <tr>
-            <th>overture/</th>
-            <td>
-              建物 392ファイル (全国、新規)・送電線・川 (新規)・行政区域・地名・道路・路線
-              (2026-09-23.1 で取り直し)・JSON — 5.7GB
-            </td>
-          </tr>
-          <tr><th>ほかのJSON</th><td>全サブカタログ・Collection (使う条件 <code>duck:terms</code> など)</td></tr>
-          <tr>
-            <th>gsi/</th>
-            <td>
-              新規。地理院のベクトルタイルのサブカタログと Collection (JSON 2つだけ。タイルは地理院が配信)
-            </td>
-          </tr>
-          <tr><th>catalog.json</th><td><b>最後に</b>上げて、続けて push</td></tr>
-        </table>
-        <p style="margin: 0.5rem 0 0">
-          手順は <a href="deploy.md">deploy.md</a> の「2026-10-03 の分」。今回は全部書き換わっているので
-          <b><code>--size-only</code> を外す</b>。手元の合計 9.6GB で<b>R2の無料枠 (10GB) にほぼ届く</b>
-        </p>
-        <h2 style="margin-top: 0.9rem">あとで片付けるもの (急がない)</h2>
-        <ul>
-          <li>
-            R2の <code>overture/overture_buildings_minato.parquet</code> と
-            <code>plateau/plateau_bldg_minato.parquet</code>
-            <span class="why">どこからも参照されない古い名前。新しいサイトが配られてから消す</span>
-          </li>
-          <li>
-            手元の <code>data/backup/</code> (<code>r2-catalog-2026-10-01.json</code>・
-            <code>overture-2026-07-22.0/</code>)
-            <span class="why">戻すための控え。新しいデータで公開できたら不要</span>
-          </li>
-        </ul>
-      </section>
-
-      <section class="next">
-        <h2>次にやること (この順)</h2>
-        <ol>
-          <li>
-            <b>周辺検索の見直し</b>
-            <span class="why">触ってみての指摘を待っている (機能を一気に足したので、使い勝手を詰める)</span>
-          </li>
-          <li>
-            <b>背景地図もレイヤーにする</b>
-            <span class="why">
-              QGIS と同じく、ラスタも重ねられて不透明度と順番を持つ形に。いまは背景の文字と
-              地理院の注記が二重に出る
-            </span>
-          </li>
-          <li>
-            <b>観点 (汎用の問い合わせのひな形)</b>
-            <span class="why">
-              複数のデータにまたがる条件に名前を付けたもの。条件はコードではなくデータで持ち、
-              用途ごとに組み替えられるようにする (ドローンは例の1つ)。周辺検索が土台になる
-            </span>
-          </li>
-          <li>
-            <b>国土数値情報を足す</b>
-            <span class="why">
-              学校 P29 (最新年度はCC BY)・医療機関 P04・福祉施設 P14・公共施設 P02・都市公園 P13。
-              P04/P14 は許諾が未確認。<b>河川 W05 は使えない</b> (非商用・承認番号付き・2009年度で停止)
-            </span>
-          </li>
-        </ol>
-        <h2 style="margin-top: 0.9rem">済み (2026-10-03、まだ公開していない)</h2>
-        <ul>
-          <li>
-            <b>地理院のベクトルタイルを重ねる</b>
-            <span class="why">
-              テーマ9行、開けば層ごと。ズームで入り切りが戻らない。一覧の絞り込み欄 (「送電」で両方の送電線)
-            </span>
-          </li>
-          <li>
-            <b>段で間引く</b>
-            <span class="why">標準なら z14 で公共施設・商業・業務、z13 で公共施設だけ。東京駅 z13 で約30MB → 約2MB</span>
-          </li>
-          <li>
-            <b>周辺検索 (◎)</b>
-            <span class="why">起点は点・建物・線 (同じ名前をまとめる)・検索結果。50〜500m以内の建物・駅・送電線・川・人口</span>
-          </li>
-          <li>
-            <b>使う条件のバッジ</b>
-            <span class="why">商用可か・出典表示・加工の明記・継承を、カードと出典のダイアログに</span>
-          </li>
-          <li>
-            <b>Overture: 版を上げ、建物を全国に、送電線と川を追加</b>
-            <span class="why">建物は QuadKey で392ファイル (5,419万棟)</span>
-          </li>
-          <li>
-            <b>ダウンロード</b>
-            <span class="why">表示範囲のGeoParquet・ファイル丸ごと・配布元・CityGML (メッシュ単位の直リンクと公式のZIP)</span>
-          </li>
-        </ul>
-      </section>
-
-      <section class="wait">
-        <h2>待ち (こちらから動かせない)</h2>
-        <ul>
-          <li>
-            <b>測量法の承認 (29条・複製)</b>
-            <span class="why">
-              N03 行政区域・DID・川 (基盤地図情報の水涯線) がまとめて開く。
-              下準備は <a href="survey-application.md">survey-application.md</a>
-            </span>
-          </li>
-        </ul>
-        <h2 style="margin-top: 0.9rem">未決の問い</h2>
-        <ul>
-          <li>
-            <b>建物の間引きの基準 (段の中)</b>
-            <span class="why">段では間引けた。住宅・その他 (全体の9割) をz15より手前で出すなら、段の中をどう減らすか</span>
-          </li>
-          <li>
-            <b>リポジトリの名前</b>
-            <span class="why">duck-geocoder は実態から外れた。方針が文になってから選ぶ</span>
-          </li>
-          <li>
-            <b>表示部分をライブラリにするか</b>
-            <span class="why"><code>web/src/main.ts</code> にデモと部品が混ざっている (約5,000行)</span>
-          </li>
-        </ul>
-      </section>
-
-      <section>
-        <h2>構想 (このリポジトリの外)</h2>
-        <ul>
-          <li>
-            <b>Rangeでzipの一部だけ取る道具を切り出す</b>
-            <span class="why">
-              APIが無くても、Range Requestに応える配信元ならzipの中身を部分取得できる。
-              いまは <code>pipeline/src/remote_zip.rs</code>
-            </span>
-          </li>
-        </ul>
-        <h2 style="margin-top: 0.9rem">やらないこと</h2>
-        <ul>
-          <li>動的データ (気象・他機位置) をファイルで配る</li>
-          <li>点群の生データを配る (TB級。派生物にする)</li>
-          <li>SDSP/UASLの文脈を深追いする・航路の設計そのもの</li>
-          <li>認証が要る取得経路 (Foursquareの公式配布など)</li>
-        </ul>
-      </section>
-
-      <section>
-        <h2>いま配っているもの</h2>
-        <table>
-          <tr><th>PLATEAU</th><td>建物 306都市 (2,929万棟)・整備範囲メッシュ</td></tr>
-          <tr><th>Overture</th><td>行政区域・建物 (港区)・道路 (幹線、全国) — 次の公開で建物が全国・送電線と川が加わる</td></tr>
-          <tr><th>国土数値情報</th><td>鉄道 路線・駅 (全国)</td></tr>
-          <tr><th>国勢調査</th><td>人口メッシュ 125m / 1km</td></tr>
-          <tr><th>位置参照情報</th><td>大字・町丁目・街区 (住所検索)</td></tr>
-          <tr><th>国土地理院</th><td>次の公開で: 最適化ベクトルタイル (公開元を指すだけ。複製しない)</td></tr>
-        </table>
-      </section>
-
-      <section>
-        <h2>ドキュメントの地図</h2>
-        <table>
-          <tr>
-            <th><a href="roadmap.md">roadmap.md</a></th>
-            <td>方針と、決めたことの記録 (何を・なぜ)</td>
-          </tr>
-          <tr>
-            <th><a href="pipeline.md">pipeline.md</a></th>
-            <td>データの作り方と実測 (粗い段・整備範囲・表示量・重要度の段)</td>
-          </tr>
-          <tr>
-            <th><a href="data-sources.md">data-sources.md</a></th>
-            <td>出所ごとのライセンス・使える/使えない理由</td>
-          </tr>
-          <tr>
-            <th><a href="deploy.md">deploy.md</a></th>
-            <td>R2へ上げる手順・戻し方</td>
-          </tr>
-          <tr>
-            <th><a href="survey-application.md">survey-application.md</a></th>
-            <td>測量法の申請の下準備</td>
-          </tr>
-          <tr>
-            <th><a href="../AGENTS.md">AGENTS.md</a></th>
-            <td>作業の約束事 (道具・テスト・コミット)</td>
-          </tr>
+          <thead><tr><th>箇所</th><th>何が特別か</th></tr></thead>
+          <tbody>
+            <tr class="group"><th colspan="2">配り方 (パイプライン)</th></tr>
+            <tr>
+              <td><a href="../pipeline/src/remote_zip.rs">remote_zip.rs</a></td>
+              <td>HTTP Range を <code>Read + Seek</code> に見せ、zip の中身を落とさず取る。切り出す構想の核</td>
+            </tr>
+            <tr>
+              <td><a href="../pipeline/src/spatial_pack.rs">spatial_pack.rs</a> / <a href="../pipeline/src/repack.rs">repack.rs</a></td>
+              <td>STR で並べ、<b>段 (<code>lod</code>) の境で行グループを切る</b>。読み飛ばしが効くかはここで決まる</td>
+            </tr>
+            <tr>
+              <td><a href="../pipeline/src/lod.rs">lod.rs</a></td>
+              <td>線の粗い段: 名前で束ねて簡略化した行を<b>同じファイルに足す</b> (原寸は消さない)</td>
+            </tr>
+            <tr>
+              <td><a href="../pipeline/src/quadkey.rs">quadkey.rs</a> · <a href="../pipeline/tests/quadkey_sql.rs">quadkey_sql.rs</a></td>
+              <td>同じ QuadKey を Rust と SQL の2通りで書き、テストで一致を見る。件数で割る深さを変える (<code>choose_tiles</code>)</td>
+            </tr>
+            <tr>
+              <td><a href="../pipeline/src/catalog.rs">catalog.rs</a> の <code>TIERS</code> / <code>Terms</code></td>
+              <td>重要度の段と使う条件を<b>規則・データ</b>として持ち、SQL (<code>rank_sql</code>) とカタログの両方へ出す</td>
+            </tr>
+            <tr>
+              <td><a href="../pipeline/src/stac.rs">stac.rs</a></td>
+              <td>STAC の置き方の判断 (サブカタログ、Item を1ファイルずつにしない、<code>duck:*</code> の独自項目)</td>
+            </tr>
+            <tr>
+              <td><a href="../pipeline/src/external.rs">external.rs</a> · <a href="../pipeline/src/pmtiles.rs">pmtiles.rs</a></td>
+              <td>外部の PMTiles をスナップショット (追跡) からカタログへ。テーマが層をちょうど覆うことを検証</td>
+            </tr>
+            <tr class="group"><th colspan="2">使い方 (web/src/main.ts)</th></tr>
+            <tr>
+              <td><code>walkCatalog</code> · <code>filesInView</code></td>
+              <td>カタログを歩いて Collection を作り、表示範囲に重なるファイルだけを DuckDB に渡す</td>
+            </tr>
+            <tr>
+              <td><code>buildingDepth</code> · <code>fetchBuildingsInView</code></td>
+              <td>1ズーム引くごとに1段減らす間引き (<code>lod &lt;= 段</code>)。転送量の上限はここ</td>
+            </tr>
+            <tr>
+              <td><code>toMeters</code> · <code>nearbyCondition</code></td>
+              <td>周辺検索: <code>ST_Affine</code> で起点付近をメートルに直してから <code>ST_DWithin</code></td>
+            </tr>
+            <tr>
+              <td><code>exportParquet</code> (initDuckDb の中)</td>
+              <td>ブラウザの中で GeoParquet を書き、出典と規約を KV に入れる</td>
+            </tr>
+            <tr>
+              <td><code>vectorLayerSpecs</code> · <code>createVectorOverlay</code></td>
+              <td>地理院のタイルを<b>データだけ</b>読み、形の種類から描く。入り切りはズームで戻さない</td>
+            </tr>
+            <tr class="group"><th colspan="2">判断の記録 (docs)</th></tr>
+            <tr>
+              <td><a href="duckdb-wasm-range-requests.md">duckdb-wasm-range-requests.md</a></td>
+              <td>部分取得が黙って全件取得に落ちる罠と、CORS の要件</td>
+            </tr>
+            <tr>
+              <td><a href="data-sources.md">data-sources.md</a> の承認の節</td>
+              <td>測量法の承認が要るもの・要らないもの、描画用データを根拠にしない理由</td>
+            </tr>
+            <tr>
+              <td><a href="pipeline.md">pipeline.md</a> の「粗い段」「段で間引く」</td>
+              <td>実測した転送量と、COGP を採らなかった数字</td>
+            </tr>
+          </tbody>
         </table>
       </section>
     </div>
+
+    <!-- ===== やること ===== -->
+    <div class="row four">
+      <section class="card" aria-label="次にやること">
+        <h2>次にやること</h2>
+        <ol class="tasks">
+          <li>
+            <b>周辺検索の見直し</b>
+            <span class="sub">触ってみての指摘を待っている</span>
+          </li>
+          <li>
+            <b>背景地図もレイヤーにする</b>
+            <span class="sub">QGIS と同じく重ね・不透明度・順番を持つ形に。背景の文字と地理院の注記が二重に出る件もここで解ける</span>
+          </li>
+          <li>
+            <b>描き方 (スタイル) の置き場所</b>
+            <span class="sub">データと分けて、カタログの外か別の Collection として持つ案 (roadmap)</span>
+          </li>
+          <li>
+            <b>観点 (汎用の問い合わせのひな形)</b>
+            <span class="sub">条件をデータで持ち、用途ごとに組み替える。周辺検索が土台</span>
+          </li>
+          <li>
+            <b>国土数値情報を足す</b>
+            <span class="sub">学校 P29・医療 P04・福祉 P14・公共施設 P02・都市公園 P13。W05 (河川) は使えない</span>
+          </li>
+        </ol>
+      </section>
+      <section class="card" aria-label="待ち">
+        <h2>待ち (こちらから動かせない)</h2>
+        <ul class="tasks">
+          <li>
+            <b>測量法の承認 (29条・複製)</b>
+            <span class="sub">N03 行政区域・DID・水涯線がまとめて開く。<a href="survey-application.md">下準備</a></span>
+          </li>
+        </ul>
+      </section>
+      <section class="card" aria-label="未決の問い">
+        <h2>未決の問い</h2>
+        <ul class="tasks">
+          <li>
+            <b>建物の段の中の間引き</b>
+            <span class="sub">住宅・その他 (全体の9割) をズーム15より手前で出すなら、段の中をどう減らすか</span>
+          </li>
+          <li>
+            <b>リポジトリの名前</b>
+            <span class="sub">duck-geocoder は実態から外れた。方針が文になってから選ぶ</span>
+          </li>
+          <li>
+            <b>表示部分をライブラリにするか</b>
+            <span class="sub"><code>web/src/main.ts</code> にデモと部品が混ざっている (約6,800行)</span>
+          </li>
+        </ul>
+      </section>
+      <section class="card" aria-label="構想とやらないこと">
+        <h2>構想 / やらないこと</h2>
+        <ul class="tasks">
+          <li>
+            <b>Range で zip の一部だけ取る道具を切り出す</b>
+            <span class="sub">API が無くても Range に応える配信元なら使える</span>
+          </li>
+          <li><span class="sub">やらない: 動的データ・点群の生データ・航路の設計そのもの・認証が要る取得経路</span></li>
+        </ul>
+      </section>
+    </div>
+
+    <!-- ===== ドキュメントの地図 ===== -->
+    <section class="card" aria-label="ドキュメントの地図">
+      <h2>ドキュメントの地図</h2>
+      <table>
+        <tbody>
+          <tr><td><a href="roadmap.md">roadmap.md</a></td><td>方針と、決めたことの記録 (何を・なぜ)</td></tr>
+          <tr><td><a href="pipeline.md">pipeline.md</a></td><td>データの作り方と実測 (粗い段・整備範囲・段の間引き・外部の配信物)</td></tr>
+          <tr><td><a href="data-sources.md">data-sources.md</a></td><td>出所ごとのライセンス・使える/使えない理由</td></tr>
+          <tr><td><a href="deploy.md">deploy.md</a></td><td>R2へ上げる手順・戻し方</td></tr>
+          <tr><td><a href="survey-application.md">survey-application.md</a></td><td>測量法の申請の下準備</td></tr>
+          <tr><td><a href="../AGENTS.md">AGENTS.md</a></td><td>作業の約束事 (道具・テスト・コミット)</td></tr>
+        </tbody>
+      </table>
+    </section>
   </body>
 </html>
