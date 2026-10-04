@@ -180,32 +180,41 @@ async function openInfoDialog(
  * (重ねて出すと結局縦に伸びるため)。
  */
 /**
- * 行が見えるように、**その行の出所 (見出し) を開く。** 一覧は出所ごとに開け閉めでき、
- * 既定で開いているのは既定で出しているレイヤーのある出所 (PLATEAU) だけ。
+ * 「＋ 追加」でカタログのダイアログを開き、その行のタブへ切り替える。
+ * 行がどちらの区分 (データ / 地図タイル) かは、ダイアログの中で探して決める。
+ */
+async function openCatalogFor(page: Page, layer: string) {
+  await closeLayerDetails(page);
+  const dialog = page.locator('#layer-catalog-dialog');
+  if (!(await dialog.isVisible())) {
+    await page.locator('.layer-add-button[data-section="data"]').click();
+    await expect(dialog).toBeVisible();
+  }
+  for (const section of ['data', 'tile']) {
+    await dialog.locator(`.catalog-tab[data-section="${section}"]`).click();
+    if ((await dialog.locator(`[data-catalog-layer="${layer}"]`).count()) > 0) return;
+  }
+  throw new Error(`${layer} がカタログに無い`);
+}
+
+/** カタログのダイアログを開いていれば閉じる。 */
+async function closeCatalog(page: Page) {
+  const dialog = page.locator('#layer-catalog-dialog');
+  if (!(await dialog.isVisible())) return;
+  await dialog.locator('.info-dialog-close').click();
+  await expect(dialog).toBeHidden();
+}
+
+/**
+ * 行が一覧にあるようにする。**一覧には使うものだけを置く**ので、無ければ
+ * 「＋ 追加」のダイアログから足す (足すと出した状態になる)。
  */
 async function revealLayer(page: Page, layer: string) {
-  const row = page.locator(`[data-layer="${layer}"]`).first();
-  await expect(row).toBeAttached();
+  const row = page.locator(`.layer-row[data-layer="${layer}"]`);
   if (await row.isVisible()) return;
-  // しまってある地図タイル (「地図タイルを足す」の中) なら、それを開く。
-  const inCatalog = await page.evaluate(
-    (id) => document.querySelector(`#tile-catalog [data-layer="${id}"]`) !== null,
-    layer,
-  );
-  if (inCatalog) {
-    await page.locator('#tile-catalog').evaluate((el) => ((el as HTMLDetailsElement).open = true));
-    await expect(row).toBeVisible();
-    return;
-  }
-  // 行の直前にある見出し = その行の出所。**ページの中で1回で探す** — 一覧は moveend ごとに
-  // 作り直されるので、行を掴んでから辿ると、その間に外れた要素を辿ることがある。
-  const group = await page.evaluate((id) => {
-    let node = document.querySelector(`[data-layer="${id}"]`)?.previousElementSibling;
-    while (node && !node.classList.contains('layer-group')) node = node.previousElementSibling;
-    return (node as HTMLElement | null | undefined)?.dataset.group ?? null;
-  }, layer);
-  expect(group, `${layer} の見出しが見つからない`).not.toBeNull();
-  await page.locator(`.layer-group[data-group="${group}"] .layer-group-toggle`).first().click();
+  await openCatalogFor(page, layer);
+  await page.locator(`[data-catalog-layer="${layer}"] .catalog-add`).click();
+  await closeCatalog(page);
   await expect(row).toBeVisible();
 }
 
@@ -730,12 +739,12 @@ test('出典に配布元へのリンクが出る', async ({ page }) => {
 test('できることは開かなくても分かる', async ({ page }) => {
   const panel = page.locator('#data-panel');
 
-  // データは出所ごとの見出しで並ぶ。閉じていても**何が何件あるか**は見出しで分かる。
-  // 既定で出している建物は開いた出所にあるので、行が見える。
+  // 一覧には使うもの (既定は建物と淡色地図) だけ。カタログ全体は「＋ 追加」から開く。
   await expect(panel.locator('.layer-row', { hasText: '建物' }).first()).toBeVisible();
-  for (const group of ['PLATEAU', '国勢調査']) {
-    await expect(panel.locator('.layer-group', { hasText: group }).first()).toBeVisible();
+  for (const section of ['data', 'tile']) {
+    await expect(panel.locator(`.layer-add-button[data-section="${section}"]`)).toBeVisible();
   }
+  await expect(page.locator('#layer-catalog-dialog')).toBeHidden();
   // レイヤーをまたぐ設定 (表示量) は一覧の最後。背景地図はもう一覧の行。
   await expect(panel.locator('#detail-section')).toContainText('表示量');
   // 使い方・検索できるもの・出典・使っている技術は右下 (MapLibreの ⓘ と同じ性格なので同じ側)。
@@ -940,11 +949,12 @@ function visibleBasemaps(page: Page): Promise<string[]> {
 }
 
 /**
- * **背景地図も一覧の行** (QGISと同じく、重ねられるレイヤーの1つ)。出所 (国土地理院) の
- * 見出しの下にあり、既定では淡色地図だけが出ている。入れると実際にそのタイルを取りに行き、
- * **後から入れたものが上**になる (不透明な地図同士なので、下に隠れると切り替わらないように見える)。
+ * **背景地図も一覧の行** (QGISと同じく、重ねられるレイヤーの1つ)。既定では淡色地図だけ。
+ * カタログから足すと実際にそのタイルを取りに行き、**いちばん上に入る** (足したものが見えるように)。
+ * **隠しても一覧からは消えず、重ね順も変わらない** (以前は隠すと一覧から外れ、出し直すと
+ * いちばん上へ動いた)。順番は ↑↓ だけが変える。
  */
-test('背景地図は一覧の行で、入れると写真のタイルを取りに行き上に重なる', async ({ page }) => {
+test('背景地図はカタログから足すと上に重なり、隠しても一覧と順番に残る', async ({ page }) => {
   expect(await visibleBasemaps(page)).toEqual([BASEMAP.pale]);
   const requested: string[] = [];
   page.on('request', (request) => {
@@ -955,10 +965,16 @@ test('背景地図は一覧の行で、入れると写真のタイルを取り�
   await expect.poll(() => requested.some((url) => url.includes('/seamlessphoto/'))).toBe(true);
   // 淡色地図の上に写真。
   expect(await visibleBasemaps(page)).toEqual([BASEMAP.pale, BASEMAP.photo]);
+  expect(await shownTiles(page)).toEqual([BASEMAP.photo, BASEMAP.pale]);
 
-  // 淡色地図を入れ直すと、今度はそちらが上。
+  // 隠して出し直しても、行は残り、順番は変わらない。
   await hideLayer(page, BASEMAP.pale);
+  expect(await shownTiles(page)).toEqual([BASEMAP.photo, BASEMAP.pale]);
   await showLayer(page, BASEMAP.pale);
+  expect(await visibleBasemaps(page)).toEqual([BASEMAP.pale, BASEMAP.photo]);
+
+  // ↑ で淡色地図を上へ。
+  await page.locator(`.layer-row[data-layer="${BASEMAP.pale}"] .layer-move-button`, { hasText: '↑' }).click();
   await expect.poll(() => visibleBasemaps(page)).toEqual([BASEMAP.photo, BASEMAP.pale]);
 
   // 不透明度は行の ⚙ で変えられる (地図を見ながら動かすので、行の下に開く)。
@@ -1106,11 +1122,13 @@ test('地形の標高を選び直せ、地理院の標高は値なしと負の�
  * 見せる: 行のチェックは押せず、理由を書き、ⓘ から公式のビューアへ案内する。
  */
 test('3D Tiles は描けない理由を出し、ⓘ からビューアへ案内する', async ({ page }) => {
-  await revealLayer(page, 'reearth-buildings');
-  const row = page.locator('[data-layer="reearth-buildings"]');
-  await expect(row.locator('input[type="checkbox"]').first()).toBeDisabled();
+  // カタログには出すが、一覧には足せない (この地図では描けない)。
+  await openCatalogFor(page, 'reearth-buildings');
+  const row = page.locator('[data-catalog-layer="reearth-buildings"]');
+  await expect(row.locator('.catalog-add')).toBeDisabled();
   await expect(row).toContainText('描けません');
-  await openLayerDetails(page, 'reearth-buildings');
+  await row.locator('.layer-detail-button').click();
+  await expect(page.locator('#layer-detail-dialog')).toBeVisible();
   const card = page.locator('.collection-card[data-collection="reearth-buildings"]');
   await expect(card.locator('a', { hasText: 'ビューア' })).toHaveAttribute('href', 'https://buildings.reearth.land/');
   await expect(card).toContainText('楕円体');
@@ -1684,11 +1702,10 @@ async function showPopulationMesh(page: Page, zoom = 13) {
 test('人口密度は切り替えで出せる', async ({ page }) => {
   test.skip(!(await hasMesh(page)), '人口メッシュのデータが無い');
 
-  // 出所 (国勢調査) は既定で閉じているので、開けば行が見える。
-  await revealLayer(page, LAYER.mesh);
-  // 既定は消えている。チェックするまで読みにも行かない。
+  // 既定では一覧に無い。足すまで読みにも行かない。
   expect(await sourceFeatureCount(page, 'population-mesh')).toBe(0);
 
+  // カタログから足すと出る。
   await showPopulationMesh(page);
   await expect(page.locator('#mesh-summary')).toContainText('人/km²');
 
@@ -1881,13 +1898,11 @@ async function showRailway(page: Page, zoom = 12) {
 test('鉄道は切り替えで出せる', async ({ page }) => {
   test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
 
-  // 出所 (国土数値情報) は既定で閉じているので、開けば路線と駅の行が見える。
-  await revealLayer(page, LAYER.railway);
-  await expect(page.locator(`[data-layer="${LAYER.stations}"]`)).toBeVisible();
-  // チェックするまで読みにも行かない。
+  // 既定では一覧に無い。足すまで読みにも行かない。
   expect(await sourceFeatureCount(page, 'railway')).toBe(0);
 
   await showRailway(page);
+  await expect(page.locator(`.layer-row[data-layer="${LAYER.stations}"]`)).toBeVisible();
   await expect(page.locator('#railway-summary')).toContainText('路線');
   await expect.poll(() => sourceFeatureCount(page, 'railway-stations')).toBeGreaterThan(0);
 
@@ -2111,10 +2126,8 @@ test('鉄道はホバーで路線名と事業者が出る', async ({ page }) => 
  * 見出しを**カタログから読んで**突き合わせる。一覧側の文言を書き写すと、
  * パイプラインで題名を変えたときに両方が揃って変わり、ずれを検出できない。
  */
-test('一覧はカタログの階層で並ぶ', async ({ page }) => {
+test('カタログのダイアログはカタログの階層で並ぶ', async ({ page }) => {
   await expect(page.locator('#layer-list')).toBeVisible();
-  const rows = page.locator('#layer-rows .layer-row, #layer-absent-rows .layer-row');
-  expect(await rows.count()).toBeGreaterThan(0);
 
   // ルートの子 (サブカタログ) の題名。
   const catalog = (await (
@@ -2125,12 +2138,16 @@ test('一覧はカタログの階層で並ぶ', async ({ page }) => {
 
   // 見出しは**カタログの順に**、**カタログの題名で**並ぶ。行を持たない
   // サブカタログ (位置参照情報は検索の裏方だけ) は見出しを出さない。
-  const headings = await page
-    .locator('#layer-rows .layer-group-title, #layer-absent-rows .layer-group-title')
-    .allTextContents();
-  expect(headings.length).toBeGreaterThan(0);
-  expect(groups).toEqual(expect.arrayContaining(headings));
-  expect(headings).toEqual(groups.filter((title) => headings.includes(title!)));
+  await page.locator('.layer-add-button[data-section="data"]').click();
+  const dialog = page.locator('#layer-catalog-dialog');
+  for (const section of ['data', 'tile']) {
+    await dialog.locator(`.catalog-tab[data-section="${section}"]`).click();
+    const headings = await dialog.locator('.catalog-group-title').allTextContents();
+    expect(headings.length, `${section} に見出しが無い`).toBeGreaterThan(0);
+    expect(groups).toEqual(expect.arrayContaining(headings));
+    expect(headings).toEqual(groups.filter((title) => headings.includes(title!)));
+  }
+  await closeCatalog(page);
 
   // **行IDはCollection ID。** 行とCollectionを同じ名前で呼ぶ。
   await expect(page.locator(`[data-layer="${LAYER.plateauBuildings}"]`)).toBeVisible();
@@ -2246,7 +2263,8 @@ test('収録範囲の外では「この範囲には無い」に移る', async ({
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 14 }); // 港区
   });
-  await expect(page.locator(`#layer-rows [data-layer="${LAYER.plateauBuildings}"]`)).toBeVisible();
+  const row = page.locator(`#layer-rows [data-layer="${LAYER.plateauBuildings}"]`);
+  await expect(row).not.toHaveClass(/absent/);
 
   // **収録範囲の外は日本の外まで出ないと無い。** PLATEAUを306都市に広げたので、
   // 札幌や大阪のような都市はもう収録されている。ここは三陸沖。
@@ -2254,8 +2272,12 @@ test('収録範囲の外では「この範囲には無い」に移る', async ({
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [150.0, 40.0], zoom: 14 });
   });
-  await expect(page.locator(`#layer-absent [data-layer="${LAYER.plateauBuildings}"]`)).toBeVisible();
-  await expect(page.locator('#layer-absent')).toContainText('この範囲には無い');
+  // 一覧からは外さない (足したものは ✕ を押すまで残る)。薄くして「無い」と言う。
+  await expect(row).toHaveClass(/absent/);
+  await expect(row).toContainText('この範囲には無い');
+  // カタログのダイアログでも同じ。
+  await openCatalogFor(page, LAYER.overtureBuildings);
+  await expect(page.locator(`[data-catalog-layer="${LAYER.plateauBuildings}"]`)).toContainText('この範囲には無い');
 });
 
 /**
@@ -2276,17 +2298,18 @@ test('整備範囲の外では、収録範囲の箱の内側でも「この範�
       (window as unknown as TestWindow).__map!.jumpTo({ center: c, zoom: 12 });
     }, center);
 
+  const row = page.locator(`#layer-rows [data-layer="${LAYER.plateauBuildings}"]`);
   // 港区。整備範囲の内側。
   await jump([139.7454, 35.6586]);
-  await expect(page.locator(`#layer-rows [data-layer="${LAYER.plateauBuildings}"]`)).toBeVisible();
+  await expect(row).not.toHaveClass(/absent/);
 
   // 飛騨の山中。箱の内側なので、箱だけで決めると「ある」のまま。
   await jump([137.0, 36.0]);
-  await expect(page.locator(`#layer-absent [data-layer="${LAYER.plateauBuildings}"]`)).toBeVisible();
+  await expect(row).toHaveClass(/absent/);
 
   // 戻れば「ある」に戻る。**答えは表示範囲ごとに聞き直す。**
   await jump([139.7454, 35.6586]);
-  await expect(page.locator(`#layer-rows [data-layer="${LAYER.plateauBuildings}"]`)).toBeVisible();
+  await expect(row).not.toHaveClass(/absent/);
 });
 
 /**
@@ -2417,10 +2440,9 @@ test('検索していないときは左上が地図を塞がない', async ({ pa
  * 背景地図と地形は**出所の見出しの下の行**。既定で出ているが、それを理由に見出しは開かない
  * (開くと国土地理院とMapterhornが常に開いて一覧が伸びる)。見出しの件数で出ていると分かる。
  */
-test('地図タイルは出しているものを重ね順に並べ、↑↓ で入れ替えられる', async ({ page }) => {
-  // 既定では淡色地図だけ。しまってあるものは「地図タイルを足す」の中 (閉じている)。
+test('地図タイルは足したものを重ね順に並べ、↑↓ で入れ替え、✕ で外せる', async ({ page }) => {
+  // 既定では淡色地図だけ。ほかはカタログのダイアログの中。
   expect(await shownTiles(page)).toEqual([BASEMAP.pale]);
-  await expect(page.locator('#tile-catalog')).not.toHaveAttribute('open', '');
   await expect(page.locator('#terrain-toggle')).toBeChecked();
   await expect(page.locator(`[data-layer="${BASEMAP.pale}"]`)).toContainText('地図タイル');
 
@@ -2438,10 +2460,64 @@ test('地図タイルは出しているものを重ね順に並べ、↑↓ で�
     page.locator(`[data-layer="${BASEMAP.pale}"] .layer-move-button`, { hasText: '↑' }),
   ).toBeDisabled();
 
-  // 外すと順番から外れ、しまってある方へ戻る。
+  // 隠しても一覧に残る。✕ で外すと一覧から消え、地図からも消える。
   await hideLayer(page, BASEMAP.photo);
+  expect(await shownTiles(page)).toEqual([BASEMAP.pale, BASEMAP.photo]);
+  await showLayer(page, BASEMAP.photo);
+  await page.locator(`[data-layer="${BASEMAP.photo}"] .layer-remove-button`).click();
   expect(await shownTiles(page)).toEqual([BASEMAP.pale]);
-  await expect(page.locator(`#tile-catalog [data-layer="${BASEMAP.photo}"]`)).toBeAttached();
+  expect(await visibleBasemaps(page)).toEqual([BASEMAP.pale]);
+  // カタログでは、また足せる状態に戻る。
+  await openCatalogFor(page, BASEMAP.photo);
+  await expect(page.locator(`[data-catalog-layer="${BASEMAP.photo}"] .catalog-add`)).toBeEnabled();
+  await closeCatalog(page);
+});
+
+/**
+ * **データも上の行ほど上に重なる。** 足すと既定の重なりの位置に入り (人口メッシュは
+ * 建物の下)、↑↓ で入れ替えると地図の層の順も入れ替わる。データは地図タイルより常に上。
+ */
+test('データの重ね順も一覧で入れ替えられる', async ({ page }) => {
+  test.skip(!(await hasBuildings(page)), '建物データが無い');
+  const order = () =>
+    page.evaluate(() => {
+      const ids = (window as unknown as TestWindow).__map!.getStyle().layers.map((l) => l.id);
+      return { mesh: ids.indexOf('population-mesh-fill'), buildings: ids.indexOf('buildings-3d'), tiles: ids.indexOf('anchor/tiles') };
+    });
+  await showLayer(page, LAYER.mesh);
+  const rows = () =>
+    page.locator('#layer-rows > [data-layer]').evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.layer!));
+  // 人口メッシュは建物の下に入る。
+  expect(await rows()).toEqual([LAYER.plateauBuildings, LAYER.mesh]);
+  let o = await order();
+  expect(o.mesh).toBeLessThan(o.buildings);
+  expect(o.tiles).toBeLessThan(o.mesh);
+
+  await page.locator(`[data-layer="${LAYER.mesh}"] .layer-move-button`, { hasText: '↑' }).click();
+  expect(await rows()).toEqual([LAYER.mesh, LAYER.plateauBuildings]);
+  o = await order();
+  expect(o.mesh).toBeGreaterThan(o.buildings);
+  expect(o.tiles).toBeLessThan(o.buildings);
+});
+
+/**
+ * **足したものと順番は端末に覚えておく。** 読み直しても同じ一覧で始まり、
+ * 「一覧を既定に戻す」で既定 (建物と淡色地図) に戻る。
+ */
+test('足したものと順番は読み直しても残り、既定に戻せる', async ({ page }) => {
+  await showLayer(page, BASEMAP.photo);
+  await hideLayer(page, BASEMAP.pale);
+  await page.reload();
+  await waitForReady(page);
+  expect(await shownTiles(page)).toEqual([BASEMAP.photo, BASEMAP.pale]);
+  await expect(page.locator(`#layer-toggle-${BASEMAP.pale}`)).not.toBeChecked();
+  expect(await visibleBasemaps(page)).toEqual([BASEMAP.photo]);
+
+  await page.locator('.layer-add-button[data-section="tile"]').click();
+  await page.locator('#layer-reset').click();
+  await closeCatalog(page);
+  expect(await shownTiles(page)).toEqual([BASEMAP.pale]);
+  expect(await visibleBasemaps(page)).toEqual([BASEMAP.pale]);
 });
 
 /**
@@ -3185,6 +3261,65 @@ test('周辺検索: 地図上の点から、建物と駅が出て、距離を広
   expect(await buildingsShown()).toBe(true);
 });
 
+/**
+ * 周辺検索の結果の上で、`layer` (と `kind`) がいちばん上に描かれている点。
+ * パネルに覆われていないところを、画面を粗く走査して探す。
+ */
+async function pointOnNearbyHit(page: Page, layer: string, kind?: string) {
+  const point = await page.evaluate(
+    ({ layer, kind }) => {
+      const map = (window as unknown as TestWindow).__map!;
+      const canvas = map.getCanvas();
+      const rect = canvas.getBoundingClientRect();
+      for (let y = 20; y < rect.height - 20; y += 6) {
+        for (let x = 20; x < rect.width - 20; x += 6) {
+          const top = map.queryRenderedFeatures([x, y], { layers: ['nearby-hits', 'nearby-hit-lines'] })[0];
+          if (!top || top.layer.id !== layer) continue;
+          if (kind && top.properties.kind !== kind) continue;
+          if (document.elementFromPoint(rect.left + x, rect.top + y) !== canvas) continue;
+          // ページの座標で返す (page.mouse に渡す)。
+          return { x: rect.left + x, y: rect.top + y };
+        }
+      }
+      return null;
+    },
+    { layer, kind },
+  );
+  expect(point, `${layer} ${kind ?? ''} の描かれた点が見つからない`).not.toBeNull();
+  return point!;
+}
+
+/**
+ * **当たったものにも吹き出しが出る。** 結果は元の層の上に別の層で描き、当たった建物の
+ * 下では元の建物を隠すので、層ごとのホバーだと吹き出しが消えていた。鉄道や駅は地図に
+ * 出していなくても当たるので、押しても何も出なかった。**押しても出る** (スマホ)。
+ */
+test('周辺検索: 当たった建物と駅にも、ホバーと押したときに吹き出しが出る', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+  await page.evaluate(() => {
+    (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7671, 35.6812], zoom: 16 });
+  });
+  await expect
+    .poll(() => sourceFeatureCount(page, 'buildings'), { timeout: 60_000 })
+    .toBeGreaterThan(0);
+  await nearbyAt(page, await emptyPointNear(page, { x: 640, y: 360 }));
+  await expect(page.locator('#nearby-results')).toContainText('東京駅', { timeout: 60_000 });
+  await expect(page.locator('#busy')).toBeHidden({ timeout: 60_000 });
+  const popup = page.locator('.hover-popup');
+
+  const building = await pointOnNearbyHit(page, 'nearby-hits');
+  await page.mouse.move(building.x, building.y);
+  await expect(popup).toContainText('周辺検索');
+  await expect(popup).toContainText('出所');
+
+  // 鉄道は地図に出していない (一覧に無い) が、駅は当たっている。押すと吹き出しが出る。
+  await expect(page.locator(`.layer-row[data-layer="${LAYER.stations}"]`)).toHaveCount(0);
+  const station = await pointOnNearbyHit(page, 'nearby-hit-lines', '駅');
+  await page.mouse.click(station.x, station.y);
+  await expect(popup).toContainText('駅');
+  await expect(popup).toContainText('周辺検索');
+});
+
 /** **建物を起点にできる。** 建物の上をクリックすると、その建物が起点になる。 */
 test('周辺検索: 建物を起点にできる', async ({ page }) => {
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
@@ -3415,10 +3550,11 @@ test('地理院のベクトルタイルをテーマごとに重ねられる', as
     if (request.url().includes('optimal_bvmap')) asked.push(request.url());
   });
 
-  // テーマは地図タイルの区分の「地図タイルを足す」の中に、出所 (国土地理院) の見出しの下で並ぶ。
-  await page.locator('#tile-catalog > summary').click();
-  await expect(page.locator('#tile-catalog .tile-group[data-group="duck-geocoder-gsi"]')).toBeVisible();
-  await expect(page.locator(`[data-layer^="${GSI_VECTOR}--"]`)).toHaveCount(9);
+  // テーマはカタログのダイアログの地図タイルに、出所 (国土地理院) の見出しの下で並ぶ。
+  await page.locator('.layer-add-button[data-section="tile"]').click();
+  await expect(page.locator('#layer-catalog-dialog .catalog-group[data-group="duck-geocoder-gsi"]')).toBeVisible();
+  await expect(page.locator(`[data-catalog-layer^="${GSI_VECTOR}--"]`)).toHaveCount(9);
+  await closeCatalog(page);
   // 入れるまでは読まない。
   expect(asked).toEqual([]);
 
@@ -3501,76 +3637,58 @@ test('地理院のベクトルタイルは、ズームを変えても層ごと�
 });
 
 /**
- * **一覧を絞り込める。** 出所の並びは崩さず、同じ種類のものを横断して探す。
- * 中の層にだけ当たったときは、開いて当たった層だけを見せる。
+ * **カタログを語で絞り込める。** 出所の並びは崩さず、同じ種類のものを横断して探す。
+ * 中の層にだけ当たったときは、当たった層を言い、**足すとその層だけを出す**。
  */
-test('一覧を語で絞り込める (出所をまたいで、中の層にも当たる)', async ({ page }) => {
+test('カタログを語で絞り込める (出所をまたいで、中の層にも当たる)', async ({ page }) => {
+  await page.locator('.layer-add-button[data-section="tile"]').click();
+  const dialog = page.locator('#layer-catalog-dialog');
   const filter = page.locator('#layer-filter');
-  // データの行と、地図タイルの行 (出しているもの・しまってあるもの)。
-  const rows = page.locator(
-    '#layer-rows [data-layer], #layer-absent-rows [data-layer], #tile-rows [data-layer], #tile-catalog-rows [data-layer]',
-  );
+  const tab = (section: string) => dialog.locator(`.catalog-tab[data-section="${section}"]`);
+  const rows = dialog.locator('[data-catalog-layer]');
+  const ids = () => rows.evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.catalogLayer));
   const all = await rows.count();
 
   await filter.fill('送電');
-  const ids = await rows.evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.layer));
-  expect(ids).toContain(LAYER.powerLines);
-  if (await hasGsiVector(page)) expect(ids).toContain(gsiRow('power'));
-  expect(ids.length).toBeLessThan(all);
+  // 区分のタブに、当たった件数が出る。データの送電線と、地理院の送電線。
+  await expect(tab('data')).toContainText('(1)');
+  if (await hasGsiVector(page)) {
+    expect(await ids()).toEqual([gsiRow('power')]);
+    expect(await rows.count()).toBeLessThan(all);
+  }
+  await tab('data').click();
+  expect(await ids()).toEqual([LAYER.powerLines]);
   // 見出しは当たった行の出所だけ。
-  await expect(page.locator('[data-group="duck-geocoder-plateau"]')).toHaveCount(0);
+  await expect(dialog.locator('[data-group="duck-geocoder-plateau"]')).toHaveCount(0);
 
   if (await hasGsiVector(page)) {
-    // 「等高」は地形の中の「等高線」にだけ当たる。開いて、当たった層だけを見せる。
+    // 「等高」は地形の中の「等高線」にだけ当たる。足すと等高線だけが出る。
+    await tab('tile').click();
     await filter.fill('等高');
     await expect(rows).toHaveCount(1);
-    const terrain = page.locator(`[data-layer="${gsiRow('terrain')}"]`);
-    await expect(terrain.locator('[data-part]')).toHaveCount(1);
-    await expect(terrain.locator('[data-part="Cntr"]')).toBeVisible();
+    const terrain = dialog.locator(`[data-catalog-layer="${gsiRow('terrain')}"]`);
+    await expect(terrain).toContainText('当たった層: 等高線');
+    await terrain.locator('.catalog-add').click();
+    await expect(terrain.locator('.catalog-add')).toHaveText('追加済み');
   }
 
   await filter.fill('当てはまらない語');
   await expect(rows).toHaveCount(0);
   await expect(page.locator('#layer-filter-empty')).toBeVisible();
 
-  // Esc で戻る。
+  // Esc は、まず語を消す (ダイアログは閉じない)。
   await filter.press('Escape');
-  await expect(rows).toHaveCount(all);
+  await expect(dialog).toBeVisible();
   await expect(page.locator('#layer-filter-empty')).toBeHidden();
-});
+  await closeCatalog(page);
 
-/**
- * **一覧は出所ごとに開け閉めできる。** 既定では、既定で出しているレイヤーのある
- * 出所 (PLATEAU) だけが開いている。閉じていても、何件あって何件出しているかは
- * 見出しで分かる。開け閉めは地図を動かしても (一覧を作り直しても) 保つ。
- */
-test('一覧は出所ごとに開け閉めでき、既定では表示中の出所だけ開いている', async ({ page }) => {
-  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
-  const heading = (group: string) => page.locator(`#layer-rows .layer-group[data-group="${group}"]`);
-  const plateau = heading('duck-geocoder-plateau');
-  const overture = heading('duck-geocoder-overture');
-
-  await expect(plateau.locator('.layer-group-toggle')).toHaveAttribute('aria-expanded', 'true');
-  await expect(page.locator(`[data-layer="${LAYER.plateauBuildings}"]`)).toBeVisible();
-  await expect(plateau).toContainText('1件表示中');
-  await expect(overture.locator('.layer-group-toggle')).toHaveAttribute('aria-expanded', 'false');
-  await expect(page.locator(`[data-layer="${LAYER.road}"]`)).toBeHidden();
-
-  // 開く。地図を動かして一覧が作り直されても開いたまま。
-  await overture.locator('.layer-group-toggle').click();
-  await expect(page.locator(`[data-layer="${LAYER.road}"]`)).toBeVisible();
-  await page.evaluate(() => {
-    (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7, 35.69], zoom: 11 });
-  });
-  await page.waitForTimeout(500);
-  await expect(page.locator(`[data-layer="${LAYER.road}"]`)).toBeVisible();
-
-  // 閉じる。
-  await overture.locator('.layer-group-toggle').click();
-  await expect(page.locator(`[data-layer="${LAYER.road}"]`)).toBeHidden();
-  // 絞り込み中は、閉じた出所でも当たったものを見せる。
-  await page.locator('#layer-filter').fill('道路');
-  await expect(page.locator(`[data-layer="${LAYER.road}"]`)).toBeVisible();
+  if (await hasGsiVector(page)) {
+    const row = page.locator(`.layer-row[data-layer="${gsiRow('terrain')}"]`);
+    await expect(page.locator(`#layer-toggle-${gsiRow('terrain')}`)).toHaveJSProperty('indeterminate', true);
+    await row.locator('.layer-expander').click();
+    await expect(row.locator('[data-part="Cntr"] input')).toBeChecked();
+    await expect(row.locator('[data-part]:not([data-part="Cntr"]) input:checked')).toHaveCount(0);
+  }
 });
 
 /**

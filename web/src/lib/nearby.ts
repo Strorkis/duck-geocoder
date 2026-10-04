@@ -148,20 +148,31 @@ export async function fetchNearbyBuildings(
   });
 
   // 高さも取る。当たった建物は**立体で**描く (地面に塗るだけだと、立体の建物に埋もれる)。
+  // 用途と出所も取る — 結果の上では元の建物を隠すので、**吹き出しはこちらで出す**。
   const height = source.hasHeight ? 'height' : 'NULL';
+  const category = source.categoryColumn ?? 'NULL';
   const drawn = await conn.query(`
-    SELECT ST_AsGeoJSON(geometry) AS geojson, name, ${tier} AS tier, ${height} AS height
+    SELECT ST_AsGeoJSON(geometry) AS geojson, name, ${tier} AS tier, ${height} AS height,
+      ${category} AS category
     FROM read_parquet([${list}])
     WHERE ${where}
     LIMIT ${NEARBY_DRAW_LIMIT};
   `);
   const features = drawn.toArray().map((row) => {
-    const r = row.toJSON() as { geojson: string; name: string | null; tier: string; height: number | null };
+    const r = row.toJSON() as {
+      geojson: string;
+      name: string | null;
+      tier: string;
+      height: number | null;
+      category: string | null;
+    };
     const rank = order.findIndex((t) => t.id === r.tier);
     return {
       type: 'Feature' as const,
       properties: {
         name: r.name,
+        category: r.category,
+        origin: source.id,
         tierRank: source.tiers ? rank : -1,
         // 種類ごとの表示の切り替えに使う (段の題名。段の無い出所は「すべて」)。
         tier: order[rank]?.title ?? 'すべて',

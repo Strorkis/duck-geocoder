@@ -80,34 +80,26 @@
               <span>データと地図</span><span class="panel-toggle-mark" aria-hidden="true"></span>
             </button>
             <div id="layer-body">
-            <!-- 出所の並びのまま、同じ種類のものを横断して探す (「送電」で両方の送電線)。 -->
-            <input
-              id="layer-filter"
-              type="search"
-              placeholder="絞り込み (例: 送電、水部)"
-              aria-label="レイヤーを絞り込む"
-              autocomplete="off"
-            />
-            <p id="layer-filter-empty" class="layer-filter-empty" hidden>当てはまるものがありません</p>
-            <!-- **データ**: SQL で引ける GeoParquet。出所ごとに開け閉めする。 -->
+            <!-- 一覧には**使うものだけ**を置く。足すのは「＋ 追加」(カタログのダイアログ)、
+                 外すのは行の ✕。チェックを外しても一覧からは消えない。
+                 どちらの区分も**上の行ほど上に重なる** (↑↓ で入れ替える)。 -->
+            <!-- **データ**: SQL で引ける GeoParquet。 -->
             <section id="data-section" class="layer-section">
-              <p class="layer-section-title">データ <span class="layer-section-note">SQL で引ける</span></p>
-              <div id="layer-rows"></div>
-              <!-- 収録が無いものも出す。「無い」と分かるのも情報なので隠さない。 -->
-              <div id="layer-absent" hidden>
-                <p class="layer-heading">この範囲には無い</p>
-                <div id="layer-absent-rows"></div>
+              <div class="layer-section-title">
+                <span>データ <span class="layer-section-note">SQL で引ける · 上ほど上</span></span>
+                <button type="button" class="layer-add-button" data-section="data" title="カタログからデータを足す">＋ 追加</button>
               </div>
+              <div id="layer-rows"></div>
+              <p id="layer-empty" class="layer-empty" hidden>「＋ 追加」から使うデータを選んでください</p>
             </section>
-            <!-- **地図タイル**: 見るだけのもの (ベクタータイル・背景地図・標高)。
-                 出しているものを**重ね順に**並べる (上の行ほど上に重なる。↑↓ で入れ替える)。
-                 「後から入れたものが上」の規則では、何が上にあるかが一覧から見えなかった。 -->
+            <!-- **地図タイル**: 見るだけのもの (ベクタータイル・背景地図・標高)。 -->
             <section id="tile-section" class="layer-section">
-              <p class="layer-section-title">
-                地図タイル <span class="layer-section-note">上ほど上に重なる</span>
-              </p>
+              <div class="layer-section-title">
+                <span>地図タイル <span class="layer-section-note">上ほど上</span></span>
+                <button type="button" class="layer-add-button" data-section="tile" title="カタログから地図タイルを足す">＋ 追加</button>
+              </div>
               <div id="tile-rows"></div>
-              <p id="tile-empty" class="layer-filter-empty" hidden>出している地図タイルはありません</p>
+              <p id="tile-empty" class="layer-empty" hidden>「＋ 追加」から背景地図などを選んでください</p>
               <!-- 地形は**1つだけ**選ぶ (MapLibre は地形を1つしか持てない)。 -->
               <div id="terrain-row" class="layer-row" data-layer="terrain" hidden>
                 <div class="layer-head">
@@ -122,10 +114,6 @@
                 </div>
                 <div id="terrain-slot" hidden></div>
               </div>
-              <details id="tile-catalog">
-                <summary>地図タイルを足す (<span id="tile-catalog-count">0</span>)</summary>
-                <div id="tile-catalog-rows"></div>
-              </details>
             </section>
             <div id="view-settings">
               <!-- 表示量もレイヤーをまたぐ設定なので、個別の⚙ではなくここに置く。 -->
@@ -301,14 +289,15 @@
           </ul>
           <h3>データを見る</h3>
           <ul>
-            <li>左の一覧は<b>出所ごと</b>に開け閉めできます。チェックで地図に出します</li>
-            <li>上の欄に語を入れると、出所をまたいで<b>絞り込め</b>ます (例: 「送電」)</li>
+            <li>左の一覧には<b>使うものだけ</b>を置きます。<b>＋ 追加</b>でカタログを開き、出所ごとに並んだ中から足します。語を入れると出所をまたいで<b>絞り込め</b>ます (例: 「送電」「水部」)</li>
+            <li>チェックで地図に出す / 隠す、<b>✕</b> で一覧から外します。足したものと順番はこの端末に覚えておきます</li>
+            <li>データと地図タイル (背景地図など) は、それぞれ<b>上の行ほど上に重なります</b>。<b>↑↓</b> で入れ替えます</li>
             <li><b>▸</b> で中の層を開き、層ごとに出し入れできます (国土地理院)。ズームを変えても設定は戻りません</li>
             <li><b>⚙</b> で絞り込み・色分け・不透明度を、その行の下に開きます (地図を見ながら動かせます)</li>
             <li><b>ⓘ</b> でデータについて (カタログ・使う条件・版) を開き、<b>この範囲を取得</b>できます (GeoParquet・CityGML)</li>
-            <li><b>背景地図と地形</b>も一覧の行です (国土地理院・Mapterhorn の下)。後から入れた背景地図が上に重なります</li>
+            <li><b>地形</b>は1つだけ選びます (Mapterhorn・Re:Earth・国土地理院の標高)</li>
             <li><b>Catalog</b> / <b>Collection</b> を押すと、カタログ (STAC) をページの中で辿れます</li>
-            <li>地物に<b>カーソルを合わせる</b>と、名称・種別・時点が出ます</li>
+            <li>地物に<b>カーソルを合わせる</b> (スマホでは<b>押す</b>) と、名称・種別・時点が出ます。周辺検索で当たったものにも出ます</li>
             <li>重いときは左下の<b>表示量</b>を下げます</li>
           </ul>
           <h3>消す</h3>
@@ -328,6 +317,36 @@
           <button type="button" class="info-dialog-close" title="閉じる">×</button>
         </div>
         <div id="layer-catalog"></div>
+      </div>
+    </dialog>
+    <!-- 「＋ 追加」で開くカタログ。**カタログにあるもの全部はここにだけ並べる**
+         (一覧に全部並べると、出所が増えるほど見たいものを探すのが大変になる)。
+         サブカタログ (出所) ごとに見出しを付け、語で絞り込める。 -->
+    <dialog id="layer-catalog-dialog" class="info-dialog">
+      <div class="info-dialog-body">
+        <div class="info-dialog-head">
+          <strong>カタログから追加</strong>
+          <button type="button" class="info-dialog-close" title="閉じる">×</button>
+        </div>
+        <div class="catalog-tabs" role="tablist">
+          <button type="button" class="catalog-tab" role="tab" data-section="data">データ</button>
+          <button type="button" class="catalog-tab" role="tab" data-section="tile">地図タイル</button>
+        </div>
+        <!-- 出所の並びのまま、同じ種類のものを横断して探す (「送電」で両方の送電線)。
+             中の層の名前でも当たり、当たった層だけを足せる (「水部」)。 -->
+        <input
+          id="layer-filter"
+          type="search"
+          placeholder="絞り込み (例: 送電、水部、写真)"
+          aria-label="カタログを絞り込む"
+          autocomplete="off"
+        />
+        <div id="catalog-rows"></div>
+        <p id="layer-filter-empty" class="layer-empty" hidden>当てはまるものがありません</p>
+        <p class="catalog-foot">
+          足したものと順番はこの端末に覚えておきます。
+          <button type="button" id="layer-reset">一覧を既定に戻す</button>
+        </p>
       </div>
     </dialog>
     <dialog id="search-dialog" class="info-dialog">

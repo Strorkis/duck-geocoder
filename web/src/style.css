@@ -895,19 +895,18 @@ body,
   border-radius: 0.2rem;
 }
 
-/* 一覧の絞り込み。見出しのすぐ下に、一覧の幅いっぱいで置く。 */
+/* カタログの絞り込み。ダイアログの幅いっぱいで置く。 */
 #layer-filter {
   box-sizing: border-box;
   width: 100%;
   margin: 0 0 0.3rem;
-  padding: 0.2rem 0.4rem;
+  padding: 0.35rem 0.5rem;
   font: inherit;
-  font-size: 0.8rem;
   border: 1px solid #ccd5df;
   border-radius: 0.25rem;
 }
 
-.layer-filter-empty {
+.layer-empty {
   margin: 0.2rem 0;
   font-size: 0.75rem;
   color: #888;
@@ -1010,57 +1009,127 @@ body,
   color: #14508c;
 }
 
-/* サブカタログの見出し (PLATEAU / Overture Maps …)。**一覧の構造はカタログの階層。**
-   行 (Collection) よりは強く、「この場所のデータ」よりは弱く見せる。 */
-.layer-group {
+/* ---- カタログから追加 (ダイアログ) ---------------------------------------------
+   **カタログにあるもの全部はここにだけ並べる。** サブカタログ (出所) ごとに見出しを付け、
+   1行ごとに「追加」を置く。幅があるので、説明と中の層まで読める。 */
+.catalog-tabs {
   display: flex;
-  align-items: baseline;
-  gap: 0.4rem;
-  margin-top: 0.45rem;
-  padding-bottom: 0.1rem;
-  border-bottom: 1px solid #eee;
-}
-
-.layer-group:first-child {
-  margin-top: 0.1rem;
-}
-
-/* 見出しそのものが開け閉めのボタン。見た目は見出しのまま。 */
-.layer-group-toggle {
-  flex: 1;
-  display: flex;
-  align-items: baseline;
   gap: 0.3rem;
-  min-width: 0;
-  padding: 0;
+  margin-bottom: 0.4rem;
+  border-bottom: 1px solid #dde3ea;
+}
+
+.catalog-tab {
+  min-height: 2rem;
+  padding: 0.2rem 0.8rem;
   border: none;
+  border-bottom: 3px solid transparent;
   background: transparent;
   font: inherit;
-  text-align: left;
+  color: #555;
   cursor: pointer;
 }
 
-.layer-group-chevron {
-  flex: none;
-  width: 0.7rem;
-  font-size: 0.65rem;
-  color: #666;
-}
-
-.layer-group-title {
-  font-size: 0.75rem;
-  font-weight: 600;
+.catalog-tab[aria-selected='true'] {
+  border-bottom-color: #14508c;
+  font-weight: 700;
   color: #14508c;
 }
 
-/* 何件あって、いくつ出しているか。閉じていても読める。 */
-.layer-group-count {
-  font-size: 0.68rem;
-  color: #888;
+.catalog-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.5rem;
+  margin-top: 0.8rem;
+  padding-bottom: 0.2rem;
+  border-bottom: 1px solid #e3e8ee;
 }
 
-.layer-row[hidden] {
-  display: none;
+.catalog-group-title {
+  font-weight: 700;
+  color: #14508c;
+}
+
+/* 出所の説明。長いので2行で切る (全文はⓘとCatalogで読める)。 */
+.catalog-group-description {
+  flex: 1 0 100%;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 0.75rem;
+  color: #777;
+}
+
+.catalog-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid #f2f4f7;
+}
+
+/* この範囲に無いもの。**隠さない** — 足しておけば、移動した先で出る。 */
+.catalog-row.absent .catalog-body {
+  opacity: 0.6;
+}
+
+.catalog-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.catalog-name {
+  font-weight: 600;
+}
+
+.catalog-meta,
+.catalog-parts {
+  font-size: 0.75rem;
+  color: #777;
+}
+
+.catalog-parts {
+  color: #557;
+}
+
+.catalog-add {
+  flex: none;
+  min-width: 4.5rem;
+  min-height: 2rem;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid #14508c;
+  border-radius: 0.3rem;
+  background: #14508c;
+  font: inherit;
+  font-size: 0.8rem;
+  color: white;
+  cursor: pointer;
+}
+
+.catalog-add:disabled {
+  border-color: #ccd;
+  background: #f3f5f8;
+  color: #889;
+  cursor: default;
+}
+
+.catalog-foot {
+  margin: 0.8rem 0 0;
+  font-size: 0.75rem;
+  color: #777;
+}
+
+#layer-reset {
+  margin-left: 0.4rem;
+  border: 1px solid #ccc;
+  border-radius: 0.25rem;
+  background: white;
+  font: inherit;
+  cursor: pointer;
 }
 
 /* STACの文書を開くボタン。目立たせない — 読む人は読む。見た目はリンクに寄せる。 */
@@ -1618,8 +1687,12 @@ body,
 }
 
 .layer-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
   margin: 0 0 0.2rem;
-  padding: 0.2rem 0.4rem;
+  padding: 0.2rem 0.2rem 0.2rem 0.4rem;
   border-radius: 0.25rem;
   background: #eef3f9;
   font-weight: 700;
@@ -1634,29 +1707,44 @@ body,
   color: #667;
 }
 
-/* しまってある地図タイル。区分の終わりに畳んでおく。 */
-#tile-catalog {
-  margin-top: 0.3rem;
-}
-
-#tile-catalog > summary {
-  min-height: 1.8rem;
-  line-height: 1.8rem;
-  font-size: 0.8rem;
+/* 区分の「＋ 追加」。カタログのダイアログを開く。区分の見出しの右端に置く。 */
+.layer-add-button {
+  flex: none;
+  min-height: 1.75rem;
+  padding: 0 0.55rem;
+  border: 1px solid #9bb6d3;
+  border-radius: 0.3rem;
+  background: white;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
   color: #14508c;
   cursor: pointer;
 }
 
-.tile-group {
-  display: flex;
-  align-items: baseline;
-  gap: 0.4rem;
-  margin-top: 0.35rem;
-  border-bottom: 1px solid #eee;
+.layer-add-button:hover {
+  background: #f5f9fd;
 }
 
-.tile-group .layer-group-title {
+/* 行の2段目: 出所と版が残りの幅を取り、↑↓✕ は右端に寄せる。状態はその下に折り返す。 */
+.layer-sub {
+  align-items: center;
+}
+
+.layer-sub .layer-source {
   flex: 1;
+}
+
+.layer-remove-button {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: #888;
+  cursor: pointer;
+}
+
+.layer-remove-button:hover {
+  color: #b00020;
 }
 
 #terrain-row[hidden] {
@@ -1685,7 +1773,8 @@ body,
 .layer-detail-button,
 .layer-zoom-button,
 .layer-expander,
-.layer-move-button {
+.layer-move-button,
+.layer-remove-button {
   display: inline-grid;
   place-items: center;
   min-width: 1.75rem;
@@ -1699,7 +1788,8 @@ body,
 .layer-detail-button:hover,
 .layer-zoom-button:hover,
 .layer-expander:hover,
-.layer-move-button:hover:not(:disabled) {
+.layer-move-button:hover:not(:disabled),
+.layer-remove-button:hover {
   background: #eef3f9;
 }
 
@@ -1729,7 +1819,8 @@ body,
   .layer-detail-button,
   .layer-zoom-button,
   .layer-expander,
-  .layer-move-button {
+  .layer-move-button,
+  .layer-remove-button {
     min-width: 2.5rem;
     min-height: 2.5rem;
     font-size: 1.1rem;
@@ -1742,8 +1833,9 @@ body,
     height: 1.35rem;
   }
 
-  .layer-group-toggle,
-  #tile-catalog > summary,
+  .layer-add-button,
+  .catalog-add,
+  .catalog-tab,
   .nearby-chip {
     min-height: 2.5rem;
   }

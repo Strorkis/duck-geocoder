@@ -170,6 +170,9 @@ export interface RoadSource {
 /** 名前と種別だけを持つ線の種類。 */
 export type LineKind = 'power_line' | 'waterway';
 
+/** [`LineKind`] の全部 (カタログの `duck:kind` がこのどれかなら線として扱う)。 */
+export const LINE_KINDS: readonly LineKind[] = ['power_line', 'waterway'];
+
 /**
  * 名前と種別だけを持つ線 (送電線・川)。**道路と違って等級の絞り込みを持たない。**
  * 粗い段の切り替え・一覧の行・ホバーは道路と同じ仕組みを使う。

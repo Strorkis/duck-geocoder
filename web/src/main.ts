@@ -1,5 +1,5 @@
 import './style.css';
-import * as duckdb from '@duckdb/duckdb-wasm';
+import type * as duckdb from '@duckdb/duckdb-wasm';
 import {
   MapLibreMap,
   GeoJSONSource,
@@ -28,16 +28,14 @@ import {
 import {
   COARSE_LOD,
   EXACT_LOD,
+  LINE_KINDS,
   bboxOverlaps,
-  filesInView,
   geometryBbox,
-  lodFilter,
   lodForZoom,
   lodNote,
   meshSourceFor,
   sourceLodNote,
   unionBbox,
-  type BuildingCoverage,
   type BuildingSource,
   type LineKind,
   type LineSource,
@@ -58,6 +56,50 @@ import {
   type NearbyFrame,
   type NearbyOrigin,
 } from './lib/nearby';
+// DuckDB-WASM の初期化とデータの出所の組み立ては lib/duckdb.ts、
+// 表示範囲の問い合わせは lib/queries.ts、検索は lib/search.ts、地域メッシュは lib/mesh.ts。
+import { initDuckDb } from './lib/duckdb';
+import {
+  coverageFeatureCollection,
+  coverageInView,
+  fetchBuildingsInView,
+  fetchCoverageInView,
+  fetchLinesInView,
+  fetchMeshInView,
+  fetchRailwayInView,
+  fetchRoadsInView,
+  type BuildingFilter,
+  type RailwayFeature,
+} from './lib/queries';
+import {
+  MAX_RESULTS,
+  ROUTE_SUGGESTIONS,
+  fetchAdminPolygon,
+  fetchLineGeometry,
+  fetchRouteGeometry,
+  reverseGeocode,
+  searchAddress,
+  searchLines,
+  searchRoutes,
+  searchStations,
+  toMultiLineString,
+  type SearchResult,
+} from './lib/search';
+import { MESH_SIZE_LABELS, meshBounds, meshCodesInView, meshDigits } from './lib/mesh';
+import { CITYGML_TYPES, fetchCityGmlFiles, packCityGml, type CityGmlFile } from './lib/plateau-api';
+// 画面の部品は ui/。左下の一覧 (使うものだけを置く) と、カタログから足すダイアログは layer-list.ts。
+import { LAYER_ANCHORS, createLayerList, type Layer, type LayerList } from './ui/layer-list';
+import {
+  buildDataCredits,
+  collapseAttribution,
+  externalLink,
+  renderCredits,
+  renderTechCredits,
+  renderTermsSummary,
+  termsBadges,
+  watchAttributionHeight,
+} from './ui/credits';
+import { createStacViewer } from './ui/stac-viewer';
 // MapLibreは既定では new URL(`./${名前}`, import.meta.url) でワーカーを探すが、
 // 名前が変数なのでバンドラが静的に検出できず、ビルド成果物に出力されない。
 // 結果、本番だけGeoJSONソースが一切描画されなくなる (地図タイルもポップアップも
@@ -71,18 +113,10 @@ setWorkerUrl(maplibreWorkerUrl);
 import {
   dataUrl,
   fetchCollections,
-  fetchStac,
   itemFile,
-  itemFiles,
-  resolveHref,
-  tierExpression,
   type Bbox,
-  type CatalogGroup,
   type Collection,
   type DatasetKind,
-  type StacLink,
-  type Terms,
-  type VectorLayerInfo,
 } from './lib/stac';
 
 /** E2Eテストのために公開するもの。アプリ本体はこれを参照しない。 */
@@ -95,251 +129,6 @@ interface TestHooks {
 // 初期化に失敗した場合でも参照できるよう、ここで公開しておく
 // (データが無くて初期化できないこと自体が、判定したい状態のひとつなので)。
 (window as unknown as TestHooks).__dataUrl = dataUrl;
-
-/**
- * DuckDB-WASM本体の置き場所。
- *
- * バンドルには含めず、アプリと同じオリジンの /duckdb/ から配る。
- * duckdb-eh.wasm が35MB、duckdb-mvp.wasm が40MBあり、バンドラに通すと
- * ホスティングのファイルサイズ制限に当たるため (Cloudflare Pagesは25MiBまで)。
- * 開発時は vite.config.ts が node_modules から配信し、ビルド時は同じ場所から
- * dist/duckdb/ にコピーされる。別の場所に置きたい場合は
- * VITE_DUCKDB_BASE_URL で上書きできる。
- */
-const DUCKDB_BASE_URL = (
-  import.meta.env.VITE_DUCKDB_BASE_URL ?? `${import.meta.env.BASE_URL}duckdb`
-).replace(/\/$/, '');
-
-function duckdbUrl(file: string): string {
-  return new URL(`${DUCKDB_BASE_URL}/${file}`, window.location.href).toString();
-}
-
-/**
- * spatialなど拡張の置き場所。DuckDB本体と同じく自前配信にしてある
- * (`web/duckdb-extensions.ts` が実行時にDuckDB本体のバージョンへ合わせて取得し、
- * `web/vite.config.ts` が `duckdb/extensions/` として配る)。
- *
- * 本家 (extensions.duckdb.org) にあるのと同じ署名済みファイルをそのまま
- * 置いているだけなので、`allowUnsignedExtensions` は要らない。
- */
-const DUCKDB_EXTENSIONS_URL = duckdbUrl('extensions');
-
-/** STACの文書のうち、見せるのに要るところだけ。種類を問わず読む。 */
-interface StacDocument {
-  type?: string;
-  id?: string;
-  title?: string;
-  links?: StacLink[];
-  features?: unknown[];
-}
-
-/**
- * ItemCollectionの `features` を見せる件数。PLATEAUは306件・595KBあり、
- * 全部を整形して出すと1MBを超えて画面が固まる。**全体は生のJSONで見られる。**
- */
-const STAC_FEATURE_PREVIEW = 20;
-
-/**
- * STACの文書をページの中で見せる。**リンクを押すと次の文書へ進める。**
- *
- * 以前は生のJSONを別タブで開いていた。それだと地図から離れるうえ、
- * そこから先 (親・子・Item) へは自分でURLを組み立てないと辿れない。
- * ここでは `links` をボタンにしてあるので、**画面の中でカタログを歩ける**。
- *
- * リンクの解決はアプリ本体と同じ規則 ([`resolveHref`] — その文書からの相対)。
- * 実データ (parquet) は開かない。数十MBあり、開いても読めないため。
- */
-function createStacViewer(dialog: HTMLDialogElement): (path: string) => void {
-  const pick = <T extends Element>(selector: string) => dialog.querySelector<T>(selector)!;
-  const backButton = pick<HTMLButtonElement>('#stac-back');
-  const typeEl = pick<HTMLSpanElement>('#stac-type');
-  const titleEl = pick<HTMLElement>('#stac-title');
-  const pathEl = pick<HTMLElement>('#stac-path');
-  const linksEl = pick<HTMLDListElement>('#stac-links');
-  const noteEl = pick<HTMLParagraphElement>('#stac-note');
-  const jsonEl = pick<HTMLPreElement>('#stac-json');
-  const rawLink = pick<HTMLAnchorElement>('#stac-raw');
-
-  /** 辿ってきた文書 (配信の起点からのパス)。末尾がいま見ているもの。 */
-  const trail: string[] = [];
-
-  const linkTarget = (link: StacLink, base: string): Node => {
-    // 配布元など、カタログの外を指すもの。
-    if (/^[a-z][a-z0-9+.-]*:/i.test(link.href)) return externalLink(link.href, link.title ?? link.href);
-    const path = resolveHref(link.href, base);
-    if (!path.endsWith('.json')) {
-      const code = document.createElement('code');
-      code.textContent = path;
-      return code;
-    }
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'stac-link';
-    button.textContent = link.title ? `${link.title} (${path})` : path;
-    button.addEventListener('click', () => go(path));
-    return button;
-  };
-
-  const render = async (path: string) => {
-    backButton.disabled = trail.length < 2;
-    typeEl.textContent = '';
-    titleEl.textContent = '読み込み中…';
-    pathEl.textContent = path;
-    linksEl.replaceChildren();
-    noteEl.hidden = true;
-    jsonEl.textContent = '';
-    rawLink.href = dataUrl(path);
-
-    let document_: StacDocument;
-    try {
-      document_ = await fetchStac<StacDocument>(path);
-    } catch (e) {
-      titleEl.textContent = '読めませんでした';
-      jsonEl.textContent = String(e);
-      return;
-    }
-    // 読んでいる間に別の文書へ進んでいたら、古い方は捨てる。
-    if (trail.at(-1) !== path) return;
-
-    typeEl.textContent = document_.type ?? '';
-    titleEl.textContent = document_.title ?? document_.id ?? path;
-
-    // `self` は今いる文書なので並べない。
-    for (const link of document_.links ?? []) {
-      if (link.rel === 'self') continue;
-      const dt = document.createElement('dt');
-      dt.textContent = link.rel;
-      const dd = document.createElement('dd');
-      dd.append(linkTarget(link, path));
-      linksEl.append(dt, dd);
-    }
-
-    const features = document_.features;
-    const shown =
-      Array.isArray(features) && features.length > STAC_FEATURE_PREVIEW
-        ? { ...document_, features: features.slice(0, STAC_FEATURE_PREVIEW) }
-        : document_;
-    if (shown !== document_) {
-      noteEl.textContent =
-        `features は ${features!.length.toLocaleString()} 件のうち先頭 ` +
-        `${STAC_FEATURE_PREVIEW} 件だけ表示しています。全体は下のリンクから。`;
-      noteEl.hidden = false;
-    }
-    jsonEl.textContent = JSON.stringify(shown, null, 2);
-    jsonEl.scrollTop = 0;
-  };
-
-  const go = (path: string) => {
-    trail.push(path);
-    void render(path);
-  };
-
-  backButton.addEventListener('click', () => {
-    if (trail.length < 2) return;
-    trail.pop();
-    void render(trail.at(-1)!);
-  });
-  pick<HTMLButtonElement>('#stac-close').addEventListener('click', () => dialog.close());
-  // **背景を押したら閉じる。** 中身は内側の要素に入れてあるので、
-  // dialog 自身がクリックの的になるのは背景 (::backdrop) を押したときだけ。
-  dialog.addEventListener('click', (e) => {
-    if (e.target === dialog) dialog.close();
-  });
-
-  return (path: string) => {
-    trail.length = 0;
-    go(path);
-    if (!dialog.open) dialog.showModal();
-  };
-}
-
-/**
- * 検索結果は2種類ある。
- * - admin: 行政区域。面を持つので選択するとポリゴンをハイライトする。
- * - oaza:  大字・町丁目(位置参照情報)。代表点しか無いのでその地点へ飛ぶ。
- */
-type SearchResult =
-  | { kind: 'admin'; label: string; adminId: string }
-  | { kind: 'oaza'; label: string; lon: number; lat: number }
-  // 駅。**人が実際に検索する語**なので、地名と並べて出す。
-  | { kind: 'station'; label: string; detail: string; lon: number; lat: number }
-  // 路線。点ではなく**範囲**なので、飛び先は fitBounds になる。
-  // 線そのものは選んだときに読んでハイライトする (`lineName` / `operator` で引く)。
-  | { kind: 'line'; label: string; detail: string; bbox: Bbox; lineName: string; operator: string }
-  | { kind: 'route'; label: string; detail: string; bbox: Bbox; routeName: string };
-
-/**
- * 初回に一度だけ実行し、以降は同じ結果を返す。
- * 並行して呼ばれても実行は1回で、両方とも完了を待てる。
- */
-function once(run: () => Promise<void>): () => Promise<void> {
-  let started: Promise<void> | undefined;
-  return () => (started ??= run());
-}
-
-/** 範囲を、地図に描ける矩形のポリゴンにする。 */
-/**
- * この桁のメッシュ1つに入る1kmセルの数。
- *
- * JIS X 0410 は 4桁 (80km) → 6桁 (10km) → 8桁 (1km) で、
- * 4→6 は緯度経度それぞれ8分割 (8×8)、6→8 は10分割 (10×10)。
- */
-function meshCellCapacity(digits: number): number {
-  if (digits >= 8) return 1;
-  if (digits === 6) return 100;
-  if (digits === 4) return 64 * 100;
-  throw new Error(`想定していないメッシュの桁数: ${digits}`);
-}
-
-/**
- * 整備範囲のメッシュをGeoJSONにする。
- *
- * **矩形はメッシュコードから計算する** (人口メッシュと同じ)。配られた
- * ジオメトリを使わないのは、コードを前から切って束ねたあとの大きさで
- * 描きたいため。
- *
- * **濃淡は充足率で付ける。** 建物の数で濃くすると人口密集部が濃くなるだけで、
- * 「整備されているか」とは別のものを見せてしまう。代わりに
- * **束ねたセルのうち何割にデータがあるか**で塗る。1つでも子があれば塗る形だと、
- * 日本全体が見えるまで引いたときにほぼ全国が埋まって見えてしまうため。
- *
- * **沿岸のセルは決して100%にならない** — 海の子セルは元々データを持てない。
- * つまりこれは「整備率」ではなく**このセルの面積のうちデータがある割合**。
- */
-function coverageFeatureCollection(cells: CoverageCell[]): GeoJSON.FeatureCollection {
-  return {
-    type: 'FeatureCollection',
-    features: cells.map(({ code, buildings, filled, cities }) => {
-      const [west, south, east, north] = meshBounds(code);
-      const total = meshCellCapacity(code.length);
-      return {
-        type: 'Feature',
-        properties: {
-          code,
-          buildings,
-          filled,
-          total,
-          ratio: filled / total,
-          cities: cities.join('、'),
-        },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [
-            [
-              [west, south],
-              [east, south],
-              [east, north],
-              [west, north],
-              [west, south],
-            ],
-          ],
-        },
-      };
-    }),
-  };
-}
-
-const LINE_KINDS: readonly LineKind[] = ['power_line', 'waterway'];
 
 /** 線の見せ方。川は水色の実線、送電線は紫の破線 (道路・鉄道と見分けるため)。 */
 const LINE_STYLES: Record<LineKind, { color: string; width: number; dash: number[] | null }> = {
@@ -355,43 +144,6 @@ const LINE_CLASS_LABELS: Record<string, string> = {
   canal: '運河',
 };
 
-interface LineFeature {
-  geojson: GeoJSON.Geometry;
-  name: string | null;
-  lineClass: string;
-}
-
-/**
- * 表示範囲の線を引く。道路 ([`fetchRoadsInView`]) と同じく、中心に近い順に上限まで。
- */
-async function fetchLinesInView(
-  conn: duckdb.AsyncDuckDBConnection,
-  source: LineSource,
-  bounds: ViewBounds,
-  limit: number,
-  lod: number | undefined,
-): Promise<LineFeature[]> {
-  const files = filesInView(source, bounds);
-  if (files.length === 0) return [];
-  const list = files.map((file) => `'${file}'`).join(', ');
-  const lonScale = Math.cos((bounds.centerLat * Math.PI) / 180);
-  const result = await conn.query(`
-    SELECT ST_AsGeoJSON(geometry) AS geojson, name, class
-    FROM read_parquet([${list}])
-    WHERE ${lodFilter(lod)}
-      bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}
-      AND bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}
-    ORDER BY
-      pow(((bbox.xmin + bbox.xmax) / 2 - ${bounds.centerLon}) * ${lonScale}, 2)
-      + pow((bbox.ymin + bbox.ymax) / 2 - ${bounds.centerLat}, 2)
-    LIMIT ${limit};
-  `);
-  return result.toArray().map((row) => {
-    const r = row.toJSON() as unknown as { geojson: string; name: string | null; class: string };
-    return { geojson: JSON.parse(r.geojson) as GeoJSON.Geometry, name: r.name, lineClass: r.class };
-  });
-}
-
 /**
  * 道路の等級ごとの色と呼び名。**語彙はカタログから来る**ので、ここには
  * 見せ方だけを持つ (鉄道の事業者種別と同じ)。
@@ -404,20 +156,6 @@ const ROAD_STYLES: Record<string, { label: string; color: string; width: number 
   trunk: { label: '国道', color: '#c2410c', width: 2.4 },
   primary: { label: '都道府県道', color: '#8a6d3b', width: 1.8 },
 };
-
-/** 道路1件分の表示用データ。 */
-interface RoadFeature {
-  geojson: GeoJSON.Geometry;
-  /** Overtureの `names.primary`。無いこともある。 */
-  roadName: string | null;
-  /** 道路等級。色と太さはこれで決める。 */
-  roadClass: string;
-  /**
-   * 属する路線の名前。**1つの区間が複数の路線に属する**
-   * (実測で首都圏の約半分が2本以上、最大10本) のでリストで持つ。
-   */
-  routeNames: string[];
-}
 
 /**
  * 事業者種別ごとの色。**語彙はカタログから来る**ので、ここには色だけを持つ。
@@ -436,34 +174,6 @@ const RAILWAY_COLORS: Record<string, string> = {
 
 /** 語彙に無い種別が来たときの色。カタログが増えても消えないようにする。 */
 const RAILWAY_FALLBACK_COLOR = '#616161';
-
-/**
- * ズームに対して、メッシュコードを何桁で束ねるか。
- *
- * **メッシュコードは階層になっている**ので、前から切るだけで粗くできる
- * (11桁=125m、10桁=250m、9桁=500m、8桁=1km、6桁=10km、4桁=80km)。
- *
- * 引くほど粗くするのは、描く数を抑えるため。125mメッシュは全国で282万件ある。
- * どのファイルから作るかは [`meshSourceFor`] が別に決める。
- */
-/** メッシュコードの桁数から、人間に見せる大きさの呼び名。 */
-const MESH_SIZE_LABELS: Record<number, string> = {
-  4: '80km',
-  6: '10km',
-  8: '1km',
-  9: '500m',
-  10: '250m',
-  11: '125m',
-};
-
-function meshDigits(zoom: number): number {
-  if (zoom >= 15) return 11;
-  if (zoom >= 14) return 10;
-  if (zoom >= 12) return 9;
-  if (zoom >= 9) return 8;
-  if (zoom >= 6) return 6;
-  return 4;
-}
 
 /**
  * 表示量。**上限とズームの閾値だけを動かす** — 何をどう読むかは変えない。
@@ -597,570 +307,6 @@ function igrcBand(density: number) {
   return IGRC_BANDS.find((band) => density < band.limit) ?? IGRC_BANDS[IGRC_BANDS.length - 1];
 }
 
-/**
- * 表示範囲と重なるファイルだけを選ぶ。**カタログを空間索引として使う。**
- *
- * 建物は都市ごとに1ファイルで、PLATEAUを全国に広げると300を超える。
- * 全部を `read_parquet([...])` に渡すと、**ファイルの数だけフッターを読みに行く**
- * (1ファイル1往復)。表示範囲に重なるのは普通1〜3都市なので、そこだけ渡す。
- *
- * 1つの大きなファイルに束ねる手もあるが、そちらは1都市の更新で全体を書き直すことになる。
- * 都市の境界が空間的な区切りとして働くので、分かれたままでよい。
- *
- * 人口メッシュ (都道府県ごとに1ファイル) も同じ仕組みで絞る。
- */
-async function initDuckDb(collections: Collection[]): Promise<{
-  conn: duckdb.AsyncDuckDBConnection;
-  /** 問い合わせの結果を Parquet にして返す (ダウンロード用)。 */
-  exportParquet: (select: string, kv: Record<string, string>) => Promise<Uint8Array>;
-  /** 配信パスを DuckDB に登録する (Rangeで読めるようにする)。二度目は何もしない。 */
-  registerFiles: (files: string[]) => Promise<void>;
-  /** 建物データの出所。カタログにあるものだけが並ぶ。 */
-  buildingSources: BuildingSource[];
-  /** 人口メッシュ。細かさの違うものが並ぶ。空なら地上リスクの表示を出さない。 */
-  meshSources: MeshSource[];
-  /** 鉄道 (路線と駅)。空なら鉄道の節を出さない。 */
-  railwaySources: RailwaySource[];
-  /** 事業者種別の語彙。絞り込みの選択肢をここから作る。 */
-  railwayInstitutionTypes: string[];
-  /** 鉄道がいつ時点のものか。ホバーで出す。 */
-  railwayVintage: string | undefined;
-  /** 道路 (Overture)。無ければ道路の節を出さない。 */
-  roadSource: RoadSource | undefined;
-  /** 送電線・川など、名前と種別だけを持つ線。カタログに並んだ順。 */
-  lineSources: LineSource[];
-  /** 道路等級の語彙。絞り込みの選択肢をここから作る。 */
-  roadClasses: string[];
-  /** 道路がいつ時点のものか。ホバーで出す。 */
-  roadVintage: string | undefined;
-  /** 路線の索引と区間のビューを作る。検索のときだけ呼ぶ。 */
-  ensureRoutes: (() => Promise<void>) | undefined;
-  /** 空間関数を使う前に呼ぶ。 */
-  ensureSpatial: () => Promise<void>;
-  /** 地名 (isj_oaza) を引く前に呼ぶ。 */
-  ensureOaza: () => Promise<void>;
-  /** 駅を引く前に呼ぶ。駅が配信されていなければ undefined。 */
-  ensureStations: (() => Promise<void>) | undefined;
-  /** 路線の線を引く前に呼ぶ。ハイライトのときだけ使う。 */
-  ensureSections: (() => Promise<void>) | undefined;
-}> {
-  const bundle = await duckdb.selectBundle({
-    mvp: {
-      mainModule: duckdbUrl('duckdb-mvp.wasm'),
-      mainWorker: duckdbUrl('duckdb-browser-mvp.worker.js'),
-    },
-    eh: {
-      mainModule: duckdbUrl('duckdb-eh.wasm'),
-      mainWorker: duckdbUrl('duckdb-browser-eh.worker.js'),
-    },
-  });
-  // new Worker() は別オリジンのスクリプトを直接は読み込めない。createWorker は
-  // 取得してからBlob URLにして起動するので、WASM本体を別のドメインに置ける。
-  const worker = await duckdb.createWorker(bundle.mainWorker!);
-  const logger = new duckdb.ConsoleLogger();
-  const db = new duckdb.AsyncDuckDB(logger, worker);
-  await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-  // どちらも指定しないと、警告も出さずにファイル全体のダウンロードに落ちる。
-  // 詳細: docs/duckdb-wasm-range-requests.md
-  //
-  // forceFullHTTPReads: これを明示しないとRangeリクエストを一切出さない。
-  //   既定値は false のはずだが、指定した場合としない場合で挙動が変わることを実測で確認。
-  // reliableHeadRequests: DuckDB-WASMはまず「HEADにRangeを付けて206が返るか」で
-  //   部分取得の可否を判断するが、GitHub Pagesなど200を返すサーバーがある。
-  //   false にすると「GET bytes=0-0 で206を確認し、通常のHEADでサイズを取る」経路に
-  //   なり、配信元の流儀に左右されにくくなる。
-  await db.open({
-    filesystem: { forceFullHTTPReads: false, reliableHeadRequests: false },
-  });
-
-  const conn = await db.connect();
-  // 拡張の取得元をここで切り替えておく。read_parquet() は直後の行政区域の
-  // ビュー作成 (このすぐ下) で使うため、遅延させると初期化そのものが
-  // 本家 (extensions.duckdb.org) に依存したままになる。
-  // parquet拡張は明示LOADしていないが、read_parquet()の時点でDuckDBが自動取得する
-  // (autoload) ので、取得元さえ切り替えておけば以降は暗黙に自前配信から読まれる。
-  await conn.query(`SET custom_extension_repository = '${DUCKDB_EXTENSIONS_URL}';`);
-
-  // 空間関数は逆ジオコーディングと建物表示にしか要らない。拡張の取得に
-  // 数秒かかるので、起動時ではなく最初に必要になったときに読む。
-  //
-  // duckdb-wasmはCRSメタデータ付きのGeoParquetをread_parquetすると
-  // "stoi: no conversion" でクラッシュすることがある (PROJ初期化のタイミング問題、
-  // duckdb/duckdb-wasm#2199)。spatial拡張を明示ロードする"前"に
-  // duckdb_coordinate_systems() を一度呼んでおくと回避できる
-  // (逆に LOAD spatial の後に呼ぶとクラッシュを再現してしまうので順序に注意)。
-  // https://github.com/duckdb/duckdb-wasm/issues/2199#issuecomment-4205882097
-  const ensureSpatial = once(async () => {
-    await conn.query(`SELECT * FROM duckdb_coordinate_systems();`);
-    await conn.query(`INSTALL spatial; LOAD spatial;`);
-  });
-
-  // DuckDBにファイルを教える。通信はしないので、何度呼んでも安い。
-  const registered = new Set<string>();
-  const register = async (files: string[]) => {
-    for (const file of files) {
-      if (registered.has(file)) continue;
-      registered.add(file);
-      await db.registerFileURL(file, dataUrl(file), duckdb.DuckDBDataProtocol.HTTP, false);
-    }
-  };
-
-  const byKind = (kind: DatasetKind) => collections.filter((c) => c.kind === kind);
-  const oazaCollections = byKind('oaza');
-  const adminCollections = byKind('admin');
-  if (oazaCollections.length === 0 || adminCollections.length === 0) {
-    throw new Error('カタログに必要なCollection (oaza / admin) がありません。');
-  }
-
-  // 行政区域は全国版と都道府県版が同居しうる。範囲の広いもの (=件数が最多) を採用する。
-  // ここだけは起動時にItemが要る (どのファイルを読むか決まらないため)。
-  const adminItems = (await Promise.all(adminCollections.map((c) => c.items()))).flat();
-  const adminItem = adminItems.sort(
-    (a, b) =>
-      (b.feature.properties['table:row_count'] ?? 0) -
-      (a.feature.properties['table:row_count'] ?? 0),
-  )[0];
-  if (!adminItem) throw new Error('行政区域のItemがありません。');
-  const adminFile = resolveHref(adminItem.feature.assets.data.href, adminItem.base);
-
-  // 検索用の名称を抜き出したものがあれば使う。無い場合は行政区域から作るが、
-  // そちらは名称の列がファイル全体に散らばっているため、HTTP越しだと
-  // 往復が積み上がって初期化が数十秒かかる。
-  const adminNamesCollection = byKind('admin_names')[0];
-  const adminNamesItem = adminNamesCollection
-    ? (await adminNamesCollection.items())[0]
-    : undefined;
-  const adminNamesFile = adminNamesItem
-    ? resolveHref(adminNamesItem.feature.assets.data.href, adminNamesItem.base)
-    : undefined;
-
-  await register(adminNamesFile ? [adminFile, adminNamesFile] : [adminFile]);
-
-  console.info(
-    '[catalog] 行政区域:',
-    adminItem.feature.id,
-    '/ 名称:',
-    adminNamesFile ?? '(行政区域から都度作成)',
-    '/ 地名:',
-    oazaCollections.map((c) => c.id).join(', '),
-  );
-
-  // ビューを作るだけでもDuckDBはスキーマ検証のためにフッターを読むので、
-  // 1ファイルあたり数回の往復が発生する。起動時に要るのは行政区域と名称だけで、
-  // 地名は検索時、建物はズームしたときにしか使わないので、そのときまで作らない。
-  await conn.query(`CREATE VIEW admin AS SELECT * FROM read_parquet('${adminFile}');`);
-
-  const ensureOaza = once(async () => {
-    // 地名のItemもここで初めて読む。検索するまで要らない。
-    const files = (await Promise.all(oazaCollections.map((c) => c.items())))
-      .flat()
-      .map(itemFile);
-    await register(files);
-    const list = files.map((file) => `'${file}'`).join(', ');
-    await conn.query(`CREATE VIEW isj_oaza AS SELECT * FROM read_parquet([${list}]);`);
-    // ビューを作るだけではデータを読まないので、検索に使う列に一度触れておく。
-    // ここを省くと、読み込みの待ち時間が最初の検索にそのまま乗る。
-    await conn.query(`
-      SELECT count(pref_name || city_name || oaza_name) FROM isj_oaza;
-      SELECT count(pref_name || county_name || city_name || ward_name) FROM admin_names;
-    `);
-  });
-
-  /**
-   * 駅を検索に載せる。**無ければ検索の候補が増えないだけ。**
-   *
-   * 地名と同じく、検索するまで読まない。読むのは `station_name` (71KB) と
-   * `line_name` (7KB)、位置に使う bbox の4列 (299KB) で、**初回だけ**。
-   * 行政区域の名称で起きた「row groupに散らばって往復42回」という問題は、
-   * 駅のファイルが **1 row group** なので起きない。
-   */
-  const stationCollection = byKind('railway_station')[0];
-  const ensureStations = stationCollection
-    ? once(async () => {
-        const files = (await stationCollection.items()).map(itemFile);
-        await register(files);
-        const list = files.map((file) => `'${file}'`).join(', ');
-        await conn.query(`CREATE VIEW station AS SELECT * FROM read_parquet([${list}]);`);
-        await conn.query(`SELECT count(station_name || line_name) FROM station;`);
-      })
-    : undefined;
-
-  /**
-   * 路線の線そのもの。**選んだ路線をハイライトするときだけ読む。**
-   *
-   * 検索と一覧は駅だけで足りる (駅は0.8MB、路線は5.2MBでジオメトリが4.6MB)。
-   * 路線を選んだときに初めて、**その路線の範囲で絞って**読む。
-   */
-  const sectionCollection = byKind('railway')[0];
-  const ensureSections = sectionCollection
-    ? once(async () => {
-        const files = (await sectionCollection.items()).map(itemFile);
-        await register(files);
-        await ensureSpatial();
-        const list = files.map((file) => `'${file}'`).join(', ');
-        await conn.query(`CREATE VIEW section AS SELECT * FROM read_parquet([${list}]);`);
-      })
-    : undefined;
-
-  // 建物は任意。無ければ建物レイヤーを出さないだけで、他の機能は動く。
-  // **並びはカタログの順。** 先頭が既定で出て、塗りも青になる。どれを先に
-  // 置くかはパイプライン (`SUB_CATALOGS`) が決める — 属性が揃っているPLATEAUが先。
-  //
-  // **ビューは作らない。** 出所ごとに1つのビューへ束ねると、その時点で
-  // ファイルの数だけフッターを読みに行くことになる (1ファイル1往復)。
-  // 建物は都市ごとに1ファイルで、PLATEAUを全国に広げると300を超えるので、
-  // 引くときに表示範囲と重なるものだけを渡す (`filesInView`)。
-  const buildingCollections = collections.filter(
-    (c) => c.kind === 'plateau_buildings' || c.kind === 'buildings',
-  );
-  const buildingSources: BuildingSource[] = buildingCollections.map((collection) => {
-    // **整備範囲を結び付ける。** `duck:covers` がこのCollectionを指しているものを
-    // 探す。IDの綴りで判断しない (出所が増えたときに書き足す場所が分かれる)。
-    const coverageCollection = byKind('building_coverage').find(
-      (c) => c.covers === collection.id,
-    );
-    const coverage: BuildingCoverage | undefined =
-      coverageCollection && coverageCollection.meshDigits !== undefined
-        ? {
-            files: [],
-            meshDigits: coverageCollection.meshDigits,
-            ensure: once(async () => {
-              const items = await coverageCollection.items();
-              coverage!.files = itemFiles(items);
-              await register(coverage!.files.map(({ file }) => file));
-              await ensureSpatial();
-            }),
-          }
-        : undefined;
-
-    // 何で絞れるかは列の有無から決める。高さは列があれば絞れる。
-    // 用途で絞れる列は**カタログが語彙を持っている列**。列名 (PLATEAUは usage、
-    // Overtureは class) をここに書かないのは、出所が増えたときに書き足す場所が
-    // 分かれてしまうため。語彙を出すかどうかはパイプライン側が一箇所で決める。
-    const [categoryColumn, usages] = Object.entries(collection.summaries)[0] ?? [null, []];
-    const source: BuildingSource = {
-      id: collection.id,
-      // Itemを読むまで空。寄って実際に引くまで通信しない。
-      files: [],
-      hasHeight: collection.columns.has('height'),
-      categoryColumn,
-      usages,
-      bbox: collection.bbox,
-      coverage,
-      tiers: collection.tiers,
-      ensure: once(async () => {
-        const items = await collection.items();
-        source.files = itemFiles(items);
-        await register(source.files.map(({ file }) => file));
-        await ensureSpatial();
-      }),
-    };
-    return source;
-  });
-
-  // 人口メッシュ。建物と同じく、寄るまでItemを読まない。
-  // **細かさの違うCollectionが並ぶ** (125mは都道府県ごと、1kmは全国で1つ) ので、
-  // どれを引くかはズームに応じて `meshSourceFor` が決める。
-  const meshSources: MeshSource[] = byKind('population_mesh').flatMap((collection) => {
-    const digits = collection.meshDigits;
-    if (digits === undefined) {
-      // 細かさが分からないメッシュは使いようがない (どのズームで引くか決まらない)。
-      console.warn('[catalog] duck:mesh_digits がありません:', collection.id);
-      return [];
-    }
-    const source: MeshSource = {
-      id: collection.id,
-      digits,
-      bbox: collection.bbox,
-      files: [],
-      ensure: once(async () => {
-        const items = await collection.items();
-        source.files = itemFiles(items);
-        await register(source.files.map(({ file }) => file));
-        await ensureSpatial();
-      }),
-    };
-    return [source];
-  });
-
-  // 鉄道。路線と駅で列構成が違うのでCollectionが分かれている。
-  // どちらも無ければ鉄道の節を出さないだけで、他の機能は動く。
-  const railwaySources: RailwaySource[] = (['railway', 'railway_station'] as const).flatMap(
-    (kind) => {
-      const collection = byKind(kind)[0];
-      if (!collection) return [];
-      const source: RailwaySource = {
-        id: collection.id,
-        kind,
-        bbox: collection.bbox,
-        files: [],
-        coarseLodToleranceM: collection.coarseLodToleranceM,
-        ensure: once(async () => {
-          const items = await collection.items();
-          source.files = itemFiles(items);
-          await register(source.files.map(({ file }) => file));
-          await ensureSpatial();
-        }),
-      };
-      return [source];
-    },
-  );
-
-  // 道路。無ければ道路の節を出さないだけで、他の機能は動く。
-  const roadCollection = byKind('road')[0];
-  const roadSource: RoadSource | undefined = roadCollection
-    ? {
-        id: roadCollection.id,
-        bbox: roadCollection.bbox,
-        files: [],
-        coarseLodToleranceM: roadCollection.coarseLodToleranceM,
-        ensure: once(async () => {
-          const items = await roadCollection.items();
-          roadSource!.files = itemFiles(items);
-          await register(roadSource!.files.map(({ file }) => file));
-          await ensureSpatial();
-        }),
-      }
-    : undefined;
-  const roadVintage = roadCollection?.vintage;
-
-  // 送電線・川。道路と同じく、寄るまで (ONにするまで) Itemを読まない。
-  const lineSources: LineSource[] = collections
-    .filter((c) => (LINE_KINDS as readonly string[]).includes(c.kind))
-    .map((collection) => {
-      const source: LineSource = {
-        id: collection.id,
-        kind: collection.kind as LineKind,
-        title: collection.title,
-        bbox: collection.bbox,
-        files: [],
-        coarseLodToleranceM: collection.coarseLodToleranceM,
-        ensure: once(async () => {
-          const items = await collection.items();
-          source.files = itemFiles(items);
-          await register(source.files.map(({ file }) => file));
-          await ensureSpatial();
-        }),
-      };
-      return source;
-    });
-
-  // 路線の索引と、区間そのもの。**検索とハイライトのときだけ**読む。
-  const routeCollection = byKind('road_route')[0];
-  const ensureRoutes =
-    routeCollection && roadCollection
-      ? once(async () => {
-          const routeFile = ((first) => (first ? itemFile(first) : undefined))((await routeCollection.items())[0]);
-          if (!routeFile) return;
-          await register([routeFile]);
-          await conn.query(
-            `CREATE VIEW road_route AS SELECT * FROM read_parquet('${routeFile}');`,
-          );
-          // ハイライトは区間の方から引くので、同じ経路で用意しておく。
-          const files = (await roadCollection.items()).map(itemFile);
-          await register(files);
-          const list = files.map((file) => `'${file}'`).join(', ');
-          await conn.query(`CREATE VIEW road AS SELECT * FROM read_parquet([${list}]);`);
-          await ensureSpatial();
-        })
-      : undefined;
-  // 等級の語彙もカタログから。鉄道の事業者種別と同じ扱い。
-  const roadClasses = (roadCollection?.summaries['class'] ?? []) as string[];
-
-  // 絞り込みの選択肢はカタログの語彙から作る。**事業者種別の列名をここに書かない**のは
-  // 建物の用途と同じ理由で、語彙を出すかどうかをパイプライン側の一箇所で決めるため。
-  const railwayVintage = railwaySources[0]
-    ? byKind(railwaySources[0].kind)[0]?.vintage
-    : undefined;
-
-  const railwayInstitutionTypes = railwaySources[0]
-    ? ((byKind(railwaySources[0].kind)[0]?.summaries['institution_type'] ?? []) as string[])
-    : [];
-
-  // 行政区域は1つの自治体が複数のポリゴン行に分かれることがある (飛び地や島など) ので、
-  // 検索には名称を重複排除したものを使う。
-  //
-  // 専用のファイルがあればそれを読む。無い場合は行政区域から作るが、名称の列は
-  // 合計65KB程度しかないのに row group の数だけ散らばっているため、HTTP越しでは
-  // 往復回数が効いて極端に遅くなる (実測で42リクエスト・約24秒)。
-  // 転送量ではなく往復の問題なので、pipeline の build_admin_names で
-  // まとまった小さなファイルを作っておくこと。
-  await conn.query(
-    adminNamesFile
-      ? `CREATE VIEW admin_names AS SELECT * FROM read_parquet('${adminNamesFile}');`
-      : `CREATE TABLE admin_names AS
-           SELECT DISTINCT
-             admin_id,
-             pref_name,
-             coalesce(county_name, '') AS county_name,
-             coalesce(city_name, '') AS city_name,
-             coalesce(ward_name, '') AS ward_name
-           FROM admin;`,
-  );
-
-  /**
-   * 問い合わせの結果を Parquet にして返す (ダウンロード用)。
-   *
-   * DuckDB-WASM の中の空のファイルに書いてから取り出す。ジオメトリの列が
-   * GEOMETRY 型なら DuckDB が `geo` メタデータを書くので、GeoParquet として読める。
-   * `kv` に出典や規約を入れて、**切り出したファイルにも条件が付いて回る**ようにする。
-   */
-  const exportParquet = async (select: string, kv: Record<string, string>): Promise<Uint8Array> => {
-    const name = `export_${Date.now()}.parquet`;
-    await db.registerEmptyFileBuffer(name);
-    const escape = (text: string) => text.replace(/'/g, "''");
-    const kvSql = Object.entries(kv)
-      .map(([key, value]) => `'${escape(key)}': '${escape(value)}'`)
-      .join(', ');
-    try {
-      await conn.query(
-        `COPY (${select}) TO '${name}' (FORMAT PARQUET${kvSql ? `, KV_METADATA {${kvSql}}` : ''});`,
-      );
-      return await db.copyFileToBuffer(name);
-    } finally {
-      await db.dropFile(name);
-    }
-  };
-
-  return {
-    conn,
-    exportParquet,
-    registerFiles: register,
-    buildingSources,
-    meshSources,
-    railwaySources,
-    railwayInstitutionTypes,
-    railwayVintage,
-    roadSource,
-    lineSources,
-    roadClasses,
-    roadVintage,
-    ensureRoutes,
-    ensureSpatial,
-    ensureOaza,
-    ensureStations,
-    ensureSections,
-  };
-}
-
-/**
- * 緯度経度の点が入る3次メッシュ (8桁、約1km) のコード。[`meshBounds`] の逆。
- * パイプラインの `mesh.rs` と同じ計算 (1次は緯度×1.5と経度−100の整数部、
- * 2次は8分割、3次は10分割)。
- */
-function meshCode3(lon: number, lat: number): string {
-  const p = Math.floor(lat * 1.5);
-  const u = Math.floor(lon - 100);
-  const latRest = lat * 1.5 - p;
-  const lonRest = lon - 100 - u;
-  const q = Math.floor(latRest * 8);
-  const v = Math.floor(lonRest * 8);
-  const r = Math.floor((latRest * 8 - q) * 10);
-  const w = Math.floor((lonRest * 8 - v) * 10);
-  return `${p}${u}${q}${v}${r}${w}`;
-}
-
-/**
- * 表示範囲に掛かる3次メッシュのコード。**多すぎるときは2次メッシュ (6桁) にまとめる**
- * (PLATEAU配信サービスは6桁でも引ける)。それでも多ければ `null` (寄ってもらう)。
- */
-function meshCodesInView(bounds: ViewBounds, limit = 60): string[] | null {
-  const codes = new Set<string>();
-  // 3次メッシュは緯度30秒 (1/120度)・経度45秒 (1/80度)。半分の刻みで拾えば漏れない。
-  for (let lat = bounds.south; lat <= bounds.north + 1 / 240; lat += 1 / 240) {
-    for (let lon = bounds.west; lon <= bounds.east + 1 / 160; lon += 1 / 160) {
-      codes.add(meshCode3(Math.min(lon, bounds.east), Math.min(lat, bounds.north)));
-      if (codes.size > 2000) break;
-    }
-  }
-  if (codes.size <= limit) return [...codes].sort();
-  const coarse = new Set([...codes].map((code) => code.slice(0, 6)));
-  return coarse.size <= limit / 4 ? [...coarse].sort() : null;
-}
-
-/** PLATEAU配信サービス (公式のAPI)。CityGMLのメッシュ単位のファイルとpackを引く。 */
-const PLATEAU_API = 'https://api.plateauview.mlit.go.jp';
-
-/** CityGMLの地物の種類の呼び名。APIが返す種類のうち、よく出るもの。 */
-const CITYGML_TYPES: Record<string, string> = {
-  bldg: '建物',
-  tran: '道路',
-  rwy: '鉄道',
-  brid: '橋',
-  luse: '土地利用',
-  dem: '地形',
-  fld: '洪水浸水想定',
-  tnm: '津波浸水想定',
-  htd: '高潮浸水想定',
-  lsld: '土砂災害警戒区域',
-  urf: '都市計画決定',
-  veg: '植生',
-  frn: '都市設備',
-  ubld: '地下街',
-  wwy: '航路',
-};
-
-/** メッシュ単位のCityGMLファイル1つ。 */
-interface CityGmlFile {
-  type: string;
-  code: string;
-  url: string;
-  maxLod: number;
-  fileSize?: number;
-  features?: number;
-}
-
-/**
- * 表示範囲のCityGMLファイル (メッシュ単位) を公式のAPIで引く。**押したときだけ呼ぶ。**
- * このAPIはブラウザから直接呼べる (`access-control-allow-origin: *` を確かめた)。
- */
-async function fetchCityGmlFiles(codes: string[]): Promise<CityGmlFile[]> {
-  const response = await fetch(`${PLATEAU_API}/datacatalog/citygml/m:${codes.join(',')}`);
-  if (response.status === 404) return [];
-  if (!response.ok) throw new Error(`PLATEAU配信サービスが ${response.status} を返しました`);
-  const body = (await response.json()) as {
-    cities?: { files?: Record<string, Omit<CityGmlFile, 'type'>[]> }[];
-  };
-  const files: CityGmlFile[] = [];
-  const seen = new Set<string>();
-  for (const city of body.cities ?? []) {
-    for (const [type, list] of Object.entries(city.files ?? {})) {
-      for (const file of list) {
-        if (!file.url || seen.has(file.url)) continue;
-        seen.add(file.url);
-        files.push({ ...file, type });
-      }
-    }
-  }
-  return files;
-}
-
-/**
- * 公式の pack で、選んだCityGMLを**付属ファイル (コードリスト・テクスチャ) 込みのZIP**に
- * まとめてもらう。サーバー側の非同期の処理なので、状態を数秒おきに見る。
- * 返すのはZIPのURL。
- */
-async function packCityGml(urls: string[], onProgress: (progress: number) => void): Promise<string> {
-  const response = await fetch(`${PLATEAU_API}/citygml/pack`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ urls }),
-  });
-  if (!response.ok) throw new Error(`packの依頼に失敗しました (${response.status})`);
-  const { id } = (await response.json()) as { id: string };
-  for (;;) {
-    const status = await fetch(`${PLATEAU_API}/citygml/pack/${id}/status`);
-    if (!status.ok) throw new Error(`packの状態を取れません (${status.status})`);
-    const body = (await status.json()) as { status: string; progress?: number };
-    if (body.status === 'succeeded') return `${PLATEAU_API}/citygml/pack/${id}.zip`;
-    if (body.status !== 'accepted' && body.status !== 'processing') {
-      throw new Error(`packが失敗しました (${body.status})`);
-    }
-    onProgress(body.progress ?? 0);
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-  }
-}
-
 /** バイト列をファイルとして保存させる。 */
 function saveBytes(bytes: Uint8Array, filename: string): void {
   const blob = new Blob([bytes as BlobPart], { type: 'application/vnd.apache.parquet' });
@@ -1179,773 +325,6 @@ function formatBytes(bytes: number): string {
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
   if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-}
-
-/**
- * 地域メッシュ (JIS X 0410) のコードから範囲を求める。
- *
- * **束ねたセルは、この矩形で描く。** 中に入っている子メッシュのbboxの和で描くと、
- * 人のいる子だけを囲った形になり、細い縦帯のような「メッシュではない形」が出る。
- * 実際に地図で見て分かった。
- *
- * パイプライン側の `pipeline/src/mesh.rs` と同じ計算。JIS X 0410 は変わらないので、
- * 二重に持つことを受け入れている (SQLで書くよりこちらの方が読める)。
- */
-function meshBounds(code: string): Bbox {
-  const digits = [...code].map(Number);
-  // 1次メッシュ。緯度は1.5倍した整数部、経度は100を引いた整数部。
-  let latSize = 2 / 3;
-  let lonSize = 1;
-  let south = (digits[0] * 10 + digits[1]) / 1.5;
-  let west = digits[2] * 10 + digits[3] + 100;
-
-  // 2次メッシュ。1次を縦横8分割し、南西を0として行・列で指す。
-  if (digits.length >= 6) {
-    latSize /= 8;
-    lonSize /= 8;
-    south += digits[4] * latSize;
-    west += digits[5] * lonSize;
-  }
-  // 3次メッシュ。2次を縦横10分割する。
-  if (digits.length >= 8) {
-    latSize /= 10;
-    lonSize /= 10;
-    south += digits[6] * latSize;
-    west += digits[7] * lonSize;
-  }
-  // 分割メッシュ。1桁ごとに4分割で、1=南西 2=南東 3=北西 4=北東。
-  for (const quadrant of digits.slice(8)) {
-    latSize /= 2;
-    lonSize /= 2;
-    south += Math.floor((quadrant - 1) / 2) * latSize;
-    west += ((quadrant - 1) % 2) * lonSize;
-  }
-  return [west, south, west + lonSize, south + latSize];
-}
-
-/** 集約したメッシュ1つ分。 */
-interface MeshCell {
-  /** メッシュコード。矩形はここから計算する。 */
-  code: string;
-  population: number;
-  /** 人口密度 (人/km²)。**中の最大値**。 */
-  density: number;
-}
-
-/**
- * 表示範囲の人口メッシュを、指定の桁で束ねて取り出す。
- *
- * **密度は平均ではなく最大を取る。** SORAは運航範囲の中で最も密度の高いところを
- * 採るので、平均にすると危ないセルが薄まって消える。人口は合計。
- *
- * 矩形は返さない。**メッシュコードから計算する** ([`meshBounds`])。
- * 子のbboxの和で描くと、メッシュではない形になってしまう。
- */
-async function fetchMeshInView(
-  conn: duckdb.AsyncDuckDBConnection,
-  source: MeshSource,
-  bounds: ViewBounds,
-  digits: number,
-): Promise<MeshCell[]> {
-  const files = filesInView(source, bounds);
-  if (files.length === 0) return [];
-  const list = files.map((file) => `'${file}'`).join(', ');
-
-  const result = await conn.query(`
-    SELECT
-      substr(mesh_code, 1, ${digits}) AS code,
-      sum(population) AS population,
-      max(density) AS density
-    FROM read_parquet([${list}])
-    WHERE bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}
-      AND bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}
-      AND density IS NOT NULL
-    GROUP BY code;
-  `);
-  return result.toArray().map((row) => {
-    const r = row.toJSON() as unknown as {
-      code: string;
-      population: number | bigint | null;
-      density: number;
-    };
-    return {
-      code: r.code,
-      population: Number(r.population ?? 0),
-      density: r.density,
-    };
-  });
-}
-
-/** 鉄道1件分の表示用データ。路線と駅で同じ形にしてある。 */
-interface RailwayFeature {
-  geojson: GeoJSON.Geometry;
-  /** N02_003 (路線名)。 */
-  lineName: string;
-  /** N02_004 (運営会社)。 */
-  operator: string;
-  /** 事業者種別を解決した名前。色はこれで決める。 */
-  institutionType: string;
-  /** 鉄道区分を解決した名前。 */
-  railwayClass: string;
-  /** 駅名。路線には無い。 */
-  stationName: string | null;
-}
-
-/**
- * 表示範囲に入る鉄道を取り出す。建物と同じく bbox 列で先に絞り、
- * 画面中心に近い順に上限まで取る (上限に当たっても帯状に欠けないため)。
- *
- * 駅のファイルにしか `station_name` が無いので、SELECT する列を出所で変える。
- * 路線側で `station_name` を書くとスキーマに無い列で落ちる。
- */
-async function fetchRailwayInView(
-  conn: duckdb.AsyncDuckDBConnection,
-  source: RailwaySource,
-  bounds: ViewBounds,
-  institutionTypes: string[] | null,
-  limit: number,
-  lod: number | undefined,
-): Promise<RailwayFeature[]> {
-  const files = filesInView(source, bounds);
-  if (files.length === 0) return [];
-  const list = files.map((file) => `'${file}'`).join(', ');
-
-  const conditions = [
-    `bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}`,
-    `bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}`,
-  ];
-  if (lod !== undefined) conditions.push(`lod = ${lod}`);
-  if (institutionTypes) {
-    // 建物の用途と同じく、1つも選ばれていなければ1件も出さない。
-    const types = institutionTypes.map((t) => `'${t.replace(/'/g, "''")}'`).join(', ');
-    conditions.push(types.length > 0 ? `institution_type IN (${types})` : 'false');
-  }
-
-  const stationSelect = source.kind === 'railway_station' ? 'station_name' : 'NULL';
-  const lonScale = Math.cos((bounds.centerLat * Math.PI) / 180);
-
-  const result = await conn.query(`
-    SELECT
-      ST_AsGeoJSON(geometry) AS geojson,
-      line_name, operator, institution_type, railway_class,
-      ${stationSelect} AS station_name
-    FROM read_parquet([${list}])
-    WHERE ${conditions.join('\n      AND ')}
-    ORDER BY
-      pow(((bbox.xmin + bbox.xmax) / 2 - ${bounds.centerLon}) * ${lonScale}, 2)
-      + pow((bbox.ymin + bbox.ymax) / 2 - ${bounds.centerLat}, 2)
-    LIMIT ${limit};
-  `);
-  return result.toArray().map((row) => {
-    const r = row.toJSON() as unknown as {
-      geojson: string;
-      line_name: string;
-      operator: string;
-      institution_type: string;
-      railway_class: string;
-      station_name: string | null;
-    };
-    return {
-      geojson: JSON.parse(r.geojson) as GeoJSON.Geometry,
-      lineName: r.line_name,
-      operator: r.operator,
-      institutionType: r.institution_type,
-      railwayClass: r.railway_class,
-      stationName: r.station_name,
-    };
-  });
-}
-
-/**
- * 表示範囲に入る道路を取り出す。鉄道と同じく bbox 列で先に絞り、
- * 画面中心に近い順に上限まで取る。
- *
- * `class` はファイルが分かれているので、**選ばれていない等級のファイルは
- * そもそも読みに行かない** (これが class で分けている理由)。
- */
-async function fetchRoadsInView(
-  conn: duckdb.AsyncDuckDBConnection,
-  source: RoadSource,
-  bounds: ViewBounds,
-  classes: string[],
-  limit: number,
-  lod: number | undefined,
-): Promise<RoadFeature[]> {
-  if (classes.length === 0) return [];
-  // ファイル名に class が入っているので、読むファイルの段階で絞れる。
-  const files = filesInView(source, bounds).filter((file) =>
-    classes.some((cls) => file.endsWith(`_${cls}.parquet`)),
-  );
-  if (files.length === 0) return [];
-  const list = files.map((file) => `'${file}'`).join(', ');
-  const lonScale = Math.cos((bounds.centerLat * Math.PI) / 180);
-
-  const result = await conn.query(`
-    SELECT
-      ST_AsGeoJSON(geometry) AS geojson,
-      road_name, class, route_names
-    FROM read_parquet([${list}])
-    WHERE ${lodFilter(lod)}
-      bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}
-      AND bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}
-    ORDER BY
-      pow(((bbox.xmin + bbox.xmax) / 2 - ${bounds.centerLon}) * ${lonScale}, 2)
-      + pow((bbox.ymin + bbox.ymax) / 2 - ${bounds.centerLat}, 2)
-    LIMIT ${limit};
-  `);
-  return result.toArray().map((row) => {
-    const r = row.toJSON() as unknown as {
-      geojson: string;
-      road_name: string | null;
-      class: string;
-      route_names: unknown;
-    };
-    return {
-      geojson: JSON.parse(r.geojson) as GeoJSON.Geometry,
-      roadName: r.road_name,
-      roadClass: r.class,
-      // リスト列はArrowのVectorで返るので、素の配列に均す。
-      routeNames: Array.from((r.route_names ?? []) as ArrayLike<unknown>, String),
-    };
-  });
-}
-
-/** 建物1件分の表示用データ。 */
-interface BuildingFeature {
-  geojson: GeoJSON.Geometry;
-  name: string | null;
-  /** 用途 (PLATEAU) または種別 (Overture)。出所によって語彙が違う。 */
-  category: string | null;
-  height: number | null;
-  /** 重要度の段のID。出所が段を持たなければ null。 */
-  tier: string | null;
-}
-
-/** 建物の絞り込み条件。PLATEAUのように属性が揃っている出所でだけ意味を持つ。 */
-interface BuildingFilter {
-  /** 高さの下限 (m)。0なら絞らない。 */
-  minHeight: number;
-  /** 対象の用途。null なら絞らない。 */
-  usages: string[] | null;
-  /** 対象の重要度の段 (ID)。null なら絞らない。 */
-  tiers: string[] | null;
-}
-
-/**
- * 表示範囲に入る建物を取り出す。
- *
- * 逆ジオコーディングと同じく、ジオメトリ本体を評価する前に bbox 列で絞る。
- *
- * 件数が多いと描画が重くなるので上限を設けるが、単に LIMIT で切るとまずい。
- * データは空間的にソートされているため、先頭から N 件を取ると地図の一部分にだけ
- * 固まって「帯状に消える」ように見える。
- *
- * **画面中心に近い順に取る。** 地図を傾けると `getBounds()` は地平線方向へ大きく
- * 広がり (実測でpitch 50度のとき面積3.1倍、60度で7.1倍)、上限に当たりやすくなる。
- * 中心からの距離順にしておけば、間引かれても手前から埋まり、遠景が薄くなるという
- * 見た目として自然な劣化になる。範囲そのものを切り詰めるより調整値が要らない。
- */
-/** 整備範囲のセル1つ。 */
-interface CoverageCell {
-  code: string;
-  /** このセルの中にある建物の数。 */
-  buildings: number;
-  /**
-   * **データのある1kmセルの数。** 配られているのは常に8桁 (1km) なので、
-   * 束ねたときにいくつ集まったかがそのまま「どれだけ埋まっているか」になる。
-   * 8桁で見ているときは必ず1。
-   */
-  filled: number;
-  /**
-   * このセルにかかる自治体。**1つに潰さない** — メッシュは境界をまたぐので、
-   * 全国35,645セルのうち約10%が複数にかかる (最大4つ)。
-   * 束ねて粗くすると当然もっと増える。
-   */
-  cities: string[];
-}
-
-/**
- * 整備範囲を表示範囲のぶんだけ引く。
- *
- * **人口メッシュと同じ作り。** コードを前から切って束ねるので、
- * 1kmで配ったものから10kmも80kmも作れる。
- */
-async function fetchCoverageInView(
-  conn: duckdb.AsyncDuckDBConnection,
-  coverage: BuildingCoverage,
-  bounds: ViewBounds,
-  digits: number,
-): Promise<CoverageCell[]> {
-  const files = filesInView(coverage, bounds);
-  if (files.length === 0) return [];
-  const list = files.map((file) => `'${file}'`).join(', ');
-
-  const result = await conn.query(`
-    SELECT
-      substr(mesh_code, 1, ${digits}) AS code,
-      sum(buildings) AS buildings,
-      -- **束ねた1kmセルの数。** 行は1kmセルにつき1つしか無いので、
-      -- これが「このセルのうちどれだけ埋まっているか」の分子になる。
-      count(*) AS filled,
-      -- 束ねると自治体も混ざる。**並べて重複を落とす**ので、
-      -- 同じ顔ぶれなら並びも同じになる。
-      list_sort(list_distinct(flatten(list(cities)))) AS cities
-    FROM read_parquet([${list}])
-    WHERE bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}
-      AND bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}
-    GROUP BY code;
-  `);
-  return result.toArray().map((row) => {
-    const r = row.toJSON() as unknown as {
-      code: string;
-      buildings: number | bigint;
-      filled: number | bigint;
-      cities: unknown;
-    };
-    return {
-      code: r.code,
-      buildings: Number(r.buildings),
-      filled: Number(r.filled),
-      // リスト列はArrowのVectorで返るので、素の配列に均す。
-      cities: Array.from((r.cities ?? []) as ArrayLike<unknown>, String),
-    };
-  });
-}
-
-/**
- * 表示範囲に整備範囲のセルが**1つでも**あるか。一覧の「この範囲には無い」の判定に使う。
- *
- * Collectionの収録範囲 (bbox) だけで決めると、PLATEAUは306都市の和が日本を
- * ほぼ覆う箱になり、山の中でも「ある」と出る。整備範囲は1kmのセルで持っているので、
- * そちらに聞けば**建物が1棟でもあるところだけ**を「ある」と言える。
- *
- * **1行見つかれば止める** (`LIMIT 1`)。セルを数えたり束ねたりしないので、
- * 描くための問い合わせ (`fetchCoverageInView`) より軽い。bboxの列の統計で
- * 行グループごと読み飛ばすので、当たらない場所ではほとんど読まない。
- */
-async function coverageInView(
-  conn: duckdb.AsyncDuckDBConnection,
-  coverage: BuildingCoverage,
-  bounds: ViewBounds,
-): Promise<boolean> {
-  const files = filesInView(coverage, bounds);
-  if (files.length === 0) return false;
-  const list = files.map((file) => `'${file}'`).join(', ');
-  const result = await conn.query(`
-    SELECT 1 FROM read_parquet([${list}])
-    WHERE bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}
-      AND bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}
-    LIMIT 1;
-  `);
-  return result.numRows > 0;
-}
-
-async function fetchBuildingsInView(
-  conn: duckdb.AsyncDuckDBConnection,
-  source: BuildingSource,
-  bounds: ViewBounds,
-  filter: BuildingFilter,
-  limit: number,
-  /** 間引くときの段の上限 (この順位まで出す)。`undefined` なら全部。 */
-  maxRank?: number,
-): Promise<BuildingFeature[]> {
-  // 表示範囲に重なるファイルだけを渡す。重なるものが無ければ問い合わせない。
-  const files = filesInView(source, bounds);
-  if (files.length === 0) return [];
-  const list = files.map((file) => `'${file}'`).join(', ');
-
-  // 絞り込みは **SQLに渡す**。取得後にJavaScript側で捨てると、
-  // 読む量も転送する量も減らないため。
-  const conditions = [
-    `bbox.xmin <= ${bounds.east} AND bbox.xmax >= ${bounds.west}`,
-    `bbox.ymin <= ${bounds.north} AND bbox.ymax >= ${bounds.south}`,
-  ];
-  // **段の列で間引く。** 段ごとに行グループが分かれているので、統計で読み飛ばせる。
-  if (maxRank !== undefined && source.tiers?.lod_column) {
-    conditions.unshift(`${source.tiers.lod_column} <= ${maxRank}`);
-  }
-  if (source.hasHeight && filter.minHeight > 0) {
-    conditions.push(`height >= ${filter.minHeight}`);
-  }
-  if (source.categoryColumn && filter.usages) {
-    // 用途が1つも選ばれていなければ1件も出さない (空のINは常に偽)。
-    const list = filter.usages.map((u) => `'${u.replace(/'/g, "''")}'`).join(', ');
-    conditions.push(list.length > 0 ? `${source.categoryColumn} IN (${list})` : 'false');
-  }
-  // 段は規則から求める式。絞るときも同じ式を条件にする (列が無いので)。
-  const tierSelect = source.tiers ? tierExpression(source.tiers) : 'NULL';
-  if (source.tiers && filter.tiers) {
-    const list = filter.tiers.map((t) => `'${t.replace(/'/g, "''")}'`).join(', ');
-    conditions.push(list.length > 0 ? `(${tierSelect}) IN (${list})` : 'false');
-  }
-  const categorySelect = source.categoryColumn ?? 'NULL';
-
-  // 緯度方向と経度方向で1度あたりの距離が違うので、経度差を縮めてから比べる
-  // (東京付近では経度1度が緯度1度の約0.81倍)。並べ替えの順序だけの話なので、
-  // 厳密な測地線距離までは要らない。
-  const lonScale = Math.cos((bounds.centerLat * Math.PI) / 180);
-
-  const result = await conn.query(`
-    SELECT ST_AsGeoJSON(geometry) AS geojson, name, ${categorySelect} AS category, height,
-      ${tierSelect} AS tier
-    FROM read_parquet([${list}])
-    WHERE ${conditions.join('\n      AND ')}
-    ORDER BY
-      pow(((bbox.xmin + bbox.xmax) / 2 - ${bounds.centerLon}) * ${lonScale}, 2)
-      + pow((bbox.ymin + bbox.ymax) / 2 - ${bounds.centerLat}, 2)
-    LIMIT ${limit};
-  `);
-  return result.toArray().map((row) => {
-    const r = row.toJSON() as unknown as {
-      geojson: string;
-      name: string | null;
-      category: string | null;
-      height: number | null;
-      tier: string | null;
-    };
-    return {
-      geojson: JSON.parse(r.geojson) as GeoJSON.Geometry,
-      name: r.name,
-      category: r.category,
-      height: r.height,
-      tier: r.tier,
-    };
-  });
-}
-
-/**
- * 「港区 芝公園」のように複数の要素が並んだ入力も拾えるよう、空白区切りの
- * トークンごとに「連結した住所」への部分一致をANDで取る条件式を組み立てる。
- * (列ごとの部分一致だと、候補選択後にinputへ入る連結文字列が何にも一致しない)
- */
-function buildMatchConditions(keyword: string, concatExpr: string): string {
-  return keyword
-    .split(/[\s　]+/)
-    .filter((token) => token.length > 0)
-    .map((token) => `${concatExpr} ILIKE '%${token.replace(/'/g, "''")}%'`)
-    .join(' AND ');
-}
-
-/** 候補として表示する件数の上限 (行政区域と地名の合計)。 */
-const MAX_RESULTS = 10;
-
-/**
- * 打った語そのものではない道路を、候補に出す上限。
- *
- * **道路は同じ語を含む路線が桁違いに多い。**「東京」には109路線が当たり、
- * 上限を掛けずに前へ出したときは候補10件をすべて道路が埋めて、
- * 東京駅も東京都も消えた。
- */
-const ROUTE_SUGGESTIONS = 3;
-
-async function searchAddress(
-  conn: duckdb.AsyncDuckDBConnection,
-  keyword: string,
-): Promise<SearchResult[]> {
-  // 行政区域と地名は別のテーブルにあるので個別に引き、行政区域を優先して
-  // 合計 MAX_RESULTS 件に収める (どちらか一方しか無い場合は残りをもう一方で埋める)。
-  const adminExpr = `pref_name || county_name || city_name || ward_name`;
-  const adminResult = await conn.query(`
-    SELECT admin_id, ${adminExpr} AS label
-    FROM admin_names
-    WHERE ${buildMatchConditions(keyword, adminExpr)}
-    ORDER BY length(label)
-    LIMIT ${MAX_RESULTS};
-  `);
-  const admins: SearchResult[] = adminResult.toArray().map((row) => {
-    const r = row.toJSON() as unknown as { admin_id: string; label: string };
-    return { kind: 'admin', label: r.label, adminId: r.admin_id };
-  });
-
-  const oazaExpr = `pref_name || city_name || oaza_name`;
-  const oazaResult = await conn.query(`
-    -- 位置参照情報は点データなので、covering bbox がそのまま経緯度になる。
-    -- ST_X/ST_Y を使うと地名検索のためだけに spatial 拡張の取得を待つことになる。
-    SELECT ${oazaExpr} AS label, bbox.xmin AS lon, bbox.ymin AS lat
-    FROM isj_oaza
-    WHERE ${buildMatchConditions(keyword, oazaExpr)}
-    ORDER BY length(label)
-    LIMIT ${MAX_RESULTS};
-  `);
-  const oazas: SearchResult[] = oazaResult.toArray().map((row) => {
-    const r = row.toJSON() as unknown as { label: string; lon: number; lat: number };
-    return { kind: 'oaza', label: r.label, lon: r.lon, lat: r.lat };
-  });
-
-  return [...admins, ...oazas].slice(0, MAX_RESULTS);
-}
-
-/**
- * 駅を名前で引く。
- *
- * **路線名も対象にする。**「山手線」でその路線の駅が出る。
- *
- * **駅名・路線名・運営会社の組でユニークにする。** 同じ駅名の行が路線の数だけあり
- * (「東京」は12路線)、そのまま出すと候補が同じ名前で埋まる。
- * 乗り換えでまとめるか県で分けるかは扱いが難しいので、まずは組で分ける。
- *
- * **運営会社まで入れないと壊れる。**「本線」は複数の会社が使う一般名で、
- * 駅名と路線名だけだと住吉駅 (兵庫と福岡) が同じ組になり、平均を取ると
- * **600km離れた中間点**に飛ぶ。実測で3組 (10,134組中) がこれに当たり、
- * 会社を足すと最大の広がりが1kmに収まる。
- *
- * 位置は **bboxの中心**。駅は点ではなく線 (ホームの延長) なので、
- * `bbox.xmin` をそのまま使うと端に寄る。
- */
-async function searchStations(
-  conn: duckdb.AsyncDuckDBConnection,
-  keyword: string,
-): Promise<SearchResult[]> {
-  // **「駅」を挟む。** 原典の `station_name` は「品川」で「駅」が付かないので、
-  // 人がふつうに打つ「品川駅」が1件も当たらなかった。
-  // (「〇〇駅」で終わる駅名も8件あるが、二重になっても照合には影響しない)
-  const expr = `station_name || '駅' || line_name || operator`;
-  const result = await conn.query(`
-    SELECT * FROM (
-      SELECT
-        station_name, line_name, any_value(operator) AS operator,
-        avg((bbox.xmin + bbox.xmax) / 2) AS lon,
-        avg((bbox.ymin + bbox.ymax) / 2) AS lat
-      FROM station
-      WHERE ${buildMatchConditions(keyword, expr)}
-      GROUP BY station_name, line_name, operator
-    )
-    ORDER BY length(station_name || line_name)
-    LIMIT ${MAX_RESULTS};
-  `);
-  return result.toArray().map((row) => {
-    const r = row.toJSON() as unknown as {
-      station_name: string;
-      line_name: string;
-      operator: string;
-      lon: number;
-      lat: number;
-    };
-    return {
-      kind: 'station' as const,
-      label: `${r.station_name}駅`,
-      // **会社名は必ず出す。**「品川駅 (本線)」では何線か分からない。
-      // 重複しているときだけ出す形にしたが、絞り込んだ結果の中でしか
-      // 重複を数えられず、品川駅のように1件だけ返る場合に付かなかった。
-      detail: `${r.operator} ${r.line_name}`,
-      lon: r.lon,
-      lat: r.lat,
-    };
-  });
-}
-
-/**
- * 路線を名前で引く。**路線そのものを候補に出す。**
- *
- * 「山手線」と打ったときに駅ばかり並ぶと、路線を見たい人の役に立たない。
- *
- * 範囲は**その路線の駅から**作る。路線のファイル (5.2MB、ジオメトリだけで4.6MB) を
- * 読まずに済み、駅は検索のために既に読んでいる。実測で596路線のうち
- * 駅が1つしかないのは2つだけで、範囲の中央値は14km。
- */
-async function searchLines(
-  conn: duckdb.AsyncDuckDBConnection,
-  keyword: string,
-): Promise<SearchResult[]> {
-  const result = await conn.query(`
-    SELECT
-      line_name, operator,
-      min(bbox.xmin) AS west, min(bbox.ymin) AS south,
-      max(bbox.xmax) AS east, max(bbox.ymax) AS north
-    FROM station
-    WHERE ${buildMatchConditions(keyword, 'line_name || operator')}
-    GROUP BY line_name, operator
-    ORDER BY length(line_name)
-    LIMIT ${MAX_RESULTS};
-  `);
-  return result.toArray().map((row) => {
-    const r = row.toJSON() as unknown as {
-      line_name: string;
-      operator: string;
-      west: number;
-      south: number;
-      east: number;
-      north: number;
-    };
-    return {
-      kind: 'line' as const,
-      label: r.line_name,
-      // **会社名は必ず出す。**「本線」は10社が使っている。
-      detail: r.operator,
-      bbox: [r.west, r.south, r.east, r.north] as Bbox,
-      lineName: r.line_name,
-      operator: r.operator,
-    };
-  });
-}
-
-/**
- * 道路の路線を引く。「国道13号」「山形県道16号」など。
- *
- * **路線の索引 (211KB) から引く。** 区間そのもの (70MB) を走査すると、
- * bbox列だけで約9MB読むことになる。索引は同じOvertureの道路から作った要約なので、
- * 検索で出たものと地図に出るものは同じデータ。
- */
-/**
- * 区間の並びを1つのMultiLineStringにまとめる。ハイライト用。
- *
- * 1件も無ければ `null` を返す。空のMultiLineStringを入れると、
- * MapLibreが空のソースと区別できない。
- */
-function toMultiLineString(parts: GeoJSON.Geometry[]): GeoJSON.Geometry | null {
-  const coordinates = parts.flatMap((part) =>
-    part.type === 'LineString'
-      ? [part.coordinates]
-      : part.type === 'MultiLineString'
-        ? part.coordinates
-        : [],
-  );
-  return coordinates.length > 0 ? { type: 'MultiLineString', coordinates } : null;
-}
-
-async function searchRoutes(
-  conn: duckdb.AsyncDuckDBConnection,
-  keyword: string,
-): Promise<SearchResult[]> {
-  const result = await conn.query(`
-    SELECT route_name, class, segments, bbox
-    FROM road_route
-    WHERE ${buildMatchConditions(keyword, 'route_name')}
-    ORDER BY length(route_name)
-    LIMIT ${MAX_RESULTS};
-  `);
-  return result.toArray().map((row) => {
-    const r = row.toJSON() as unknown as {
-      route_name: string;
-      class: string;
-      segments: number;
-      bbox: { xmin: number; ymin: number; xmax: number; ymax: number };
-    };
-    return {
-      kind: 'route' as const,
-      label: r.route_name,
-      detail: `${ROAD_STYLES[r.class]?.label ?? r.class} · ${Number(r.segments).toLocaleString()} 区間`,
-      bbox: [r.bbox.xmin, r.bbox.ymin, r.bbox.xmax, r.bbox.ymax] as Bbox,
-      routeName: r.route_name,
-    };
-  });
-}
-
-/**
- * 選んだ路線の道路を読む。**ハイライトのためだけに、そのときだけ読む。**
- *
- * 範囲で絞るのは鉄道と同じ理由 (row groupの統計で読み飛ばさせる)。
- * **`list_contains` で当てる。** 1区間が複数の路線に属するのでリストになっている。
- */
-async function fetchRouteGeometry(
-  conn: duckdb.AsyncDuckDBConnection,
-  routeName: string,
-  [west, south, east, north]: Bbox,
-): Promise<GeoJSON.Geometry[]> {
-  const quoted = `'${routeName.replace(/'/g, "''")}'`;
-  const result = await conn.query(`
-    SELECT ST_AsGeoJSON(geometry) AS geojson
-    FROM road
-    WHERE list_contains(route_names, ${quoted})
-      AND bbox.xmin <= ${east} AND bbox.xmax >= ${west}
-      AND bbox.ymin <= ${north} AND bbox.ymax >= ${south};
-  `);
-  return result
-    .toArray()
-    .map(
-      (row) => JSON.parse((row.toJSON() as unknown as { geojson: string }).geojson) as GeoJSON.Geometry,
-    );
-}
-
-/**
- * 選んだ路線の線を読む。**ハイライトのためだけに、そのときだけ読む。**
- *
- * 範囲 (`bbox`) で絞るのは、row group の統計で読み飛ばさせるため。
- * 路線のファイルは5.2MB (ジオメトリ4.6MB) あるが、
- * 実測では山手線が65区間で8KB、東海道線でも493区間で140KB。
- */
-async function fetchLineGeometry(
-  conn: duckdb.AsyncDuckDBConnection,
-  lineName: string,
-  operator: string,
-  [west, south, east, north]: Bbox,
-): Promise<GeoJSON.Geometry[]> {
-  const quote = (value: string) => `'${value.replace(/'/g, "''")}'`;
-  const result = await conn.query(`
-    SELECT ST_AsGeoJSON(geometry) AS geojson
-    FROM section
-    WHERE line_name = ${quote(lineName)} AND operator = ${quote(operator)}
-      AND bbox.xmin <= ${east} AND bbox.xmax >= ${west}
-      AND bbox.ymin <= ${north} AND bbox.ymax >= ${south};
-  `);
-  return result
-    .toArray()
-    .map((row) => JSON.parse((row.toJSON() as unknown as { geojson: string }).geojson) as GeoJSON.Geometry);
-}
-
-/**
- * 逆ジオコーディング。指定した座標を含む行政区域を返す。
- *
- * ポリゴンとの包含判定 (ST_Contains) は重いので、先に bbox 列で候補を絞る。
- * bbox はGeoParquet生成時に書き込んである covering 列で、
- * これがあるおかげで全国データ (12万件) でも実用的な速度で返る。
- */
-async function reverseGeocode(
-  conn: duckdb.AsyncDuckDBConnection,
-  lon: number,
-  lat: number,
-): Promise<{ label: string; adminId: string } | null> {
-  const result = await conn.query(`
-    SELECT pref_name || coalesce(county_name, '') || coalesce(city_name, '')
-             || coalesce(ward_name, '') AS label,
-           admin_id
-    FROM admin
-    WHERE bbox.xmin <= ${lon} AND bbox.xmax >= ${lon}
-      AND bbox.ymin <= ${lat} AND bbox.ymax >= ${lat}
-      AND ST_Contains(geometry, ST_Point(${lon}, ${lat}))
-    LIMIT 1;
-  `);
-  const rows = result.toArray();
-  if (rows.length === 0) return null;
-  const row = rows[0].toJSON() as unknown as { label: string; admin_id: string };
-  return { label: row.label, adminId: row.admin_id };
-}
-
-async function fetchAdminPolygon(
-  conn: duckdb.AsyncDuckDBConnection,
-  adminId: string,
-): Promise<{ geojson: GeoJSON.Geometry; bbox: [number, number, number, number] } | null> {
-  const result = await conn.query(`
-    SELECT ST_AsGeoJSON(ST_Union_Agg(geometry)) AS geojson,
-           min(bbox.xmin) AS xmin, min(bbox.ymin) AS ymin,
-           max(bbox.xmax) AS xmax, max(bbox.ymax) AS ymax
-    FROM admin
-    WHERE admin_id = '${adminId}';
-  `);
-  const rows = result.toArray();
-  if (rows.length === 0) return null;
-  const row = rows[0].toJSON() as {
-    geojson: string | null;
-    xmin: number;
-    ymin: number;
-    xmax: number;
-    ymax: number;
-  };
-  if (!row.geojson) return null;
-  return {
-    geojson: JSON.parse(row.geojson) as GeoJSON.Geometry,
-    bbox: [row.xmin, row.ymin, row.xmax, row.ymax],
-  };
-}
-
-/**
- * 出典表示のリンク。
- *
- * 国土交通省の利用約款も国土地理院の利用規約も、出典に当該ページのURLを求めている。
- * 表示義務のあるものなので、組み立ては1箇所に置く。
- */
-function creditLink(url: string, label: string): string {
-  return `<a href="${url}" target="_blank" rel="noreferrer">${label}</a>`;
 }
 
 /**
@@ -2005,406 +384,6 @@ const EMPTY_FEATURE_COLLECTION: GeoJSON.FeatureCollection = {
  * ここに書き並べると実際に使っているものとずれる。表示義務のある出典が抜けるのは
  * ライセンス違反になるため、データ側に追随させる。
  */
-/**
- * 出典表示が下端から占めている高さを測り、CSS変数 `--attribution-space` に入れる。
- *
- * **出典は出所が増えるほど行が増える。** 人口メッシュ (47都道府県) を足したときに
- * 1行から2行になり、全幅40pxに広がって左下の「建物のある範囲へ移動」を覆った
- * (押せなくなった)。いまはたたんであるが、広げれば452×112pxの箱になる。
- * パネルの位置を固定値で避けると、出所を足すたびに破れる。
- *
- * **高さではなく「下端からどこまで」を測る。** 出典の箱の下にはMapLibreが
- * 余白を入れるので、高さだけで避けると余白のぶん足りない (実測で2px重なった)。
- *
- * 出典そのものは縮めない。表示義務があるので、避けるのはこちらの役目。
- */
-function watchAttributionHeight(map: MapLibreMap): void {
-  const container = map.getContainer();
-  const attribution = container.querySelector<HTMLElement>('.maplibregl-ctrl-attrib');
-  if (!attribution) return;
-  const apply = () => {
-    const space = container.getBoundingClientRect().bottom - attribution.getBoundingClientRect().top;
-    document.documentElement.style.setProperty(
-      '--attribution-space',
-      `${Math.ceil(space)}px`,
-    );
-  };
-  new ResizeObserver(apply).observe(attribution);
-  apply();
-}
-
-/**
- * 出典をたたんだ状態から始める。
- *
- * MapLibreは `compact` でも**初回だけ広げた状態**で出す。出所が6件あるこのアプリでは
- * 418×230pxの箱になり、右下のパネルを押し上げてしまう。ⓘ を押せば出るので、
- * 最初からたたんでおく。
- *
- * 広げ閉じはMapLibreがクラスの付け外しでやっているので、こちらも外して合わせる。
- */
-function collapseAttribution(map: MapLibreMap): void {
-  map
-    .getContainer()
-    .querySelector('.maplibregl-ctrl-attrib')
-    ?.classList.remove('maplibregl-compact-show');
-}
-
-/**
- * 出典の文言に、**それが何のデータの出典なのか**を添える。
- *
- * 出典だけを並べると、どれがどのデータのものか読み取れない
- * (「（国土交通省）をもとに作成」が2つ並ぶ)。カタログの `title` を前置きして、
- * 「建物 (PLATEAU): 「3D都市モデル…」」の形にする。
- *
- * 同じ出典を使うCollectionはまとめる (大字・町丁目と街区は同じ位置参照情報)。
- */
-function groupCredits(collections: Collection[]): {
-  titles: string[];
-  attribution: string;
-  url: string;
-  via: string[];
-  vintages: string[];
-  terms: Terms | undefined;
-  /** サブカタログの題名 (PLATEAU など)。出所の一覧表の見出しに使う。 */
-  group: string | undefined;
-}[] {
-  const byAttribution = new Map<
-    string,
-    {
-      url: string;
-      titles: string[];
-      via: string[];
-      vintages: string[];
-      terms: Terms | undefined;
-      group: string | undefined;
-    }
-  >();
-  for (const collection of collections) {
-    const entry = byAttribution.get(collection.attribution) ?? {
-      url: collection.attributionUrl,
-      titles: [],
-      via: [],
-      vintages: [],
-      // 同じ出典なら同じ規約 (出典と規約はパイプラインで1つの組として持っている)。
-      terms: collection.terms,
-      group: collection.group?.title,
-    };
-    // 同じ出典で細かさ違いのCollectionが並ぶことがある (人口メッシュの125mと1km)。
-    if (!entry.titles.includes(collection.title)) entry.titles.push(collection.title);
-    // 同じ出典でも配布元のページが分かれることがある (Overtureの区域と建物)。
-    if (collection.via && !entry.via.includes(collection.via)) entry.via.push(collection.via);
-    // 版。**分からないものは足さない** (「不明」と書くより、出さない方が誤解が少ない)。
-    if (collection.vintage && !entry.vintages.includes(collection.vintage)) {
-      entry.vintages.push(collection.vintage);
-    }
-    byAttribution.set(collection.attribution, entry);
-  }
-  // 並べ替えは表示する文言で行う (組み立てたHTMLで並べると、順序がタグの中身に左右される)。
-  return [...byAttribution]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([attribution, { url, titles, via, vintages, terms, group }]) => ({
-      titles,
-      attribution,
-      url,
-      via,
-      vintages,
-      terms,
-      group,
-    }));
-}
-
-/** 規約の要約をバッジにする。**「可」と言い切れないものは言い切らない。** */
-function termsBadges(terms: Terms): HTMLElement {
-  const box = document.createElement('span');
-  box.className = 'terms-badges';
-  const badge = (text: string, tone: 'ok' | 'note' | 'warn', title: string) => {
-    const el = document.createElement('span');
-    el.className = `terms-badge ${tone}`;
-    el.textContent = text;
-    el.title = title;
-    box.append(el);
-  };
-  if (terms.commercial === 'allowed') badge('商用可', 'ok', '規約が商用利用を認めている');
-  else if (terms.commercial === 'not_restricted') {
-    badge('商用の制限の記載なし', 'note', '規約に商用を認めるとも禁じるとも書いていない。本文を確かめること');
-  } else badge('非商用のみ', 'warn', '商用には使えない');
-  if (terms.attribution_required) badge('出典表示が必要', 'note', '使うときは出典を表示する');
-  if (terms.note_modification) badge('加工したら明記', 'note', '加工したデータを使うときは、加工した旨を書く');
-  if (terms.share_alike) {
-    badge('継承あり', 'warn', '派生したデータを配るときは同じライセンスにする (別ファイルとして並べるだけなら及ばない)');
-  }
-  return box;
-}
-
-function buildDataCredits(collections: Collection[]): string[] {
-  return groupCredits(collections).map(
-    ({ titles, attribution, url }) =>
-      `<span class="credit"><b>${titles.join('・')}</b> ${creditLink(url, attribution)}</span>`,
-  );
-}
-
-/** 外部へのリンク。別タブで開き、参照元を渡さない。 */
-function externalLink(href: string, label: string): HTMLAnchorElement {
-  const link = document.createElement('a');
-  link.href = href;
-  link.target = '_blank';
-  link.rel = 'noreferrer';
-  link.textContent = label;
-  return link;
-}
-
-/**
- * 出典をパネルにも出す。**地図右下の ⓘ とは別に持つ。**
- *
- * MapLibreは出典の間を `" | "` のテキストで繋ぐので、1件ずつ改行させられない
- * (ブロックにすると区切りだけの行ができる)。結果として ⓘ の中身は1行に詰まり、
- * どれが何の出典なのか目で追いにくい。
- *
- * ⓘ は表示義務を果たす標準の置き場所として残し、**読ませるのはこちら**。
- * 地形 (Mapterhorn) のようにTileJSONから来る出典はカタログに無いので、
- * ⓘ の側が引き続き唯一の出どころになる。
- */
-/**
- * **使うときの条件の一覧表。** 出所ごとに1行で、商用可か・出典表示・加工の明記・継承を並べる。
- * 出典の文言を1つずつ読まなくても、何に使えるかが一目で分かるようにする。
- */
-function renderTermsSummary(container: HTMLElement, collections: Collection[]): void {
-  const rows = groupCredits(collections).filter((credit) => credit.terms);
-  if (rows.length === 0) {
-    container.replaceChildren();
-    return;
-  }
-  const table = document.createElement('table');
-  table.className = 'terms-table';
-  const head = table.createTHead().insertRow();
-  for (const label of ['データ', '商用', '出典表示', '加工したら明記', '継承', '規約']) {
-    const th = document.createElement('th');
-    th.textContent = label;
-    head.append(th);
-  }
-  const body = table.createTBody();
-  const mark = (value: boolean) => (value ? '要' : '—');
-  for (const { titles, group, terms } of rows) {
-    const row = body.insertRow();
-    row.insertCell().textContent = group ? `${group}: ${titles.join('・')}` : titles.join('・');
-    row.insertCell().textContent =
-      terms!.commercial === 'allowed' ? '可' : terms!.commercial === 'non_commercial' ? '不可' : '記載なし';
-    row.insertCell().textContent = mark(terms!.attribution_required);
-    row.insertCell().textContent = mark(terms!.note_modification);
-    row.insertCell().textContent = terms!.share_alike ? 'あり' : '—';
-    row.insertCell().append(externalLink(terms!.url, terms!.name));
-  }
-  const note = document.createElement('p');
-  note.className = 'terms-note';
-  note.textContent =
-    '規約を読んだ結果の要約です。正本は各規約の本文です。「記載なし」は、規約が商用を認めるとも禁じるとも書いていないものです。';
-  container.replaceChildren(table, note);
-}
-
-function renderCredits(container: HTMLElement, collections: Collection[]): void {
-  container.replaceChildren();
-  for (const { titles, attribution, url, via, vintages, terms } of groupCredits(collections)) {
-    const term = document.createElement('dt');
-    term.textContent = titles.join('・');
-    // **いつ時点のデータか。** 出所だけでは版が分からず、古いものを新しいと
-    // 思って使う事故になる。分かっているものだけ添える。
-    if (vintages.length > 0) {
-      const vintage = document.createElement('span');
-      vintage.className = 'vintage';
-      vintage.textContent = vintages.join(' / ');
-      term.append(' ', vintage);
-    }
-
-    const detail = document.createElement('dd');
-    detail.append(externalLink(url, attribution));
-    // 使うときの条件。バッジと規約の本文へのリンク (要約なので、本文が正本)。
-    if (terms) {
-      const line = document.createElement('div');
-      line.className = 'terms-line';
-      line.append(termsBadges(terms), ' ', externalLink(terms.url, terms.name));
-      detail.append(line);
-    }
-
-    // **配布元へ辿れるようにする。** ここにあるのは変換した複製で、原典は向こうにある。
-    // 出典表示のリンク先とは別 (Overtureは出典がガイドページを指す)。
-    if (via.length > 0) {
-      const sources = document.createElement('div');
-      sources.className = 'via';
-      sources.append('配布元: ');
-      for (const [index, href] of via.entries()) {
-        if (index > 0) sources.append(' / ');
-        sources.append(externalLink(href, new URL(href).hostname));
-      }
-      detail.append(sources);
-    }
-    container.append(term, detail);
-  }
-}
-
-/** 使っている技術1つ分。 */
-interface TechCredit {
-  name: string;
-  /** 誰のものか・何者か。ライセンスが分かっていれば添える。 */
-  who: string;
-  /** **このアプリのどこで使っているか。** 名前を並べるだけだと謝辞にならない。 */
-  use: string;
-  url: string;
-}
-
-/**
- * 使っている技術への謝辞。**データの出典と同じ扱いにする。**
- *
- * 3つに分けるのは、**依存に現れるかどうか**が違うため。ライブラリは
- * `package.json` / `Cargo.toml` を見れば分かるが、考え方や仕様だけを借りたもの
- * (STRの並べ替え、COGPの段の並びなど) はコードのどこにも名前が出ない。
- * ここに書かないと、借りたことが誰にも見えない。
- *
- * 仕様や論文への参照は、実際に設計を左右したものだけを載せる。
- * PLATEAU GIS Converter の README の謝辞 (Planetiler の手法を参考にした旨)
- * に倣った。
- *
- * **リンクはできるだけGitHubのリポジトリにする** (仕様もリポジトリで公開されている)。
- * ただし**実在を確かめたものだけ** (2026-10-03にGitHub APIで確認)。リポジトリの
- * 無いもの (STRの論文・地域メッシュ・SORA) は元の出典のままにする。
- */
-const TECH_CREDITS: { heading: string; items: TechCredit[] }[] = [
-  {
-    heading: '画面で使っているライブラリ',
-    items: [
-      {
-        name: 'DuckDB-WASM',
-        who: 'DuckDB · MIT',
-        use: 'ブラウザの中でGeoParquetをSQLで読む。HTTPの部分取得で、要る行グループだけを取りに行く',
-        url: 'https://github.com/duckdb/duckdb-wasm',
-      },
-      {
-        name: 'DuckDB spatial',
-        who: 'DuckDB · MIT',
-        use: '指した場所がどの市区町村かを調べる空間関数',
-        url: 'https://github.com/duckdb/duckdb-spatial',
-      },
-      {
-        name: 'MapLibre GL JS',
-        who: 'MapLibre · BSD-3-Clause',
-        use: '地図と建物の立体の描画',
-        url: 'https://github.com/maplibre/maplibre-gl-js',
-      },
-    ],
-  },
-  {
-    heading: 'データの変換で使っているライブラリ',
-    items: [
-      {
-        name: 'PLATEAU GIS Converter (nusamai)',
-        who: 'MIERUNE · MIT',
-        use: 'PLATEAUのCityGMLを読む。用途などのコードを日本語に解決するところまで任せている',
-        url: 'https://github.com/MIERUNE/plateau-gis-converter',
-      },
-      {
-        name: 'DuckDB',
-        who: 'DuckDB · MIT',
-        use: 'Overtureの取り出しと、道路・鉄道の簡略化 (粗い段) の作成',
-        url: 'https://github.com/duckdb/duckdb',
-      },
-      {
-        name: 'Apache Arrow / Parquet (arrow-rs)',
-        who: 'Apache Software Foundation · Apache-2.0',
-        use: 'GeoParquetの書き出し',
-        url: 'https://github.com/apache/arrow-rs',
-      },
-      {
-        name: 'PROJ',
-        who: 'OSGeo · MIT',
-        use: '座標系の変換',
-        url: 'https://github.com/OSGeo/PROJ',
-      },
-      {
-        name: 'GeoRust (geo-types / wkb / geojson)',
-        who: 'GeoRust · MIT / Apache-2.0',
-        use: 'ジオメトリの扱いとWKBの書き出し',
-        url: 'https://github.com/georust',
-      },
-    ],
-  },
-  {
-    heading: '考え方・仕様を借りているもの (ライブラリは使っていない)',
-    items: [
-      {
-        name: 'STAC',
-        who: '仕様',
-        use: 'データの目録の形 (Catalog → Collection → Item)。一覧の見出しと行はこの階層そのもの',
-        url: 'https://github.com/radiantearth/stac-spec',
-      },
-      {
-        name: 'GeoParquet',
-        who: '仕様 (OGC)',
-        use: '配るファイルの形。bboxの列で、表示範囲の外の行グループを読み飛ばす',
-        url: 'https://github.com/opengeospatial/geoparquet',
-      },
-      {
-        name: 'STR (Sort-Tile-Recursive)',
-        who: 'Leutenegger, Lopez, Edgington (ICDE 1997)',
-        use: '空間的に近い地物を同じ行グループに詰める並べ替え。論文を読んで自前で実装した',
-        url: 'https://doi.org/10.1109/ICDE.1997.582015',
-      },
-      {
-        name: 'Cloud Optimized GeoParquet (COGP)',
-        who: 'Kanahiro',
-        use: '粗い段を行グループの先頭に置き、細かい段を後ろに続ける並び。将来乗り換えられるよう、配置を合わせてある',
-        url: 'https://github.com/Kanahiro/cloud-optimized-geoparquet',
-      },
-      {
-        name: 'PMTiles',
-        who: 'Protomaps',
-        use: '解像度ごとにファイルを分けず、1つのファイルに収める考え方。粗い段を別ファイルにしなかったのはこれに倣った',
-        url: 'https://github.com/protomaps/PMTiles',
-      },
-      {
-        name: 'Portolan',
-        who: '仕様',
-        use: 'オブジェクトストレージにSTACとGeoParquetを置くだけで配る構成。項目名を借りている (準拠はまだ)',
-        url: 'https://github.com/portolan-sdi/portolan-spec',
-      },
-      {
-        name: '地域メッシュ (JIS X 0410)',
-        who: '日本産業規格',
-        use: '整備範囲と人口メッシュのセル。緯度経度から計算で決まるので境界データが要らない',
-        url: 'https://www.stat.go.jp/data/mesh/m_tuite.html',
-      },
-      {
-        name: 'SORA 2.5',
-        who: 'JARUS',
-        use: '人口密度の凡例 (地上リスクの区分)',
-        url: 'http://jarus-rpas.org/',
-      },
-    ],
-  },
-];
-
-/** 使っている技術の謝辞を出す。出典 (`renderCredits`) と同じ見た目にする。 */
-function renderTechCredits(container: HTMLElement): void {
-  container.replaceChildren();
-  for (const { heading, items } of TECH_CREDITS) {
-    const title = document.createElement('p');
-    title.className = 'tech-heading';
-    title.textContent = heading;
-    const list = document.createElement('dl');
-    list.className = 'tech-list';
-    for (const { name, who, use, url } of items) {
-      const term = document.createElement('dt');
-      term.append(externalLink(url, name));
-      const by = document.createElement('span');
-      by.className = 'vintage';
-      by.textContent = who;
-      term.append(' ', by);
-      const detail = document.createElement('dd');
-      detail.textContent = use;
-      list.append(term, detail);
-    }
-    container.append(title, list);
-  }
-}
-
 function initMap(collections: Collection[]): Promise<MapLibreMap> {
   const map = new MapLibreMap({
     container: 'map',
@@ -2437,6 +416,13 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
 
   return new Promise((resolve) => {
     map.on('load', () => {
+      // **重ね順の目印** (描かない)。地図タイルは `anchor/tiles` の直下、データは
+      // `anchor/data` の直下に、一覧の順で積む (ui/layer-list.ts の applyOrder)。
+      // 目印の間に置くので、データは地図タイルより常に上、周辺検索とハイライトより下。
+      const anchor = (id: string) =>
+        map.addLayer({ id, type: 'background', layout: { visibility: 'none' } });
+      anchor(LAYER_ANCHORS.tile);
+
       // 人口メッシュは一番下に敷く。判断の背景であって、主役ではない。
       map.addSource('population-mesh', {
         type: 'geojson',
@@ -2618,6 +604,7 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
           'line-opacity': 0.3,
         },
       });
+      anchor(LAYER_ANCHORS.data);
 
       // 周辺検索の範囲 (起点から○m) と、範囲に入った建物。ハイライトの下に敷く。
       map.addSource('nearby-zone', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
@@ -2832,22 +819,10 @@ async function main() {
 
   const meshSectionEl = document.querySelector<HTMLDivElement>('#mesh-section')!;
 
-  // レイヤー一覧まわり。**データは節を積まずに1データ1行で並べる** —
-  // 種別ごとに `<details>` を足していくと、オープンデータが増えるだけ縦に伸びる。
-  const layerRowsEl = document.querySelector<HTMLDivElement>('#layer-rows')!;
-  const layerAbsentEl = document.querySelector<HTMLDivElement>('#layer-absent')!;
-  const layerAbsentRowsEl = document.querySelector<HTMLDivElement>('#layer-absent-rows')!;
-  // 地図タイルの区分。出しているもの (重ね順) と、しまってあるもの。
-  const tileRowsEl = document.querySelector<HTMLDivElement>('#tile-rows')!;
-  const tileEmptyEl = document.querySelector<HTMLParagraphElement>('#tile-empty')!;
-  const tileCatalogEl = document.querySelector<HTMLDetailsElement>('#tile-catalog')!;
-  const tileCatalogCountEl = document.querySelector<HTMLSpanElement>('#tile-catalog-count')!;
-  const tileCatalogRowsEl = document.querySelector<HTMLDivElement>('#tile-catalog-rows')!;
+  // レイヤーの一覧そのもの (行・カタログから足すダイアログ) は ui/layer-list.ts が持つ。
   /** 「検索できるもの」を開くボタン。裏方が揃ってから出す。中身はダイアログにある。 */
   const layerSupportEl = document.querySelector<HTMLButtonElement>('#layer-support')!;
   const layerSupportRowsEl = document.querySelector<HTMLDivElement>('#layer-support-rows')!;
-  /** 絞り込み・色分けを、行の下に開いていないあいだ置いておく所。 */
-  const layerSettingsStoreEl = document.querySelector<HTMLDivElement>('#layer-settings-store')!;
   /** 「このデータについて」(カタログ・使う条件・取得)。読むものなのでダイアログ。 */
   const layerDetailDialog = document.querySelector<HTMLDialogElement>('#layer-detail-dialog')!;
   const layerDetailTitleEl = document.querySelector<HTMLElement>('#layer-detail-title')!;
@@ -3202,7 +1177,9 @@ async function main() {
           searchAddress(conn, keyword),
           ensureStations ? searchStations(conn, keyword) : Promise.resolve([]),
           ensureStations ? searchLines(conn, keyword) : Promise.resolve([]),
-          ensureRoutes ? searchRoutes(conn, keyword) : Promise.resolve([]),
+          ensureRoutes
+            ? searchRoutes(conn, keyword, (cls) => ROAD_STYLES[cls]?.label ?? cls)
+            : Promise.resolve([]),
         ]);
         // **打った語がそのものを指しているものを先に出す。**
         // 「山手線」で駅ばかり並ぶと、路線を見たい人の役に立たない。
@@ -4033,54 +2010,44 @@ async function main() {
 
   // ---- レイヤー一覧 -------------------------------------------------------
   //
-  // **カタログの階層をそのまま一覧にする。** サブカタログ (PLATEAU / Overture Maps …)
-  // が見出し、Collectionが行。以前は「建物」「道路」のように使う側から見た
-  // まとまりで組んでいて、画面からカタログが見えなかった。
+  // **カタログの中身を行にする。** 一覧には使うものだけを置き、カタログ全体は
+  // 「＋ 追加」のダイアログでサブカタログ (PLATEAU / Overture Maps …) ごとに見せる
+  // (並べ方と出し入れは ui/layer-list.ts)。
   //
   // 行とCollectionは**ほぼ1対1**。例外は2つだけ。
   // - 人口メッシュは細かさ違いのCollection (125m / 1km) をズームで選ぶので1行に束ねる
   // - 整備範囲は建物の「引いた姿」なので行にせず、建物の ⚙ の中に出す
   //   (`duck:covers` で結ばれている)
-  interface Layer {
-    /** 先頭のCollectionのID。**行とCollectionを同じ名前で呼ぶ。** */
-    id: string;
-    title: string;
-    /** どのサブカタログの下か。一覧の見出しになる。 */
-    group: CatalogGroup | undefined;
-    /** この行を作っているCollection。⚙ で中身を見せる。 */
-    collections: Collection[];
-    vintage?: string;
-    /** 収録範囲。**この場所にあるか**の判定に使う。複数Collectionなら和。 */
-    bbox: Bbox | null;
-    visible: boolean;
-    /** 出るのに要るズーム。**無ければどの縮尺でも出る。** */
-    minZoom?: number;
-    /** 設定の中身。一覧から開いたときに出す。**複数の行で共有することがある。** */
-    settings: HTMLElement;
-    /** 共有している設定パネルを、この行に向ける。 */
-    onOpen?: () => void;
-    refresh: () => void;
-    /**
-     * 整備範囲。**あればこれで「この範囲にあるか」を決める** (箱より正確)。
-     * 建物のうちメッシュを持つ出所 (PLATEAU) だけ。
-     */
-    coverage?: BuildingCoverage;
-    /**
-     * **中の層** (外部のベクトルタイルのテーマ)。行を開くと層ごとに入り切りできる。
-     * 入り切りの状態は `overlay.visible` が持つ (**ズームでは変えない**)。
-     */
-    parts?: { overlay: VectorOverlay; layers: VectorLayerInfo[] };
-    /**
-     * **地図タイル** (ベクタータイルのテーマ・背景地図)。データ (GeoParquet) と区分を分け、
-     * 出しているものを**重ね順に並べる** (上の行ほど上)。`mapLayerIds` はその行を描く地図の層。
-     */
-    tile?: { mapLayerIds: () => string[] };
-    /** この地図では描けない理由 (3D Tiles)。あればチェックを押せなくし、行に理由を書く。 */
-    viewOnly?: string;
-  }
 
-  /** 中の層を開いている行。**描き直しても開いたまま**にする (一覧は moveend ごとに作り直す)。 */
-  const expandedRows = new Set<string>();
+  /**
+   * データの既定の重なり (小さいほど上)。足したときにこの順で入る。地図を作るときの
+   * 重ね方 (initMap) と同じ — 建物がいちばん上、人口メッシュがいちばん下。
+   */
+  const DATA_RANKS: Partial<Record<DatasetKind, number>> = {
+    plateau_buildings: 0,
+    buildings: 0,
+    railway_station: 1,
+    railway: 2,
+    road: 3,
+    power_line: 4,
+    waterway: 5,
+    population_mesh: 6,
+  };
+  /** 行を描く地図の層。**データの層は地図を作るときに全部ある** (中身が空なだけ)。 */
+  const DATA_MAP_LAYERS: Partial<Record<DatasetKind, string[]>> = {
+    plateau_buildings: ['buildings-3d', 'buildings-coverage-fill', 'buildings-coverage-outline'],
+    buildings: ['buildings-3d', 'buildings-coverage-fill', 'buildings-coverage-outline'],
+    railway_station: ['railway-station-casing', 'railway-station'],
+    railway: ['railway-line'],
+    road: ['road-line'],
+    power_line: ['line-power_line'],
+    waterway: ['line-waterway'],
+    population_mesh: ['population-mesh-fill'],
+  };
+
+  /** 一覧。行を全部作ってから作る (下)。それまでの重ね直しは何もしない。 */
+  let layerList: LayerList | undefined;
+  const applyLayerOrder = () => layerList?.applyOrder();
 
   const byKind = (kind: DatasetKind) => collections.filter((c) => c.kind === kind);
   const bboxOf = (members: Collection[]) =>
@@ -4094,50 +2061,12 @@ async function main() {
 
   // ---- 地図タイル (背景地図・ベクタータイル) と地形 ---------------------------------
   //
-  // **QGISと同じく、背景地図も重ねられるレイヤーの1つ。** 出しているものを一覧に
-  // **重ね順で**並べる (上の行ほど上)。以前は「後から入れたものが上」という規則で
-  // 重ねていたが、一覧から順番が見えないので、何が上にあるかが分からなかった。
-
-  /** 出している地図タイルの行ID。**先頭がいちばん上。** */
-  let tileOrder: string[] = [];
-
-  /**
-   * 重ね順を地図に写す。**下から順に、データのいちばん下の層の直下へ動かす**
-   * (動かすたびにその直下へ入るので、最後に動かしたものがいちばん上になる)。
-   * データ (GeoParquet) は地図タイルより常に上。
-   */
-  function applyTileOrder() {
-    if (!map.getLayer(VECTOR_OVERLAY_BEFORE)) return;
-    for (const id of [...tileOrder].reverse()) {
-      const layer = layers.find((l) => l.id === id);
-      for (const mapLayer of layer?.tile?.mapLayerIds() ?? []) {
-        if (map.getLayer(mapLayer)) map.moveLayer(mapLayer, VECTOR_OVERLAY_BEFORE);
-      }
-    }
-  }
-
-  /** 出した行は**いちばん上に**加え、外した行は順番から外す。 */
-  const syncTileOrder = (layer: Layer) => {
-    const shown = tileOrder.includes(layer.id);
-    if (layer.visible && !shown) tileOrder = [layer.id, ...tileOrder];
-    if (!layer.visible && shown) tileOrder = tileOrder.filter((id) => id !== layer.id);
-  };
-
-  /** ↑↓ で1つ動かす。 */
-  const moveTile = (layer: Layer, delta: -1 | 1) => {
-    const index = tileOrder.indexOf(layer.id);
-    const target = index + delta;
-    if (index < 0 || target < 0 || target >= tileOrder.length) return;
-    const next = [...tileOrder];
-    [next[index], next[target]] = [next[target], next[index]];
-    tileOrder = next;
-    applyTileOrder();
-    renderLayerList();
-  };
+  // **QGISと同じく、背景地図も重ねられるレイヤーの1つ。** 一覧に重ね順で並べる
+  // (上の行ほど上)。以前は「後から入れたものが上」という規則で重ねていたが、
+  // 一覧から順番が見えないので、何が上にあるかが分からなかった。
 
   /** 地形に使える標高 (Mapterhorn・Re:Earth・地理院…)。**1つだけ**選ぶ。 */
   const terrainCollections: Collection[] = [];
-
 
   /** 範囲つきのスライダー1つ (不透明度・起伏の強調)。地図を見ながら動かすので行の下に開く。 */
   const sliderSettings = (
@@ -4169,12 +2098,11 @@ async function main() {
     return settings;
   };
 
-  /** 外部のベクトルタイルは、うちのデータでいちばん下の層 (人口メッシュ) のさらに下に敷く。 */
-  const VECTOR_OVERLAY_BEFORE = 'population-mesh-fill';
-
   // **カタログに書かれた順に並べる。** 並びはパイプライン側 (`SUB_CATALOGS`) が決める。
   const layers: Layer[] = [];
   for (const collection of collections) {
+    // 既定はデータの行。地図タイルの行は下で区分と描く層を上書きする。
+    const dataMapLayers = DATA_MAP_LAYERS[collection.kind] ?? [];
     const base = {
       id: collection.id,
       title: collection.title,
@@ -4183,7 +2111,11 @@ async function main() {
       vintage: collection.vintage,
       bbox: collection.bbox,
       visible: false,
+      section: 'data' as const,
+      rank: DATA_RANKS[collection.kind] ?? 0,
+      mapLayerIds: () => dataMapLayers,
     };
+    const tileBase = { ...base, section: 'tile' as const, rank: 0 };
     switch (collection.kind) {
       case 'plateau_buildings':
       case 'buildings': {
@@ -4250,19 +2182,18 @@ async function main() {
         const id = basemapLayerId(collection);
         const first = defaultOf(collections, 'raster_tiles');
         layers.push({
-          ...base,
+          ...tileBase,
           // **先頭の背景地図 (淡色地図) だけ既定で出す** (スタイルを組むときと同じ規則)。
           visible: collection === first,
-          // 何のソースかを行で言う (データの行が版を添えるのと同じ場所)。
-          vintage: `${collection.group?.title ?? ''} · 地図タイル (XYZ) · ズーム${collection.zoom?.join('〜') ?? ''}`,
+          // 何のソースかを行で言う (出所の名前は一覧が前に足す)。
+          vintage: `地図タイル (XYZ) · ズーム${collection.zoom?.join('〜') ?? ''}`,
           settings: sliderSettings('不透明度', 0, 100, 5, 100, (v) => `${v}%`, (v) =>
             map.setPaintProperty(id, 'raster-opacity', v / 100),
           ),
           refresh: () => {
             map.setLayoutProperty(id, 'visibility', isLayerVisible(collection.id) ? 'visible' : 'none');
-            applyTileOrder();
           },
-          tile: { mapLayerIds: () => [id] },
+          mapLayerIds: () => [id],
         });
         break;
       }
@@ -4273,42 +2204,44 @@ async function main() {
         break;
       case '3d_tiles':
         // **この地図では描けない** (MapLibre は 3D Tiles を描かない)。それでも、カタログに
-        // 何があるかは見せる — 行を出してチェックは押せなくし、ⓘ からビューアへ案内する。
+        // 何があるかは見せる — 足すダイアログに出して足せなくし、ⓘ からビューアへ案内する。
         layers.push({
-          ...base,
-          vintage: `${collection.group?.title ?? ''} · 3D Tiles`,
+          ...tileBase,
+          vintage: '3D Tiles',
           settings: document.createElement('div'),
           refresh: () => {},
-          tile: { mapLayerIds: () => [] },
+          mapLayerIds: () => [],
           viewOnly: 'この地図では描けません (3D Tiles)。ⓘ から公式のビューアで見られます',
         });
         break;
       case 'vector_tiles': {
         // **テーマごとに1行。** 層はテーマの中に入れ、行を開くと出てくる。
-        const overlay = createVectorOverlay(map, collection, VECTOR_OVERLAY_BEFORE);
+        // うちのデータより下 (地図タイルの目印の直下) に敷く。
+        const overlay = createVectorOverlay(map, collection, LAYER_ANCHORS.tile);
         vectorOverlays.push(overlay);
         const settings = document.createElement('div');
         for (const theme of collection.themes ?? []) {
           // 行ID。`:` を使わない (CSSのセレクタで要素IDとして引けなくなる)。
           const rowId = `${collection.id}--${theme.id}`;
           layers.push({
-            ...base,
+            ...tileBase,
             id: rowId,
             title: theme.title,
-            // 出所 (見出し) が同じでも、どのタイルセットの層かを版と一緒に添える。
-            vintage: [collection.group?.title, collection.title, collection.vintage].filter(Boolean).join(' · '),
+            // 出所が同じでも、どのタイルセットの層かを版と一緒に添える。
+            vintage: [collection.title, collection.vintage].filter(Boolean).join(' · '),
             settings,
             refresh: () => {
               overlay
                 .apply()
-                .then(applyTileOrder)
+                // 層は初めて出すときに作るので、作ったら重ね順を当て直す。
+                .then(applyLayerOrder)
                 .catch((e: unknown) => {
                   console.error('[vector] apply failed', e);
                   setLayerStatus(rowId, '読めませんでした');
                 });
             },
             parts: { overlay, layers: theme.layers },
-            tile: { mapLayerIds: () => overlay.layerIds(theme.layers.map((l) => l.id)) },
+            mapLayerIds: () => overlay.layerIds(theme.layers.map((l) => l.id)),
           });
         }
         break;
@@ -4320,27 +2253,6 @@ async function main() {
   }
 
   const isLayerVisible = (id: string) => layers.find((l) => l.id === id)?.visible ?? false;
-
-  // 絞り込み・色分けは、閉じているあいだは置き場に置く。**取り外さない** — 外すと
-  // 参照は生きていてもDOMから消え、CSSもテストのセレクタも当たらなくなる。
-  for (const layer of layers) layerSettingsStoreEl.append(layer.settings);
-
-  /**
-   * 絞り込み・色分けを開いている行。**1つだけ** — 建物 (PLATEAUとOverture) と鉄道
-   * (路線と駅) は設定の要素を共有しているので、2行で同時に開けない。
-   * 一覧は moveend ごとに作り直すが、開いた行は保つ (要素ごと新しい行へ移す)。
-   */
-  let settingsRowId: string | null = null;
-
-  /** 中身のある設定か。送電線・川・地理院のテーマは絞り込みを持たない (⚙ を出さない)。 */
-  const hasSettings = (layer: Layer) => layer.settings.childElementCount > 0;
-
-  const toggleLayerSettings = (layer: Layer) => {
-    settingsRowId = settingsRowId === layer.id ? null : layer.id;
-    // 共有している設定を、開いた行の出所に向ける (建物ならPLATEAUかOvertureか)。
-    if (settingsRowId) layer.onOpen?.();
-    renderLayerList();
-  };
 
   /** 「このデータについて」を開く。中身は開くたびにカタログから作る。 */
   const openLayerDetails = (layer: Layer) => {
@@ -4813,216 +2725,6 @@ async function main() {
     );
   };
 
-  const layerRow = (
-    layer: Layer,
-    present: boolean,
-    matches?: (text: string) => boolean,
-  ): HTMLElement => {
-    const row = document.createElement('div');
-    row.className = present ? 'layer-row' : 'layer-row absent';
-    row.dataset.layer = layer.id;
-
-    const toggle = document.createElement('input');
-    toggle.type = 'checkbox';
-    toggle.checked = layer.visible;
-    toggle.id = `layer-toggle-${layer.id}`;
-    const parts = layer.parts;
-    if (parts) {
-      // テーマの入り切りは**中の層をまとめて**。一部だけ出しているときは中間の印。
-      const on = parts.layers.filter((part) => parts.overlay.visible.get(part.id)).length;
-      toggle.checked = on === parts.layers.length;
-      toggle.indeterminate = on > 0 && on < parts.layers.length;
-      layer.visible = on > 0;
-    }
-    toggle.addEventListener('change', () => {
-      layer.visible = toggle.checked;
-      if (parts) {
-        for (const part of parts.layers) parts.overlay.visible.set(part.id, toggle.checked);
-      }
-      // 地図タイルは、出したら重ね順のいちばん上へ、外したら順番から外す。
-      if (layer.tile) syncTileOrder(layer);
-      layer.refresh();
-      if (parts || layer.tile) renderLayerList();
-    });
-
-    const name = document.createElement('label');
-    name.className = 'layer-name';
-    name.htmlFor = toggle.id;
-    name.textContent = layer.title;
-
-    // 状態 (件数や「拡大すると出ます」) は**行に出す**。設定の中に置くと、
-    // 開かない限り読めない。出ない理由が分からないのがいちばん困る。
-    const status = document.createElement('span');
-    status.className = 'layer-status';
-    status.dataset.layerStatus = layer.id;
-    status.textContent = layerStatus.get(layer.id) ?? '';
-    // この地図で描けないものは、チェックを押せなくして理由を書く。
-    if (layer.viewOnly) {
-      toggle.disabled = true;
-      status.textContent = layer.viewOnly;
-    }
-
-    // 出所は見出し (サブカタログ) が言うので、行には版だけを添える。
-    const source = document.createElement('span');
-    source.className = 'layer-source';
-    source.textContent = layer.vintage ?? '';
-
-    // **いまの位置のまま寄る。** 「建物のある範囲へ移動」は場所ごと動かすが、
-    // 見たい場所は既に画面にあることが多く、足りないのはズームだけ。
-    const zoomIn = document.createElement('button');
-    zoomIn.type = 'button';
-    zoomIn.className = 'layer-zoom-button';
-    zoomIn.textContent = '🔍';
-    zoomIn.title = `ズーム${layer.minZoom ?? 0}まで寄る`;
-    zoomIn.hidden = layer.minZoom === undefined;
-    zoomIn.addEventListener('click', () => {
-      if (layer.minZoom === undefined) return;
-      // 出していなければ一緒に出す。寄っただけで何も出ないのは分かりにくい。
-      if (!layer.visible) {
-        layer.visible = true;
-        toggle.checked = true;
-      }
-      map.easeTo({ zoom: layer.minZoom, duration: 600 });
-      layer.refresh();
-    });
-
-    // **ボタンは性格で分ける。** ⚙ = 地図を見ながら動かすもの (絞り込み・色分け) を
-    // この行の下に開く。ⓘ = 読むもの (カタログ・使う条件・取得) をダイアログで開く。
-    // 以前は ⚙ で両方を一覧と入れ替えて出していて、Collection のカードだけで一覧が埋まった。
-    const settingsOpen = settingsRowId === layer.id;
-    const settings = document.createElement('button');
-    settings.type = 'button';
-    settings.className = 'layer-settings-button';
-    settings.textContent = '⚙';
-    settings.title = settingsOpen ? '絞り込みを閉じる' : `${layer.title}の絞り込み・色分け`;
-    settings.setAttribute('aria-expanded', String(settingsOpen));
-    settings.hidden = !hasSettings(layer);
-    settings.addEventListener('click', () => toggleLayerSettings(layer));
-
-    const detail = document.createElement('button');
-    detail.type = 'button';
-    detail.className = 'layer-detail-button';
-    detail.textContent = 'ⓘ';
-    detail.title = `${layer.title}について (カタログ・使う条件・取得)`;
-    detail.addEventListener('click', () => openLayerDetails(layer));
-
-    // **2段にする。** 名前・状態・出所・ボタンを1行に詰めると、幅の取り合いで
-    // 出所が幅0まで潰れた (17.5remのパネルで実際に起きた)。
-    // 段が増えても**データ1つにつき1行**なので、増え方は変わらない。
-    const head = document.createElement('div');
-    head.className = 'layer-head';
-    head.append(toggle, name, zoomIn, settings, detail);
-    // 出している地図タイルは**重ね順を ↑↓ で入れ替えられる** (上の行ほど上に重なる)。
-    const order = tileOrder.indexOf(layer.id);
-    if (layer.tile && order >= 0) {
-      const move = (delta: -1 | 1, label: string, disabled: boolean) => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'layer-move-button';
-        button.textContent = delta < 0 ? '↑' : '↓';
-        button.title = label;
-        button.disabled = disabled;
-        button.addEventListener('click', () => moveTile(layer, delta));
-        return button;
-      };
-      head.append(
-        move(-1, '上へ (上に重ねる)', order === 0),
-        move(1, '下へ (下に重ねる)', order === tileOrder.length - 1),
-      );
-    }
-
-    const sub = document.createElement('div');
-    sub.className = 'layer-sub';
-    sub.append(source, status);
-
-    row.append(head, sub);
-    if (parts) appendParts(row, head, status, layer, parts, matches);
-    if (settingsOpen && hasSettings(layer)) {
-      // 共有の要素を**この行へ移す** (作り直した行にも同じ要素が付いて回る)。
-      const slot = document.createElement('div');
-      slot.className = 'layer-settings-slot';
-      layer.settings.hidden = false;
-      slot.append(layer.settings);
-      row.append(slot);
-    }
-    return row;
-  };
-
-  /** 「ズーム14から」。**行は消さない** — 消すと、寄れば出ることが分からない。 */
-  const fromZoom = (minzoom: number) => `ズーム${minzoom}から`;
-
-  /**
-   * テーマの行に、中の層を開く仕掛けと層ごとの行を足す。
-   *
-   * **ズームで行を出し入れしない。** いまのズームで描かれない層も行は残し、
-   * 「ズーム16から」と添える。入り切りの状態もズームでは変えない
-   * (地理院地図Vectorはズームで出る層が変わり、絞り込みが戻ってしまう)。
-   */
-  const appendParts = (
-    row: HTMLElement,
-    head: HTMLElement,
-    status: HTMLElement,
-    layer: Layer,
-    parts: NonNullable<Layer['parts']>,
-    matches: ((text: string) => boolean) | undefined,
-  ) => {
-    const zoom = map.getZoom();
-    const shown = parts.layers.filter((part) => parts.overlay.visible.get(part.id));
-    // 出しているのに、いまのズームでは1つも描かれないなら、いつから描かれるかを言う。
-    if (shown.length > 0 && shown.every((part) => zoom < part.minzoom)) {
-      status.textContent = `${fromZoom(Math.min(...shown.map((part) => part.minzoom)))}描かれます`;
-    }
-
-    // 中が1層だけなら開く意味が無い (注記・建物・送電線)。
-    if (parts.layers.length < 2) return;
-    // 絞り込みが中の層にだけ当たったときは、開いて当たった層を見せる。
-    // テーマの名前そのものに当たったときは、中を全部見せる (「水」で水部の中を削らない)。
-    const filtered =
-      matches && !matches(layer.title) ? parts.layers.filter((part) => matches(part.title)) : [];
-    const open = expandedRows.has(layer.id) || filtered.length > 0;
-
-    const expander = document.createElement('button');
-    expander.type = 'button';
-    expander.className = 'layer-expander';
-    expander.textContent = open ? '▾' : '▸';
-    expander.title = open ? '中の層をたたむ' : `中の層を開く (${parts.layers.length})`;
-    expander.setAttribute('aria-expanded', String(open));
-    expander.addEventListener('click', () => {
-      if (expandedRows.has(layer.id)) expandedRows.delete(layer.id);
-      else expandedRows.add(layer.id);
-      renderLayerList();
-    });
-    // 名前の右に置く。頭に置くと、開けない行とチェックボックスの位置がずれる。
-    head.querySelector('.layer-name')?.after(expander);
-    if (!open) return;
-
-    const list = document.createElement('div');
-    list.className = 'layer-parts';
-    for (const part of filtered.length > 0 ? filtered : parts.layers) {
-      const item = document.createElement('label');
-      item.className = zoom < part.minzoom ? 'layer-part later' : 'layer-part';
-      item.dataset.part = part.id;
-      const box = document.createElement('input');
-      box.type = 'checkbox';
-      box.checked = parts.overlay.visible.get(part.id) ?? false;
-      box.addEventListener('change', () => {
-        parts.overlay.visible.set(part.id, box.checked);
-        layer.visible = parts.layers.some((p) => parts.overlay.visible.get(p.id));
-        if (layer.tile) syncTileOrder(layer);
-        layer.refresh();
-        renderLayerList();
-      });
-      const title = document.createElement('span');
-      title.textContent = part.title;
-      const note = document.createElement('span');
-      note.className = 'layer-part-zoom';
-      note.textContent = zoom < part.minzoom ? fromZoom(part.minzoom) : '';
-      item.append(box, title, note);
-      list.append(item);
-    }
-    row.append(list);
-  };
-
   /**
    * 設定の中にある要約を、一覧の行へ写す。**行とパネルが1対1のものだけ**に使う。
    *
@@ -5034,20 +2736,6 @@ async function main() {
     new MutationObserver(apply).observe(from, { childList: true, characterData: true, subtree: true });
     apply();
   };
-
-  /** サブカタログの見出し。その文書のJSONへのリンクを添える。 */
-  /**
-   * **出所ごとに開け閉めする。** 出所が増えるほど一覧が伸びるので、既定では閉じておき、
-   * **既定で出しているレイヤーのある出所 (PLATEAU) だけ開く。** 開け閉めは
-   * 描き直しても (moveend ごと) 保つ。絞り込み中は当たったものを全部見せる。
-   */
-  const openGroups = new Set(
-    layers
-      .filter((layer) => layer.visible && layer.group && !layer.tile)
-      .map((layer) => layer.group!.id),
-  );
-  // 既定で出している地図タイル (淡色地図) から重ね順を始める。
-  tileOrder = layers.filter((layer) => layer.tile && layer.visible).map((layer) => layer.id);
 
   // ---- 地形 ---------------------------------------------------------------------
   //
@@ -5116,101 +2804,6 @@ async function main() {
     terrainToggle.checked = map.getTerrain() !== null;
   });
 
-  const groupHeading = (group: CatalogGroup, rows: Layer[], open: boolean): HTMLElement => {
-    const heading = document.createElement('div');
-    heading.className = 'layer-group';
-    heading.dataset.group = group.id;
-    heading.title = group.description;
-
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'layer-group-toggle';
-    toggle.setAttribute('aria-expanded', String(open));
-    const chevron = document.createElement('span');
-    chevron.className = 'layer-group-chevron';
-    chevron.textContent = open ? '▾' : '▸';
-    const title = document.createElement('span');
-    title.className = 'layer-group-title';
-    title.textContent = group.title;
-    // 閉じていても、**何件あって、いくつ出しているか**は見出しで分かるようにする。
-    const shown = rows.filter((layer) => layer.visible).length;
-    const count = document.createElement('span');
-    count.className = 'layer-group-count';
-    count.textContent = shown > 0 ? `${rows.length} · ${shown}件表示中` : String(rows.length);
-    toggle.append(chevron, title, count);
-    toggle.addEventListener('click', () => {
-      if (openGroups.has(group.id)) openGroups.delete(group.id);
-      else openGroups.add(group.id);
-      renderLayerList();
-    });
-
-    heading.append(toggle, jsonLink(group.path, 'Catalog'));
-    return heading;
-  };
-
-  /**
-   * 行を並べ、サブカタログが変わるところに見出しを挟む。閉じた出所の行は作るが隠す
-   * (行の状態を読む仕掛けが、開け閉めに関係なく同じ要素を見られるように)。
-   */
-  const withHeadings = (
-    rows: Layer[],
-    present: boolean,
-    matches?: (text: string) => boolean,
-  ): HTMLElement[] => {
-    const nodes: HTMLElement[] = [];
-    for (let start = 0; start < rows.length; ) {
-      const group = rows[start].group;
-      let end = start + 1;
-      while (end < rows.length && rows[end].group?.id === group?.id) end++;
-      const members = rows.slice(start, end);
-      // 見出しの無い (ルート直下の) 行と、絞り込み中は常に開いて見せる。
-      const open = !group || matches !== undefined || openGroups.has(group.id);
-      if (group) nodes.push(groupHeading(group, members, open));
-      for (const layer of members) {
-        const row = layerRow(layer, present, matches);
-        row.hidden = !open;
-        nodes.push(row);
-      }
-      start = end;
-    }
-    return nodes;
-  };
-
-  // ---- 一覧の絞り込み -------------------------------------------------------
-  //
-  // **出所の並びは崩さずに、同じ種類のものを横断して探す。** 「送電」と打てば
-  // Overture の送電線と地理院の送電線が並ぶ。行が増えても見通しを保つための仕掛け。
-  const layerFilterEl = document.querySelector<HTMLInputElement>('#layer-filter')!;
-  const layerFilterEmptyEl = document.querySelector<HTMLElement>('#layer-filter-empty')!;
-
-  /** 空白で区切った語が**全部**入っていれば当たり。大文字小文字は見ない。 */
-  const layerMatcher = (): ((text: string) => boolean) | undefined => {
-    const words = layerFilterEl.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    if (words.length === 0) return undefined;
-    return (text) => {
-      const lower = text.toLowerCase();
-      return words.every((word) => lower.includes(word));
-    };
-  };
-
-  /** 行を探すときに見る文字。見出し (出所)・行の名前・Collection・中の層の名前。 */
-  const layerHaystack = (layer: Layer) =>
-    [
-      layer.group?.title,
-      layer.title,
-      ...layer.collections.map((c) => c.title),
-      ...(layer.parts?.layers.map((part) => part.title) ?? []),
-    ]
-      .filter(Boolean)
-      .join(' ');
-
-  layerFilterEl.addEventListener('input', () => renderLayerList());
-  layerFilterEl.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || !layerFilterEl.value) return;
-    layerFilterEl.value = '';
-    renderLayerList();
-  });
-
   /** 裏方 (検索・逆ジオコーディングが使うもの)。**切れてはいけない**ので出すだけ。 */
   const supportRow = (title: string, source: string): HTMLElement => {
     const row = document.createElement('div');
@@ -5243,58 +2836,16 @@ async function main() {
    */
   const isPresent = (layer: Layer) => coversView(layer.bbox) && (presence.get(layer.id) ?? true);
 
-  function renderLayerList() {
-    // 設定はいったん置き場へ戻す。開いている行があれば、作るときにまたそこへ移す
-    // (戻さないと、閉じたときに作り直す前の行と一緒にDOMから外れたままになる)。
-    for (const layer of layers) layerSettingsStoreEl.append(layer.settings);
-    const matches = layerMatcher();
-    const hit = (layer: Layer) => !matches || matches(layerHaystack(layer));
-
-    // **データ** (SQL で引ける GeoParquet)。出所ごとに開け閉めする。
-    const data = layers.filter((layer) => !layer.tile && hit(layer));
-    const present = data.filter(isPresent);
-    const absent = data.filter((layer) => !isPresent(layer));
-    layerRowsEl.replaceChildren(...withHeadings(present, true, matches));
-    layerAbsentRowsEl.replaceChildren(...withHeadings(absent, false, matches));
-    layerAbsentEl.hidden = absent.length === 0;
-
-    // **地図タイル。** 出しているものを重ね順に (上の行ほど上)、出していないものは
-    // 「地図タイルを足す」に出所ごとにしまう。
-    const shown = tileOrder
-      .map((id) => layers.find((layer) => layer.id === id))
-      .filter((layer): layer is Layer => layer !== undefined && hit(layer));
-    const spare = layers.filter((layer) => layer.tile && !tileOrder.includes(layer.id) && hit(layer));
-    tileRowsEl.replaceChildren(...shown.map((layer) => layerRow(layer, true, matches)));
-    tileEmptyEl.hidden = shown.length > 0 || matches !== undefined;
-    tileCatalogCountEl.textContent = String(spare.length);
-    tileCatalogRowsEl.replaceChildren(...catalogRows(spare, matches));
-    // 絞り込み中は、しまってあるものも開いて見せる。
-    if (matches && spare.length > 0) tileCatalogEl.open = true;
-
-    layerFilterEmptyEl.hidden = !matches || data.length + shown.length + spare.length > 0;
-  }
-
-  /** しまってある地図タイルを出所ごとに並べる (見出しは開け閉めしない — 既に畳んだ中にある)。 */
-  const catalogRows = (rows: Layer[], matches?: (text: string) => boolean): HTMLElement[] => {
-    const nodes: HTMLElement[] = [];
-    let previous: string | undefined;
-    for (const layer of rows) {
-      if (layer.group && layer.group.id !== previous) {
-        const heading = document.createElement('div');
-        heading.className = 'tile-group';
-        heading.dataset.group = layer.group.id;
-        heading.title = layer.group.description;
-        const title = document.createElement('span');
-        title.className = 'layer-group-title';
-        title.textContent = layer.group.title;
-        heading.append(title, jsonLink(layer.group.path, 'Catalog'));
-        nodes.push(heading);
-        previous = layer.group.id;
-      }
-      nodes.push(layerRow(layer, true, matches));
-    }
-    return nodes;
-  };
+  // **一覧を作る。** 覚えている一覧があればそれを戻す (その行の描き直しもここで走る)。
+  layerList = createLayerList({
+    map,
+    layers,
+    statusOf: (id) => layerStatus.get(id) ?? '',
+    isPresent,
+    openDetails: openLayerDetails,
+    catalogLink: jsonLink,
+  });
+  const renderLayerList = () => layerList?.render();
 
   /** 整備範囲を持つ行について、表示範囲にセルがあるかを聞き直す。 */
   const refreshPresence = async () => {
@@ -5513,10 +3064,11 @@ async function main() {
   let picking = false;
   /** 周辺検索の待ち受け中。📍と同じく、押してから地図をクリックする。 */
   let nearbyMode = false;
-  let hoveringBuilding = false;
+  /** 吹き出しの出る地物の上にいるか (ポインタの形を変える)。 */
+  let hoveringFeature = false;
   const updateCursor = () => {
     map.getCanvas().style.cursor =
-      picking || nearbyMode ? 'crosshair' : hoveringBuilding ? 'pointer' : '';
+      picking || nearbyMode ? 'crosshair' : hoveringFeature ? 'pointer' : '';
   };
 
   // 📍と◎は**どちらか一方だけ**。両方が待ち受けていると、1回のクリックで
@@ -5550,6 +3102,8 @@ async function main() {
   // 検索欄に付けていると効かないため。
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    // ダイアログを開いているなら、Esc はダイアログを閉じるだけ (地図の結果は消さない)。
+    if (document.querySelector('dialog[open]')) return;
     if (picking) {
       setPicking(false);
       return;
@@ -5701,6 +3255,8 @@ async function main() {
 
   map.on('click', (e) => {
     if (!nearbyMode) return;
+    // このクリックは起点を選ぶもの。吹き出し (下の click) には渡さない。
+    e.preventDefault();
     setNearbyMode(false);
     void originAt(e.point, e.lngLat).then(runNearby);
   });
@@ -5825,7 +3381,8 @@ async function main() {
           const found = await fetchNearbyBuildings(conn, source, frame);
           if (found) buildings.push(found);
         }
-        const names: [string, { names: string[]; total: number; features: GeoJSON.Feature[] }][] = [];
+        // [種類, 結果, 出所のCollection ID]。出所は当たったものの吹き出しに使う。
+        const names: [string, { names: string[]; total: number; features: GeoJSON.Feature[] }, string][] = [];
         for (const source of railwaySources) {
           await source.ensure();
           const expression =
@@ -5835,6 +3392,7 @@ async function main() {
           names.push([
             source.kind === 'railway_station' ? '駅' : '鉄道',
             await fetchNearbyNames(conn, source, frame, expression),
+            source.id,
           ]);
         }
         if (roadSource) {
@@ -5847,11 +3405,12 @@ async function main() {
               frame,
               `coalesce(nullif(array_to_string(route_names, '・'), ''), road_name)`,
             ),
+            roadSource.id,
           ]);
         }
         for (const source of lineSources) {
           await source.ensure();
-          names.push([source.title, await fetchNearbyNames(conn, source, frame, 'name')]);
+          names.push([source.title, await fetchNearbyNames(conn, source, frame, 'name'), source.id]);
         }
         // 人口は**いちばん細かいメッシュ**で数える (粗いと範囲からはみ出す分が増える)。
         let population: { population: number; cells: number; label: string } | null = null;
@@ -5873,8 +3432,11 @@ async function main() {
       nearbyDrawn = {
         buildings: result.buildings.flatMap((b) => b.features),
         // 線は種類 (駅・鉄道・道路・送電線・川) で塗り分け、種類ごとに切り替える。
-        lines: result.names.flatMap(([kind, found]) =>
-          found.features.map((feature) => ({ ...feature, properties: { ...feature.properties, kind } })),
+        lines: result.names.flatMap(([kind, found, origin]) =>
+          found.features.map((feature) => ({
+            ...feature,
+            properties: { ...feature.properties, kind, origin },
+          })),
         ),
       };
       const hitSource = map.getSource('nearby-hits') as GeoJSONSource | undefined;
@@ -5893,7 +3455,7 @@ async function main() {
   const renderNearby = (
     result: {
       buildings: NearbyBuildings[];
-      names: [string, { names: string[]; total: number }][];
+      names: [string, { names: string[]; total: number }, string][];
       population: { population: number; cells: number; label: string } | null;
     },
     frame: NearbyFrame,
@@ -6079,240 +3641,214 @@ async function main() {
     return box;
   };
 
-  if (buildingSources.length > 0) {
-    map.on('mousemove', 'buildings-3d', (e) => {
-      const building = e.features?.[0];
-      if (!building) return;
-      hoveringBuilding = true;
-      updateCursor();
+  // ---- 吹き出し (ホバーと、指で押したとき) ------------------------------------------
+  //
+  // **層ごとに「何を出すか」を表にし、地図全体で1つの仕掛けで拾う。** 以前は層ごとに
+  // mousemove を登録していて、周辺検索の結果 (上に重ねた別の層) には吹き出しが出なかった
+  // (当たった建物の上では元の建物を隠すので、建物の吹き出しも消えていた)。
+  // いちばん上に描かれているものの吹き出しを出す。
+  //
+  // **指で押しても同じものを出す** (スマホにはホバーが無い)。
 
-      const props = building.properties;
-      // **どちらの出所の建物か。** PLATEAUとOvertureは同時に出せるので、
-      // 重なっているところでは色だけでは見分けにくい。見出しと同じ名前で言う。
-      const origin = collections.find((c) => c.id === props.origin);
-      hoverPopup
-        .setLngLat(e.lngLat)
-        .setDOMContent(
-          hoverContent([
-            ['', (props.name as string | null) ?? '(名称なし)'],
-            ['用途', (props.category as string | null) ?? null],
-            ['高さ', props.height ? `${props.height as number} m` : null],
-            ['重要度', (props.tier as string | null) ?? null],
-            ['出所', origin?.group?.title ?? origin?.title ?? null],
-          ]),
-        )
-        .addTo(map);
-    });
+  type Props = Record<string, unknown>;
+  type HoverRows = [string, string | null][];
+  /** 吹き出しの中身と、**同じものか**の鍵 (同じなら作り直さない — 区間の境でちらつくため)。 */
+  type Hover = { key: string; rows: HoverRows };
 
-    map.on('mouseleave', 'buildings-3d', () => {
-      hoveringBuilding = false;
-      updateCursor();
-      hoverPopup.remove();
-    });
+  const text = (value: unknown) => (value === null || value === undefined || value === '' ? null : String(value));
+  const originOf = (props: Props) => collections.find((c) => c.id === props.origin);
 
+  /** 建物。**どちらの出所の建物か**も言う (PLATEAUとOvertureは同時に出せて、色だけでは見分けにくい)。 */
+  const buildingRows = (props: Props): HoverRows => {
+    const origin = originOf(props);
+    return [
+      ['', text(props.name) ?? '(名称なし)'],
+      ['用途', text(props.category)],
+      ['高さ', props.height ? `${props.height as number} m` : null],
+      ['重要度', (props.tierRank as number | undefined) !== -1 ? text(props.tier) : null],
+      ['出所', origin?.group?.title ?? origin?.title ?? null],
+    ];
+  };
+
+  /** 周辺検索で当たったもの、と分かる1行。 */
+  const nearbyRow = (): [string, string] => ['周辺検索', `起点から ${nearbyDistance.value} m 以内`];
+
+  const HOVER_LAYERS: Record<string, (props: Props) => Hover> = {
+    'nearby-hits': (p) => ({
+      key: `nearby|${p.origin}|${p.name}|${p.height}|${p.category}`,
+      rows: [...buildingRows(p), nearbyRow()],
+    }),
+    'nearby-hit-lines': (p) => {
+      const origin = originOf(p);
+      return {
+        key: `nearby-line|${p.kind}|${p.name}`,
+        rows: [
+          ['', text(p.name) ?? '(名前なし)'],
+          ['種類', text(p.kind)],
+          ['出所', origin?.group?.title ?? null],
+          ['時点', origin?.vintage ?? null],
+          nearbyRow(),
+        ],
+      };
+    },
+    'buildings-3d': (p) => ({
+      key: `building|${p.origin}|${p.name}|${p.height}|${p.category}`,
+      rows: buildingRows(p),
+    }),
     // 整備範囲のメッシュ。**どのメッシュか、どの自治体かが読めること。**
     // 塗りの濃さは埋まり具合しか表さないので、中身はここでしか分からない。
-    //
-    // 道路と同じく、**同じセルの上を動いている間は作り直さない**
-    // (セルは1km四方あるので滅多に変わらないが、境目でちらつく)。
-    let hoveredCell = '';
-
-    map.on('mousemove', 'buildings-coverage-fill', (e) => {
-      // **判定中はホバーを出さない。** 判定の結果も吹き出しで出すので、
-      // 2つ並ぶとどちらが押した場所のものか分からなくなる。
-      if (picking) return;
-      const cell = e.features?.[0];
-      if (!cell) return;
-      hoveringBuilding = true;
-      updateCursor();
-
-      hoverPopup.setLngLat(e.lngLat).addTo(map);
-
-      const code = cell.properties.code as string;
-      if (code === hoveredCell) return;
-      hoveredCell = code;
-
-      const cities = (cell.properties.cities as string) || '(不明)';
-      const filled = cell.properties.filled as number;
-      const total = cell.properties.total as number;
-      hoverPopup.setDOMContent(
-        hoverContent([
+    'buildings-coverage-fill': (p) => {
+      const code = p.code as string;
+      const cities = (p.cities as string) || '(不明)';
+      const filled = p.filled as number;
+      const total = p.total as number;
+      return {
+        key: `cell|${code}`,
+        rows: [
           ['', `${MESH_SIZE_LABELS[code.length] ?? `${code.length}桁`}メッシュ`],
           ['メッシュコード', code],
-          // **束ねると自治体が増える。** 80kmまで引くと何十も並ぶので、
-          // 多いときは数だけにする (全部出すとポップアップが画面を覆う)。
+          // **束ねると自治体が増える。** 80kmまで引くと何十も並ぶので、多いときは数だけにする。
           ['自治体', cities.split('、').length > 6 ? `${cities.split('、').length} 市区町村` : cities],
-          // **濃淡を数で裏付ける。** 色だけだと「薄い」が読み取れない。
-          // 1kmで見ているときは必ず1/1なので出さない。
-          ...(total > 1
-            ? ([
-                [
-                  'データのある1kmセル',
-                  `${filled.toLocaleString()} / ${total.toLocaleString()} (${Math.round((filled / total) * 100)}%)`,
-                ],
-              ] as [string, string][])
-            : []),
-          ['建物', `${(cell.properties.buildings as number).toLocaleString()} 棟`],
-        ]),
-      );
-    });
-
-    map.on('mouseleave', 'buildings-coverage-fill', () => {
-      hoveringBuilding = false;
-      hoveredCell = '';
-      updateCursor();
-      hoverPopup.remove();
-    });
-  }
-
-  if (railwaySources.length > 0) {
-    // 駅を先に置く。路線と重なっている場所では駅の方が知りたいことが多い。
-    // (MapLibreは先に登録したレイヤーのイベントが先に来るわけではないので、
-    //  重なりは `queryRenderedFeatures` の順ではなくレイヤーごとに拾う)
-    for (const layer of ['railway-station', 'railway-line']) {
-      map.on('mousemove', layer, (e) => {
-        const feature = e.features?.[0];
-        if (!feature) return;
-        hoveringBuilding = true;
-        updateCursor();
-
-        const props = feature.properties;
-        const station = props.stationName as string | null;
-        hoverPopup
-          .setLngLat(e.lngLat)
-          .setDOMContent(
-            hoverContent([
-              // 駅なら駅名を見出しにする。路線には駅名が入っていない。
-              ['', station ? `${station}駅` : (props.lineName as string)],
-              ['路線', station ? (props.lineName as string) : null],
-              ['事業者', props.operator as string],
-              ['種別', props.institutionType as string],
-              ['区分', props.railwayClass as string],
-              ['時点', railwayVintage ?? null],
-            ]),
-          )
-          .addTo(map);
-      });
-
-      map.on('mouseleave', layer, () => {
-        hoveringBuilding = false;
-        updateCursor();
-        hoverPopup.remove();
-      });
-    }
-  }
-
-  if (roadSource) {
-    // **同じ道路の上を動いている間は作り直さない。**
-    //
-    // 道路は交差点ごとに区間が切れているので、1本の道をなぞるだけで別の地物へ
-    // 次々に移る。毎回中身を組み直すと、**同じ道を見ているのに表示がちらつく**。
-    // 名前と路線と等級が同じなら同じ道として扱い、位置だけ追わせる。
-    let hoveredRoad = '';
-
-    map.on('mousemove', 'road-line', (e) => {
-      const feature = e.features?.[0];
-      if (!feature) return;
-      hoveringBuilding = true;
-      updateCursor();
-
-      const props = feature.properties;
-      const routes = (props.routeNames as string) || '';
-      const name = props.roadName as string | null;
-      const roadClass = props.roadClass as string;
-
-      hoverPopup.setLngLat(e.lngLat).addTo(map);
-
-      const identity = `${name ?? ''}|${routes}|${roadClass}`;
-      if (identity === hoveredRoad) return;
-      hoveredRoad = identity;
-
-      hoverPopup.setDOMContent(
-        hoverContent([
+          // **濃淡を数で裏付ける。** 1kmで見ているときは必ず1/1なので出さない。
+          [
+            'データのある1kmセル',
+            total > 1
+              ? `${filled.toLocaleString()} / ${total.toLocaleString()} (${Math.round((filled / total) * 100)}%)`
+              : null,
+          ],
+          ['建物', `${(p.buildings as number).toLocaleString()} 棟`],
+        ],
+      };
+    },
+    // 駅なら駅名を見出しにする。路線には駅名が入っていない。
+    'railway-station': (p) => railwayHover(p),
+    'railway-line': (p) => railwayHover(p),
+    // 道路は交差点ごとに区間が切れている。名前と路線と等級が同じなら同じ道として扱う。
+    'road-line': (p) => {
+      const routes = text(p.routeNames) ?? '';
+      const name = text(p.roadName);
+      return {
+        key: `road|${name ?? ''}|${routes}|${p.roadClass}`,
+        rows: [
           // 名前が無い区間もある。その場合は路線名を見出しに繰り上げる。
           ['', name || routes || '(名前なし)'],
           // **路線は複数あることがある。** 見出しに使ったものと同じなら繰り返さない。
           ['路線', routes && routes !== name ? routes : null],
-          ['種別', roadClass],
+          ['種別', text(p.roadClass)],
           ['時点', roadVintage ?? null],
-        ]),
-      );
-    });
-
-    map.on('mouseleave', 'road-line', () => {
-      hoveringBuilding = false;
-      hoveredRoad = '';
-      updateCursor();
-      hoverPopup.remove();
-    });
-  }
-
-  // 送電線・川。道路と同じく、同じ線の上を動いている間は作り直さない (ちらつき防止)。
-  let hoveredLine = '';
-  for (const kind of LINE_KINDS) {
-    const layerId = `line-${kind}`;
-    map.on('mousemove', layerId, (e) => {
-      if (picking) return;
-      const feature = e.features?.[0];
-      if (!feature) return;
-      hoveringBuilding = true;
-      updateCursor();
-      hoverPopup.setLngLat(e.lngLat).addTo(map);
-
-      const props = feature.properties;
-      const identity = `${kind}|${props.name ?? ''}|${props.lineClass}`;
-      if (identity === hoveredLine) return;
-      hoveredLine = identity;
-      const origin = collections.find((c) => c.id === props.origin);
-      hoverPopup.setDOMContent(
-        hoverContent([
-          ['', (props.name as string | null) || '(名前なし)'],
-          ['種別', props.lineClass as string],
-          ['出所', origin?.group?.title ?? null],
-          ['時点', origin?.vintage ?? null],
-        ]),
-      );
-    });
-    map.on('mouseleave', layerId, () => {
-      hoveringBuilding = false;
-      hoveredLine = '';
-      updateCursor();
-      hoverPopup.remove();
-    });
-  }
-
-  // 外部のベクトルタイル (地理院)。描画の層が123あって個別に登録しきれないので、
-  // 地図全体で拾い、**いちばん上に描かれているものが地理院のときだけ**出す。
-  // うちのデータの上にいるときは、そちらのホバーに任せる (吹き出しを奪わない)。
-  let hoveredVector = '';
-  map.on('mousemove', (e) => {
-    if (picking || vectorOverlays.length === 0) return;
-    const top = map.queryRenderedFeatures(e.point)[0];
-    const overlay = top && vectorOverlays.find((o) => o.styleLayers.has(top.layer.id));
-    if (!top || !overlay) {
-      // 何も無いところへ出たときだけ片付ける。うちのデータの上なら、吹き出しはそちらのもの。
-      if (hoveredVector && !top) hoverPopup.remove();
-      hoveredVector = '';
-      return;
-    }
-    hoverPopup.setLngLat(e.lngLat).addTo(map);
-    const sourceLayer = overlay.styleLayers.get(top.layer.id)!;
-    const props = top.properties;
-    const identity = `${sourceLayer}|${props.vt_code ?? ''}|${props.vt_text ?? ''}`;
-    if (identity === hoveredVector) return;
-    hoveredVector = identity;
-    const theme = overlay.collection.themes?.find((t) => t.layers.some((l) => l.id === sourceLayer));
-    const layer = theme?.layers.find((l) => l.id === sourceLayer);
-    hoverPopup.setDOMContent(
-      hoverContent([
-        ['', (props.vt_text as string | undefined) || `${theme?.title ?? ''} › ${layer?.title ?? sourceLayer}`],
-        ['層', `${layer?.title ?? sourceLayer} (${sourceLayer})`],
-        // 地物の種別のコード。意味は配布元の「地物種別コード一覧」にある。
-        ['種別コード', props.vt_code != null ? String(props.vt_code) : null],
-        ['出所', `${overlay.collection.group?.title ?? ''} ${overlay.collection.title}`.trim()],
-        ['時点', overlay.collection.vintage ?? null],
+        ],
+      };
+    },
+    ...Object.fromEntries(
+      LINE_KINDS.map((kind) => [
+        `line-${kind}`,
+        (p: Props): Hover => {
+          const origin = originOf(p);
+          return {
+            key: `line|${kind}|${p.name ?? ''}|${p.lineClass}`,
+            rows: [
+              ['', text(p.name) ?? '(名前なし)'],
+              ['種別', text(p.lineClass)],
+              ['出所', origin?.group?.title ?? null],
+              ['時点', origin?.vintage ?? null],
+            ],
+          };
+        },
       ]),
-    );
+    ),
+  };
+
+  function railwayHover(p: Props): Hover {
+    const station = text(p.stationName);
+    return {
+      key: `rail|${station ?? ''}|${p.lineName}|${p.operator}`,
+      rows: [
+        ['', station ? `${station}駅` : text(p.lineName)],
+        ['路線', station ? text(p.lineName) : null],
+        ['事業者', text(p.operator)],
+        ['種別', text(p.institutionType)],
+        ['区分', text(p.railwayClass)],
+        ['時点', railwayVintage ?? null],
+      ],
+    };
+  }
+
+  /** うちのデータ (と周辺検索の結果) で、その点のいちばん上にあるもの。 */
+  const ownHoverAt = (point: { x: number; y: number }): Hover | null => {
+    const ids = Object.keys(HOVER_LAYERS).filter((id) => map.getLayer(id));
+    const top = map.queryRenderedFeatures([point.x, point.y], { layers: ids })[0];
+    return top ? HOVER_LAYERS[top.layer.id](top.properties) : null;
+  };
+
+  /**
+   * 外部のベクトルタイル (地理院)。描画の層が123あって表に書ききれないので、
+   * その点にある地物から地理院の層のものを探す。**うちのデータが無いときだけ**使う。
+   */
+  const vectorHoverAt = (point: { x: number; y: number }): Hover | null => {
+    if (vectorOverlays.length === 0) return null;
+    for (const feature of map.queryRenderedFeatures([point.x, point.y])) {
+      const overlay = vectorOverlays.find((o) => o.styleLayers.has(feature.layer.id));
+      if (!overlay) continue;
+      const sourceLayer = overlay.styleLayers.get(feature.layer.id)!;
+      const props = feature.properties;
+      const theme = overlay.collection.themes?.find((t) => t.layers.some((l) => l.id === sourceLayer));
+      const layer = theme?.layers.find((l) => l.id === sourceLayer);
+      return {
+        key: `vector|${sourceLayer}|${props.vt_code ?? ''}|${props.vt_text ?? ''}`,
+        rows: [
+          ['', text(props.vt_text) ?? `${theme?.title ?? ''} › ${layer?.title ?? sourceLayer}`],
+          ['層', `${layer?.title ?? sourceLayer} (${sourceLayer})`],
+          // 地物の種別のコード。意味は配布元の「地物種別コード一覧」にある。
+          ['種別コード', text(props.vt_code)],
+          ['出所', `${overlay.collection.group?.title ?? ''} ${overlay.collection.title}`.trim()],
+          ['時点', overlay.collection.vintage ?? null],
+        ],
+      };
+    }
+    return null;
+  };
+
+  let hoveredKey = '';
+  const showHover = (lngLat: { lng: number; lat: number }, hover: Hover) => {
+    hoverPopup.setLngLat(lngLat).addTo(map);
+    if (hover.key === hoveredKey) return;
+    hoveredKey = hover.key;
+    hoverPopup.setDOMContent(hoverContent(hover.rows));
+  };
+  const hideHover = () => {
+    if (!hoveredKey) return;
+    hoveredKey = '';
+    hoverPopup.remove();
+  };
+
+  map.on('mousemove', (e) => {
+    // **判定中はホバーを出さない。** 判定の結果も吹き出しで出すので、
+    // 2つ並ぶとどちらが押した場所のものか分からなくなる。
+    if (picking) return;
+    const own = ownHoverAt(e.point);
+    hoveringFeature = own !== null;
+    updateCursor();
+    const hover = own ?? vectorHoverAt(e.point);
+    if (hover) showHover(e.lngLat, hover);
+    else hideHover();
+  });
+  map.getCanvas().addEventListener('mouseleave', () => {
+    hoveringFeature = false;
+    updateCursor();
+    hideHover();
+  });
+
+  // **押したときも出す** (スマホ)。📍や◎で押した地点は、そちらが先に受け取って
+  // 印を付ける (`preventDefault`)。何も無いところを押したら閉じる。
+  map.on('click', (e) => {
+    if (e.defaultPrevented || picking || nearbyMode) return;
+    const hover = ownHoverAt(e.point) ?? vectorHoverAt(e.point);
+    if (hover) {
+      hoveredKey = '';
+      showHover(e.lngLat, hover);
+    } else {
+      hideHover();
+    }
   });
 
   // 逆ジオコーディング: クリックした地点がどの行政区域かを引き、
