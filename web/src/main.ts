@@ -3970,21 +3970,19 @@ async function main() {
 
   // レイヤー一覧まわり。**データは節を積まずに1データ1行で並べる** —
   // 種別ごとに `<details>` を足していくと、オープンデータが増えるだけ縦に伸びる。
-  const layerListEl = document.querySelector<HTMLDivElement>('#layer-list')!;
   const layerRowsEl = document.querySelector<HTMLDivElement>('#layer-rows')!;
   const layerAbsentEl = document.querySelector<HTMLDivElement>('#layer-absent')!;
   const layerAbsentRowsEl = document.querySelector<HTMLDivElement>('#layer-absent-rows')!;
   /** 「検索できるもの」を開くボタン。裏方が揃ってから出す。中身はダイアログにある。 */
   const layerSupportEl = document.querySelector<HTMLButtonElement>('#layer-support')!;
   const layerSupportRowsEl = document.querySelector<HTMLDivElement>('#layer-support-rows')!;
-  const layerSettingsEl = document.querySelector<HTMLDivElement>('#layer-settings')!;
-  const layerSettingsTitleEl = document.querySelector<HTMLParagraphElement>(
-    '#layer-settings-title',
-  )!;
-  const layerSettingsBodyEl = document.querySelector<HTMLDivElement>('#layer-settings-body')!;
+  /** 絞り込み・色分けを、行の下に開いていないあいだ置いておく所。 */
+  const layerSettingsStoreEl = document.querySelector<HTMLDivElement>('#layer-settings-store')!;
+  /** 「このデータについて」(カタログ・使う条件・取得)。読むものなのでダイアログ。 */
+  const layerDetailDialog = document.querySelector<HTMLDialogElement>('#layer-detail-dialog')!;
+  const layerDetailTitleEl = document.querySelector<HTMLElement>('#layer-detail-title')!;
   const layerCatalogEl = document.querySelector<HTMLDivElement>('#layer-catalog')!;
   const openStac = createStacViewer(document.querySelector<HTMLDialogElement>('#stac-viewer')!);
-  const layerBackButton = document.querySelector<HTMLButtonElement>('#layer-back')!;
   const aircraftSelect = document.querySelector<HTMLSelectElement>('#aircraft-class')!;
   const meshLegendBody = document.querySelector<HTMLTableSectionElement>('#mesh-legend tbody')!;
   const meshSummaryEl = document.querySelector<HTMLParagraphElement>('#mesh-summary')!;
@@ -5330,16 +5328,32 @@ async function main() {
 
   const isLayerVisible = (id: string) => layers.find((l) => l.id === id)?.visible ?? false;
 
-  // 設定はパネルの中身を入れ替えて出す。**取り外さない** — 外すと
+  // 絞り込み・色分けは、閉じているあいだは置き場に置く。**取り外さない** — 外すと
   // 参照は生きていてもDOMから消え、CSSもテストのセレクタも当たらなくなる。
-  for (const layer of layers) {
-    layer.settings.hidden = true;
-    layerSettingsBodyEl.append(layer.settings);
-  }
+  for (const layer of layers) layerSettingsStoreEl.append(layer.settings);
 
-  const showLayerList = () => {
-    layerSettingsEl.hidden = true;
-    layerListEl.hidden = false;
+  /**
+   * 絞り込み・色分けを開いている行。**1つだけ** — 建物 (PLATEAUとOverture) と鉄道
+   * (路線と駅) は設定の要素を共有しているので、2行で同時に開けない。
+   * 一覧は moveend ごとに作り直すが、開いた行は保つ (要素ごと新しい行へ移す)。
+   */
+  let settingsRowId: string | null = null;
+
+  /** 中身のある設定か。送電線・川・地理院のテーマは絞り込みを持たない (⚙ を出さない)。 */
+  const hasSettings = (layer: Layer) => layer.settings.childElementCount > 0;
+
+  const toggleLayerSettings = (layer: Layer) => {
+    settingsRowId = settingsRowId === layer.id ? null : layer.id;
+    // 共有している設定を、開いた行の出所に向ける (建物ならPLATEAUかOvertureか)。
+    if (settingsRowId) layer.onOpen?.();
+    renderLayerList();
+  };
+
+  /** 「このデータについて」を開く。中身は開くたびにカタログから作る。 */
+  const openLayerDetails = (layer: Layer) => {
+    layerDetailTitleEl.textContent = layer.group ? `${layer.group.title} › ${layer.title}` : layer.title;
+    layerCatalogEl.replaceChildren(...layer.collections.map(collectionCard));
+    layerDetailDialog.showModal();
   };
 
   /** 配信しているJSONそのものへのリンク。**カタログが実在することを見せる。** */
@@ -5717,18 +5731,6 @@ async function main() {
     return card;
   };
 
-  const openLayerSettings = (layer: Layer) => {
-    // **要素で比べる。** 建物のPLATEAUとOvertureは同じパネルを共有しているので、
-    // 行で比べると並び順によっては自分のパネルをもう一方の行が隠してしまう。
-    for (const other of layers) other.settings.hidden = other.settings !== layer.settings;
-    layerSettingsTitleEl.textContent = layer.group ? `${layer.group.title} › ${layer.title}` : layer.title;
-    layerCatalogEl.replaceChildren(...layer.collections.map(collectionCard));
-    layer.onOpen?.();
-    layerListEl.hidden = true;
-    layerSettingsEl.hidden = false;
-  };
-
-  layerBackButton.addEventListener('click', showLayerList);
 
   /** 表示範囲と収録範囲が重なるか。**通信しない** (起動時に読んだbboxだけを見る)。 */
   const coversView = (bbox: Bbox | null): boolean => {
@@ -5808,19 +5810,32 @@ async function main() {
       layer.refresh();
     });
 
+    // **ボタンは性格で分ける。** ⚙ = 地図を見ながら動かすもの (絞り込み・色分け) を
+    // この行の下に開く。ⓘ = 読むもの (カタログ・使う条件・取得) をダイアログで開く。
+    // 以前は ⚙ で両方を一覧と入れ替えて出していて、Collection のカードだけで一覧が埋まった。
+    const settingsOpen = settingsRowId === layer.id;
     const settings = document.createElement('button');
     settings.type = 'button';
     settings.className = 'layer-settings-button';
     settings.textContent = '⚙';
-    settings.title = `${layer.title}の設定`;
-    settings.addEventListener('click', () => openLayerSettings(layer));
+    settings.title = settingsOpen ? '絞り込みを閉じる' : `${layer.title}の絞り込み・色分け`;
+    settings.setAttribute('aria-expanded', String(settingsOpen));
+    settings.hidden = !hasSettings(layer);
+    settings.addEventListener('click', () => toggleLayerSettings(layer));
+
+    const detail = document.createElement('button');
+    detail.type = 'button';
+    detail.className = 'layer-detail-button';
+    detail.textContent = 'ⓘ';
+    detail.title = `${layer.title}について (カタログ・使う条件・取得)`;
+    detail.addEventListener('click', () => openLayerDetails(layer));
 
     // **2段にする。** 名前・状態・出所・ボタンを1行に詰めると、幅の取り合いで
     // 出所が幅0まで潰れた (17.5remのパネルで実際に起きた)。
     // 段が増えても**データ1つにつき1行**なので、増え方は変わらない。
     const head = document.createElement('div');
     head.className = 'layer-head';
-    head.append(toggle, name, zoomIn, settings);
+    head.append(toggle, name, zoomIn, settings, detail);
 
     const sub = document.createElement('div');
     sub.className = 'layer-sub';
@@ -5828,6 +5843,14 @@ async function main() {
 
     row.append(head, sub);
     if (parts) appendParts(row, head, status, layer, parts, matches);
+    if (settingsOpen && hasSettings(layer)) {
+      // 共有の要素を**この行へ移す** (作り直した行にも同じ要素が付いて回る)。
+      const slot = document.createElement('div');
+      slot.className = 'layer-settings-slot';
+      layer.settings.hidden = false;
+      slot.append(layer.settings);
+      row.append(slot);
+    }
     return row;
   };
 
@@ -6054,6 +6077,9 @@ async function main() {
   const isPresent = (layer: Layer) => coversView(layer.bbox) && (presence.get(layer.id) ?? true);
 
   function renderLayerList() {
+    // 設定はいったん置き場へ戻す。開いている行があれば、作るときにまたそこへ移す
+    // (戻さないと、閉じたときに作り直す前の行と一緒にDOMから外れたままになる)。
+    for (const layer of layers) layerSettingsStoreEl.append(layer.settings);
     const matches = layerMatcher();
     const rows = matches ? layers.filter((layer) => matches(layerHaystack(layer))) : layers;
     const present = rows.filter(isPresent);

@@ -107,16 +107,12 @@
               </div>
             </div>
           </div>
-          <div id="layer-settings" hidden>
-            <button id="layer-back" type="button">← 一覧へ</button>
-            <p id="layer-settings-title"></p>
-            <!-- この行がカタログのどこから来ているか (Collection・ファイル数・JSON)。
-                 開くたびに作り直す。設定より上に置くのは、何を設定しているのかが先に要るため。 -->
-            <div id="layer-catalog"></div>
-            <div id="layer-settings-body"></div>
-          </div>
+          <!-- 絞り込み・色分けの置き場。**一覧の行の ⚙ を押すと、その行の下へ移す**
+               (地図を見ながら動かすものなので、地図を覆うダイアログには入れない)。
+               閉じているあいだはここで隠しておく。 -->
+          <div id="layer-settings-store" hidden></div>
         </div>
-        <!-- 建物の設定。レイヤー一覧から開かれたときに #layer-settings-body へ移す。 -->
+        <!-- 建物の設定。一覧の行の ⚙ で、その行の下へ移す。 -->
         <div id="buildings-section" hidden>
           <!-- 出所 (PLATEAU / Overture) の選択欄はもう無い。一覧で出所ごとに
                行が分かれ、どちらの ⚙ から開いたかでこのパネルの向き先が決まる。
@@ -289,6 +285,17 @@
       </div>
     </dialog>
     <!-- 何で検索できるか。**出典とは別物** (出典は表示義務、こちらは「何を打てば当たるか」の案内)。 -->
+    <!-- 一覧の行の ⓘ で開く「このデータについて」。**読むもの** (カタログ・使う条件・取得) なので
+         ダイアログにする。一覧の幅に詰めると、Collection 2枚で一覧が埋まり地図の左を覆った。 -->
+    <dialog id="layer-detail-dialog" class="info-dialog">
+      <div class="info-dialog-body">
+        <div class="info-dialog-head">
+          <strong id="layer-detail-title"></strong>
+          <button type="button" class="info-dialog-close" title="閉じる">×</button>
+        </div>
+        <div id="layer-catalog"></div>
+      </div>
+    </dialog>
     <dialog id="search-dialog" class="info-dialog">
       <div class="info-dialog-body">
         <div class="info-dialog-head">

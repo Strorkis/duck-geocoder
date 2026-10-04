@@ -852,29 +852,46 @@ body,
   color: #999;
 }
 
-/* 設定は一覧と**入れ替える**。重ねて出すと結局縦に伸びる。 */
-#layer-list[hidden],
-#layer-settings[hidden] {
-  display: none;
-}
-
-#layer-back {
-  border: none;
-  background: transparent;
-  padding: 0;
-  margin-bottom: 0.3rem;
-  color: #14508c;
-  cursor: pointer;
+/* 絞り込み・色分け。**⚙ を押した行の下に開く** (地図を見ながら動かすので、地図を覆わない)。
+   行の字下げに合わせ、左の線で「この行の設定」と分かるようにする。 */
+.layer-settings-slot {
+  margin: 0.3rem 0 0.2rem 1.3rem;
+  padding: 0.3rem 0 0.3rem 0.6rem;
+  border-left: 2px solid #cde2fb;
   font-size: 0.8rem;
 }
 
-#layer-settings-title {
-  margin: 0 0 0.4rem;
-  font-weight: 600;
+#layer-settings-store[hidden],
+.layer-settings-slot > [hidden] {
+  display: none;
 }
 
-#layer-settings-body > div[hidden] {
+/* 件数の要約は**行の2段目に同じものが出ている**ので、行の下に開いたときは重ねて出さない。 */
+.layer-settings-slot #building-count,
+.layer-settings-slot #mesh-summary,
+.layer-settings-slot #road-summary {
   display: none;
+}
+
+/* 開いている設定の ⚙。押せば閉じることが分かるようにする。 */
+.layer-settings-button[aria-expanded='true'] {
+  color: #14508c;
+}
+
+/* 「このデータについて」を開く。⚙ と同じ控えめなボタン。 */
+.layer-detail-button {
+  flex: none;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0.1rem 0.2rem;
+  color: #666;
+}
+
+.layer-detail-button:hover {
+  color: #14508c;
 }
 
 /* サブカタログの見出し (PLATEAU / Overture Maps …)。**一覧の構造はカタログの階層。**
@@ -1071,7 +1088,7 @@ body,
   color: #888;
 }
 
-/* 設定の上に出す「この行はカタログのどこから来ているか」。 */
+/* 「このデータについて」のダイアログの中身 (この行はカタログのどこから来ているか)。 */
 #layer-catalog:empty {
   display: none;
 }

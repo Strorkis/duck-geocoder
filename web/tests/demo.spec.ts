@@ -199,24 +199,42 @@ async function revealLayer(page: Page, layer: string) {
   await expect(row).toBeVisible();
 }
 
+/**
+ * 行の ⚙ で、絞り込み・色分けを**その行の下に**開く (地図を覆わない)。
+ * 開いていればそのまま。
+ */
 async function openLayerSettings(page: Page, layer: string) {
+  await closeLayerDetails(page);
   await revealLayer(page, layer);
-  await page.locator(`[data-layer="${layer}"] .layer-settings-button`).click();
-  await expect(page.locator('#layer-settings')).toBeVisible();
-  await expect(page.locator('#layer-list')).toBeHidden();
+  const button = page.locator(`[data-layer="${layer}"] .layer-settings-button`);
+  if ((await button.getAttribute('aria-expanded')) !== 'true') await button.click();
+  await expect(page.locator(`[data-layer="${layer}"] .layer-settings-slot`)).toBeVisible();
+}
+
+/** 行の ⓘ で「このデータについて」(カタログ・使う条件・取得) をダイアログで開く。 */
+async function openLayerDetails(page: Page, layer: string) {
+  await closeLayerDetails(page);
+  await revealLayer(page, layer);
+  await page.locator(`[data-layer="${layer}"] .layer-detail-button`).click();
+  await expect(page.locator('#layer-detail-dialog')).toBeVisible();
+}
+
+/** 「このデータについて」を開いていれば閉じる (開いたままだと一覧を押せない)。 */
+async function closeLayerDetails(page: Page) {
+  const dialog = page.locator('#layer-detail-dialog');
+  if (!(await dialog.isVisible())) return;
+  await dialog.locator('.info-dialog-close').click();
+  await expect(dialog).toBeHidden();
 }
 
 /**
  * レイヤーの表示/非表示を切り替える。
  *
- * **チェックボックスは一覧にある。** 設定を開いていると一覧は隠れているので、
- * 先に戻る。テスト側で開閉の順番を気にしなくて済むようにするため。
+ * **チェックボックスは一覧にある。** 「このデータについて」を開いていると押せないので、
+ * 先に閉じる。テスト側で開閉の順番を気にしなくて済むようにするため。
  */
 async function setLayerVisible(page: Page, layer: string, visible: boolean) {
-  if (await page.locator('#layer-settings').isVisible()) {
-    await page.locator('#layer-back').click();
-    await expect(page.locator('#layer-list')).toBeVisible();
-  }
+  await closeLayerDetails(page);
   await revealLayer(page, layer);
   const toggle = page.locator(`#layer-toggle-${layer}`);
   if (visible) await toggle.check();
@@ -673,7 +691,7 @@ test('使うときの条件が一覧表とバッジで出る', async ({ page }) 
     await page.request.get(await resolveDataUrl(page, 'plateau/plateau-buildings.json'))
   ).json()) as { 'duck:terms': { commercial: string; share_alike: boolean } };
   expect(collection['duck:terms'].commercial).toBe('allowed');
-  await openLayerSettings(page, LAYER.plateauBuildings);
+  await openLayerDetails(page, LAYER.plateauBuildings);
   const card = page.locator(`.collection-card[data-collection="${LAYER.plateauBuildings}"]`);
   await expect(card.locator('.terms-badge', { hasText: '商用可' })).toBeVisible();
   await expect(card.locator('.terms-badge', { hasText: '継承あり' })).toHaveCount(0);
@@ -716,8 +734,9 @@ test('できることは開かなくても分かる', async ({ page }) => {
   for (const id of ['help-dialog', 'search-dialog', 'credits-dialog', 'tech-dialog']) {
     await expect(page.locator(`#${id}`)).toBeHidden();
   }
-  // レイヤーの設定も既定では出さない (一覧が先)。
-  await expect(page.locator('#layer-settings')).toBeHidden();
+  // レイヤーの絞り込みも「このデータについて」も既定では出さない (一覧が先)。
+  await expect(page.locator('.layer-settings-slot')).toHaveCount(0);
+  await expect(page.locator('#layer-detail-dialog')).toBeHidden();
 });
 
 /**
@@ -1320,9 +1339,10 @@ test('絞り込みは列の有無で決まる', async ({ page }) => {
 
   await expect(page.locator(`[data-layer="${LAYER.plateauBuildings}"]`)).toBeVisible();
   await openLayerSettings(page, LAYER.plateauBuildings);
-  // **どの出所の設定かは見出しで分かる。** パネルは出所の間で共有している。
-  await expect(page.locator('#layer-settings-title')).toContainText('PLATEAU');
-  await expect(page.locator('#building-filters')).toBeVisible();
+  // **どの出所の設定かは、開いた行で分かる。** 設定の要素は出所の間で共有している。
+  await expect(
+    page.locator(`[data-layer="${LAYER.plateauBuildings}"] .layer-settings-slot #building-filters`),
+  ).toBeVisible();
   await expect(page.locator('#height-field')).toBeVisible();
 
   // 用途の選択肢はコードに書かず、カタログの語彙 (summaries) から作っている。
@@ -1331,8 +1351,9 @@ test('絞り込みは列の有無で決まる', async ({ page }) => {
 
   // Overtureも高さの列を持つので、高さでは絞れる。
   await useOvertureBuildings(page);
-  await expect(page.locator('#layer-settings-title')).toContainText('Overture');
-  await expect(page.locator('#height-field')).toBeVisible();
+  await expect(
+    page.locator(`[data-layer="${LAYER.overtureBuildings}"] .layer-settings-slot #height-field`),
+  ).toBeVisible();
 });
 
 // 1つの用途だけ見たいときに、残り13個を手で外させない。
@@ -1947,10 +1968,12 @@ test('一覧はカタログの階層で並ぶ', async ({ page }) => {
  * 絞り込みだけだと、行の裏にあるのがどのCollectionで、何ファイルあって、
  * 元のJSONはどこかが画面から辿れない。
  */
-test('設定を開くとCollectionの中身とJSONへのリンクが出る', async ({ page }) => {
+test('ⓘ を開くとCollectionの中身とJSONへのリンクが出る', async ({ page }) => {
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
 
-  await openLayerSettings(page, LAYER.plateauBuildings);
+  await openLayerDetails(page, LAYER.plateauBuildings);
+  // どの行のことかは、ダイアログの見出しで分かる。
+  await expect(page.locator('#layer-detail-title')).toContainText('PLATEAU');
   const card = page.locator(`.collection-card[data-collection="${LAYER.plateauBuildings}"]`);
   await expect(card).toBeVisible();
   await expect(card).toContainText(LAYER.plateauBuildings);
@@ -1980,7 +2003,7 @@ test('STACの文書はページの中で開いて、リンクを辿れる', asyn
   const follow = (rel: string) =>
     page.locator('#stac-links dt', { hasText: new RegExp(`^${rel}$`) }).locator('+ dd button').first().click();
 
-  await openLayerSettings(page, LAYER.plateauBuildings);
+  await openLayerDetails(page, LAYER.plateauBuildings);
   await page
     .locator(`.collection-card[data-collection="${LAYER.plateauBuildings}"] .collection-head .json-link`)
     .click();
@@ -2027,10 +2050,11 @@ test('設定を開いてもパネルは画面に収まる', async ({ page }) => 
   const opened = (await panel.boundingBox())!.height;
   expect(opened, `設定がはみ出している: ${opened}px / 画面 ${viewport}px`).toBeLessThan(viewport);
 
-  // 一覧に戻れること。戻れないと他のレイヤーを触れなくなる。
-  await page.locator('#layer-back').click();
-  await expect(page.locator('#layer-list')).toBeVisible();
-  await expect(page.locator('#layer-settings')).toBeHidden();
+  // 開いても**一覧はそのまま**触れる (他の行のチェックボックスが見える)。
+  await expect(page.locator(`#layer-toggle-${LAYER.plateauBuildings}`)).toBeVisible();
+  // もう一度 ⚙ で閉じる。
+  await page.locator(`[data-layer="${LAYER.plateauBuildings}"] .layer-settings-button`).click();
+  await expect(page.locator('.layer-settings-slot')).toHaveCount(0);
 });
 
 /**
@@ -2117,7 +2141,6 @@ test('出ない理由が一覧に出て、寄る先が数字で分かる', async
 
   // 整備範囲を持たない出所 (Overture) では今も出ない。**そのときは理由を言う。**
   await useOvertureBuildings(page);
-  await page.locator('#layer-back').click();
   await expect(status(LAYER.overtureBuildings)).toContainText('ズーム');
   await expect(status(LAYER.overtureBuildings)).toContainText('まで寄ると出ます');
 });
@@ -2934,7 +2957,8 @@ test('周辺検索: 建物を起点にできる', async ({ page }) => {
 test('周辺検索: 線 (鉄道) を起点にすると同じ名前の区間をまとめる', async ({ page }) => {
   test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
   await showRailway(page, 14);
-  await page.locator('#layer-back').click();
+  // 絞り込みを開いていると一覧が伸びて地図を覆うので、閉じておく。
+  await page.locator(`[data-layer="${LAYER.railway}"] .layer-settings-button[aria-expanded="true"]`).click();
   const point = await page.evaluate(() => {
     const map = (window as unknown as TestWindow).__map!;
     const canvas = map.getCanvas();
@@ -2978,9 +3002,9 @@ test('周辺検索: 検索で選んだものを起点にできる', async ({ pag
   await expect(page.locator('#nearby-results dt', { hasText: '駅' })).toBeVisible({ timeout: 60_000 });
 });
 
-/** ⚙ を開き、Collection カードの「この範囲を取得」を開く。 */
+/** ⓘ を開き、Collection カードの「この範囲を取得」を開く。 */
 async function openDownloads(page: Page, layer: string, collectionId: string) {
-  await openLayerSettings(page, layer);
+  await openLayerDetails(page, layer);
   const section = page.locator(`.collection-card[data-collection="${collectionId}"] .download-section`);
   await section.locator('summary').click();
   await expect(section).toContainText('ファイルごと', { timeout: 30_000 });
