@@ -331,7 +331,7 @@
       </div>
       <div class="card kpi">
         <div class="label">公開待ちのコミット</div>
-        <div class="value">9 <small>件</small></div>
+        <div class="value">13 <small>件</small></div>
         <span class="status you">R2へのアップロード → push 待ち</span>
       </div>
       <div class="card kpi">
@@ -341,8 +341,10 @@
       </div>
       <div class="card kpi">
         <div class="label">カタログ</div>
-        <div class="value">6 <small>出所 · 16 Collection</small></div>
-        <div class="sub">GeoParquet 761 ファイル + 外部の PMTiles 1 (地理院、複製しない)</div>
+        <div class="value">7 <small>出所 · 21 Collection</small></div>
+        <div class="sub">
+          GeoParquet 761 ファイル + 外部 6 (地理院の地図タイル4・ベクトルタイル1、Mapterhorn の標高1。複製しない)
+        </div>
       </div>
     </section>
 
@@ -353,13 +355,13 @@
         <li>
           <b>実装</b><span class="status done">済み</span>
           <span class="sub">
-            間引き・周辺検索・使う条件・Overture全国・取得・地理院 (データだけで描く)・
-            一覧の開け閉め・使い方のダイアログ・白地図
+            間引き・周辺検索 (結果だけを目立たせる)・使う条件・Overture全国・取得・
+            地理院 (データだけで描く)・一覧の開け閉め・背景地図と地形をレイヤーに・ⓘ と ⚙ の分離
           </span>
         </li>
         <li>
           <b>テスト</b><span class="status done">済み</span>
-          <span class="sub">E2E 108件 (開発サーバー・本番ビルドとも)、パイプライン 187件</span>
+          <span class="sub">E2E 110件 (開発サーバー・本番ビルドとも)、パイプライン 188件</span>
         </li>
         <li class="current">
           <b>R2へアップロード</b><span class="status you">あなたの番</span>
@@ -402,7 +404,8 @@
             <tr><td>国勢調査</td><td class="num">48</td><td class="num">0.08 GB</td><td>JSON だけ</td></tr>
             <tr><td>位置参照情報</td><td class="num">4</td><td class="num">0.02 GB</td><td>JSON だけ</td></tr>
             <tr><td>国土数値情報</td><td class="num">2</td><td class="num">0.01 GB</td><td>JSON だけ</td></tr>
-            <tr><td>国土地理院</td><td class="num">0</td><td class="num">—</td><td>JSON 2つ (新規。タイルは地理院が配信)</td></tr>
+            <tr><td>国土地理院</td><td class="num">0</td><td class="num">—</td><td>JSON 6つ (新規。タイルは地理院が配信)</td></tr>
+            <tr><td>Mapterhorn</td><td class="num">0</td><td class="num">—</td><td>JSON 2つ (新規。標高は Mapterhorn が配信)</td></tr>
           </tbody>
         </table>
         <p class="sub">
@@ -471,6 +474,14 @@
               <td><code>vectorLayerSpecs</code> · <code>createVectorOverlay</code></td>
               <td>地理院のタイルを<b>データだけ</b>読み、形の種類から描く。入り切りはズームで戻さない</td>
             </tr>
+            <tr>
+              <td><code>baseStyle</code> · <code>raiseBasemap</code></td>
+              <td>背景地図と地形を<b>カタログから組む</b>。後から入れた背景地図を上へ。地形は起動に握らせない (読み込み後に有効化)</td>
+            </tr>
+            <tr>
+              <td><code>setNearbyFocus</code></td>
+              <td>周辺検索で、ほかの層の不透明度を元の値を覚えて下げ、閉じたら戻す</td>
+            </tr>
             <tr class="group"><th colspan="2">判断の記録 (docs)</th></tr>
             <tr>
               <td><a href="duckdb-wasm-range-requests.md">duckdb-wasm-range-requests.md</a></td>
@@ -495,12 +506,12 @@
         <h2>次にやること</h2>
         <ol class="tasks">
           <li>
-            <b>周辺検索の見直し</b>
-            <span class="sub">触ってみての指摘を待っている</span>
+            <b>周辺検索の見直し (続き)</b>
+            <span class="sub">起点の強調と「結果だけを目立たせる」は入れた。触ってみての指摘を待っている</span>
           </li>
           <li>
-            <b>背景地図もレイヤーにする</b>
-            <span class="sub">QGIS と同じく重ね・不透明度・順番を持つ形に。背景の文字と地理院の注記が二重に出る件もここで解ける</span>
+            <b>一覧の長さ</b>
+            <span class="sub">国土地理院の見出しの下が13行 (地図4 + テーマ9)。開くと長いので、さらに束ねるか様子を見る</span>
           </li>
           <li>
             <b>描き方 (スタイル) の置き場所</b>
