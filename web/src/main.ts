@@ -1,15 +1,6 @@
 import './style.css';
 import type * as duckdb from '@duckdb/duckdb-wasm';
-import {
-  MapLibreMap,
-  GeoJSONSource,
-  Popup,
-  AttributionControl,
-  NavigationControl,
-  TerrainControl,
-  setWorkerUrl,
-  type ExpressionSpecification,
-} from 'maplibre-gl';
+import { MapLibreMap, GeoJSONSource, Popup, setWorkerUrl } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 // 地図タイル (背景地図・地形・外部のベクタータイル) を載せる部品は lib/tiles.ts。
 import {
@@ -17,7 +8,6 @@ import {
   DEM_VERTICAL_LABELS,
   GEOMETRY_LABELS,
   TERRAIN_SOURCE,
-  baseStyle,
   basemapLayerId,
   createVectorOverlay,
   defaultOf,
@@ -28,34 +18,19 @@ import {
 import {
   COARSE_LOD,
   EXACT_LOD,
-  LINE_KINDS,
   bboxOverlaps,
-  geometryBbox,
   lodForZoom,
   lodNote,
   meshSourceFor,
   sourceLodNote,
   unionBbox,
   type BuildingSource,
-  type LineKind,
   type LineSource,
   type MeshSource,
   type RailwaySource,
   type RoadSource,
   type ViewBounds,
 } from './lib/sources';
-// 周辺検索の問い合わせは lib/nearby.ts。
-import {
-  NEARBY_DRAW_LIMIT,
-  fetchNearbyBuildings,
-  fetchNearbyNames,
-  fetchNearbyPopulation,
-  fromMeters,
-  nearbyFrame,
-  type NearbyBuildings,
-  type NearbyFrame,
-  type NearbyOrigin,
-} from './lib/nearby';
 // DuckDB-WASM の初期化とデータの出所の組み立ては lib/duckdb.ts、
 // 表示範囲の問い合わせは lib/queries.ts、検索は lib/search.ts、地域メッシュは lib/mesh.ts。
 import { initDuckDb } from './lib/duckdb';
@@ -87,19 +62,26 @@ import {
 } from './lib/search';
 import { MESH_SIZE_LABELS, meshBounds, meshCodesInView, meshDigits } from './lib/mesh';
 import { CITYGML_TYPES, fetchCityGmlFiles, packCityGml, type CityGmlFile } from './lib/plateau-api';
-// 画面の部品は ui/。左下の一覧 (使うものだけを置く) と、カタログから足すダイアログは layer-list.ts。
-import { LAYER_ANCHORS, createLayerList, type Layer, type LayerList } from './ui/layer-list';
+import { DETAIL_LEVELS, loadDetailLevel, saveDetailLevel, type DetailLevel, type DetailSettings } from './lib/detail';
+import { AIRCRAFT_CLASSES, IGRC_BANDS, igrcBand } from './lib/igrc';
+// 画面の部品は ui/。地図の初期化と描き方は map.ts、左下の一覧とカタログのダイアログは layer-list.ts。
 import {
-  buildDataCredits,
-  collapseAttribution,
-  externalLink,
-  renderCredits,
-  renderTechCredits,
-  renderTermsSummary,
-  termsBadges,
-  watchAttributionHeight,
-} from './ui/credits';
+  BUILDING_COLOR_BY_HEIGHT,
+  BUILDING_COLOR_BY_TIER,
+  EMPTY_FEATURE_COLLECTION,
+  LINE_CLASS_LABELS,
+  RAILWAY_COLORS,
+  RAILWAY_FALLBACK_COLOR,
+  ROAD_STYLES,
+  initMap,
+} from './ui/map';
+import { LAYER_ANCHORS, createLayerList, type Layer, type LayerList } from './ui/layer-list';
+import { externalLink, renderCredits, renderTechCredits, renderTermsSummary, termsBadges } from './ui/credits';
 import { createStacViewer } from './ui/stac-viewer';
+import { formatBytes, saveBytes } from './ui/download';
+import { createHover } from './ui/hover';
+// 周辺検索のパネルは ui/nearby-panel.ts (問い合わせは lib/nearby.ts)。
+import { createNearbyPanel } from './ui/nearby-panel';
 // MapLibreは既定では new URL(`./${名前}`, import.meta.url) でワーカーを探すが、
 // 名前が変数なのでバンドラが静的に検出できず、ビルド成果物に出力されない。
 // 結果、本番だけGeoJSONソースが一切描画されなくなる (地図タイルもポップアップも
@@ -130,663 +112,14 @@ interface TestHooks {
 // (データが無くて初期化できないこと自体が、判定したい状態のひとつなので)。
 (window as unknown as TestHooks).__dataUrl = dataUrl;
 
-/** 線の見せ方。川は水色の実線、送電線は紫の破線 (道路・鉄道と見分けるため)。 */
-const LINE_STYLES: Record<LineKind, { color: string; width: number; dash: number[] | null }> = {
-  power_line: { color: '#7b4fa0', width: 1.6, dash: [2, 1.5] },
-  waterway: { color: '#3a8fd6', width: 1.8, dash: null },
-};
-
-/** 線の種別 (`class`) の呼び名。Overture の値はOSM由来の英語なので言い直す。 */
-const LINE_CLASS_LABELS: Record<string, string> = {
-  power_line: '送電線',
-  cable: '地中・海底線',
-  river: '川',
-  canal: '運河',
-};
-
-/**
- * 道路の等級ごとの色と呼び名。**語彙はカタログから来る**ので、ここには
- * 見せ方だけを持つ (鉄道の事業者種別と同じ)。
- *
- * Overtureの `class` はOSM由来で、日本の制度とは1対1で対応しない。
- * 「おおよそ」と分かる書き方にしてある。
- */
-const ROAD_STYLES: Record<string, { label: string; color: string; width: number }> = {
-  motorway: { label: '高速道路', color: '#2f7d32', width: 3 },
-  trunk: { label: '国道', color: '#c2410c', width: 2.4 },
-  primary: { label: '都道府県道', color: '#8a6d3b', width: 1.8 },
-};
-
-/**
- * 事業者種別ごとの色。**語彙はカタログから来る**ので、ここには色だけを持つ。
- *
- * 種別を選んだのは、5つしかなくて凡例に収まり、かつ
- * 「新幹線か在来線か」「公営か民営か」という運航側が気にする区別に近いため。
- * 鉄道区分 (普通鉄道/軌道/モノレールなど11種) は細かすぎて色では読めない。
- */
-const RAILWAY_COLORS: Record<string, string> = {
-  JRの新幹線: '#c2185b',
-  JR在来線: '#1565c0',
-  公営鉄道: '#2e7d32',
-  民営鉄道: '#ef6c00',
-  第三セクター: '#6a1b9a',
-};
-
-/** 語彙に無い種別が来たときの色。カタログが増えても消えないようにする。 */
-const RAILWAY_FALLBACK_COLOR = '#616161';
-
-/**
- * 表示量。**上限とズームの閾値だけを動かす** — 何をどう読むかは変えない。
- *
- * どこまで描けるかは端末で違うので、利用者が決められるようにする。
- * 数字を直接触らせず3段にしているのは、上限を3000にするか4000にするかを
- * 決める材料が利用者の側に無いため。**上限に当たったことは各レイヤーが
- * 「表示上限」と断る**ので、そこを見て段を上げればよい。
- */
-type DetailLevel = 'low' | 'medium' | 'high';
-
-interface DetailSettings {
-  /** 建物が原寸に切り替わるズーム。これより引くと整備範囲を出す。 */
-  buildingsMinZoom: number;
-  buildingsLimit: number;
-  railwayLimit: number;
-  roadLimit: number;
-  /**
-   * 道路の等級ごとの最小ズームから**引く**値。大きいほど引いた表示で
-   * 多くの等級が出る。高速は元が0なので動かない。
-   */
-  roadClassZoomShift: number;
-}
-
-/**
- * **標準は従来の値と完全に一致させる。** 転送量や件数を測っている
- * E2Eの基準がこれで決まっているため、既定を動かすとそちらも動く。
- *
- * 多めは建物を1ズーム早く、道路の等級を2ズーム早く、鉄道と道路の上限を2倍。
- * 控えめはその逆。**建物のズームを1より大きく動かさない** —
- * 14で原寸の1画面は15の4倍の面積で、ズーム13の東京駅は21万棟 (実測) ある。
- *
- * **多めの建物の上限は4万。** ズーム14の東京駅は1280×720の画面で3.7万棟あり、
- * 6,000では中心の2割弱しか出なかった。上限は**転送量を減らさない** —
- * 中心から近い順に並べてから切るので、並べるために画面内を全部読む
- * (実測: 上限6,000でも6万でも37.5MB)。6万で37,178棟を描いても5.6秒で、
- * 6,000件のとき (7.0秒) と変わらなかった。1920×1080だと11.9万棟あるが、
- * そこまで描くのは測っていないので上げない。
- */
-const DETAIL_LEVELS: Record<DetailLevel, DetailSettings & { label: string }> = {
-  low: {
-    label: '控えめ',
-    buildingsMinZoom: 16,
-    buildingsLimit: 1500,
-    railwayLimit: 2000,
-    roadLimit: 3000,
-    roadClassZoomShift: -2,
-  },
-  medium: {
-    label: '標準',
-    buildingsMinZoom: 15,
-    buildingsLimit: 3000,
-    railwayLimit: 4000,
-    roadLimit: 6000,
-    roadClassZoomShift: 0,
-  },
-  high: {
-    label: '多め',
-    buildingsMinZoom: 14,
-    buildingsLimit: 40000,
-    railwayLimit: 8000,
-    roadLimit: 12000,
-    roadClassZoomShift: 2,
-  },
-};
-
-const DETAIL_STORAGE_KEY = 'duck-geocoder:detail';
-
-/** 保存されている段。無い・読めない・知らない値なら標準。 */
-function loadDetailLevel(): DetailLevel {
-  try {
-    const saved = localStorage.getItem(DETAIL_STORAGE_KEY);
-    if (saved && saved in DETAIL_LEVELS) return saved as DetailLevel;
-  } catch {
-    // プライベートブラウズなどで localStorage が使えないことがある。
-    // 覚えられないだけで表示はできるので、黙って標準にする。
-  }
-  return 'medium';
-}
-
-function saveDetailLevel(level: DetailLevel): void {
-  try {
-    localStorage.setItem(DETAIL_STORAGE_KEY, level);
-  } catch {
-    // 同上。覚えられなくても今の表示には効いている。
-  }
-}
-
-/** 機体の区分。SORA 2.5 の iGRC 表の列。 */
-const AIRCRAFT_CLASSES = [
-  { label: '1m / 25m/s', dimension: '1m' },
-  { label: '3m / 35m/s', dimension: '3m' },
-  { label: '8m / 75m/s', dimension: '8m' },
-  { label: '20m / 120m/s', dimension: '20m' },
-  { label: '40m / 200m/s', dimension: '40m' },
-];
-
-/**
- * SORA 2.5 の iGRC 表 (JARUS JAR_doc_25 Table 2) の、人口密度の行。
- *
- * **色の区切りをこの表に合わせる。** 連続的なグラデーションだと「濃い/薄い」しか
- * 読めないが、判断の区切りで段を切れば、地図がそのまま iGRC を答える。
- *
- * `igrc` は [`AIRCRAFT_CLASSES`] と同じ並び。`null` は**SORAの適用範囲外**。
- *
- * 表の写しなので、**運用に使う前に原文を確認すること。**
- * <http://jarus-rpas.org/wp-content/uploads/2024/06/SORA-v2.5-Main-Body-Release-JAR_doc_25.pdf>
- */
-const IGRC_BANDS: {
-  /** この帯の上限 (人/km²)。未満ならこの帯。 */
-  limit: number;
-  label: string;
-  color: string;
-  igrc: (number | null)[];
-}[] = [
-  { limit: 5, label: '5 未満', color: '#ffffb2', igrc: [2, 3, 4, 5, 6] },
-  { limit: 50, label: '5 〜 50', color: '#fed976', igrc: [3, 4, 5, 6, 7] },
-  { limit: 500, label: '50 〜 500', color: '#feb24c', igrc: [4, 5, 6, 7, 8] },
-  { limit: 5000, label: '500 〜 5,000', color: '#fd8d3c', igrc: [5, 6, 7, 8, 9] },
-  { limit: 50000, label: '5,000 〜 50,000', color: '#f03b20', igrc: [6, 7, 8, 9, 10] },
-  {
-    limit: Number.POSITIVE_INFINITY,
-    label: '50,000 超',
-    color: '#bd0026',
-    igrc: [7, 8, null, null, null],
-  },
-];
-
-/** 人口密度 (人/km²) から iGRC の帯を引く。 */
-function igrcBand(density: number) {
-  return IGRC_BANDS.find((band) => density < band.limit) ?? IGRC_BANDS[IGRC_BANDS.length - 1];
-}
-
-/** バイト列をファイルとして保存させる。 */
-function saveBytes(bytes: Uint8Array, filename: string): void {
-  const blob = new Blob([bytes as BlobPart], { type: 'application/vnd.apache.parquet' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
-}
-
-/** バイト数を読みやすく。 */
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-}
-
-/**
- * 建物の塗り (既定)。**高さで塗り分ける。** 傾けずに見るときも高さが分かるようにするため。
- * 高さを持たないデータ (Overtureはほぼ全件がそう) では既定色のままになる。
- *
- * **出所で色相を分ける。** PLATEAUとOvertureは同時に出せるので、
- * 重なったところでどちらの建物かが見分けられないと困る。
- * カタログで先頭の出所 (`palette` 0) が青、それ以外が橙。
- */
-const BUILDING_COLOR_BY_HEIGHT: ExpressionSpecification = [
-  'match',
-  ['get', 'palette'],
-  0,
-  [
-    'case',
-    ['==', ['get', 'height'], null],
-    '#4a6785',
-    ['interpolate', ['linear'], ['get', 'height'], 0, '#c6d4e4', 20, '#8fabc9', 60, '#4a6785', 150, '#2d3f52'],
-  ],
-  [
-    'case',
-    ['==', ['get', 'height'], null],
-    '#c77d3a',
-    ['interpolate', ['linear'], ['get', 'height'], 0, '#f0cfa8', 20, '#e0a669', 60, '#c77d3a', 150, '#8a4f1c'],
-  ],
-];
-
-/**
- * 建物の塗り (重要度で色分けするとき)。**重要な段ほど目立たせ、住宅・その他は退かせる。**
- *
- * 出所の色相 (青・橙) より段を優先する。重要なものを探すときは、どちらの出所かより
- * どの段かが知りたい (出所はホバーで分かる)。段の無い出所 (`tierRank` -1) は
- * 高さの塗りに落とす。
- */
-const BUILDING_COLOR_BY_TIER: ExpressionSpecification = [
-  'match',
-  ['get', 'tierRank'],
-  0,
-  '#c0392b',
-  1,
-  '#e09a3e',
-  2,
-  '#d5d9de',
-  BUILDING_COLOR_BY_HEIGHT,
-];
-
-const EMPTY_FEATURE_COLLECTION: GeoJSON.FeatureCollection = {
-  type: 'FeatureCollection',
-  features: [],
-};
-
-/**
- * 地図を生成し、スタイルのロードとハイライト用レイヤーの追加が終わるまで待つ。
- *
- * 出典表示はカタログから組み立てる。どのデータセットを配信するかはカタログ次第なので、
- * ここに書き並べると実際に使っているものとずれる。表示義務のある出典が抜けるのは
- * ライセンス違反になるため、データ側に追随させる。
- */
-function initMap(collections: Collection[]): Promise<MapLibreMap> {
-  const map = new MapLibreMap({
-    container: 'map',
-    style: baseStyle(collections),
-    center: [139.767, 35.681],
-    zoom: 9,
-    // 既定の出典表示を止め、カタログ由来の出典を足したものに差し替える。
-    attributionControl: false,
-  });
-  // **たたんで出す。** 出所が増えるほど文言が伸びるので、広げたままだと
-  // 地図の下端を何行も占める (人口メッシュを足しただけで1行から2行になり、
-  // 左下のボタンを覆った)。ⓘ を押せば全文が出る。
-  map.addControl(
-    new AttributionControl({ compact: true, customAttribution: buildDataCredits(collections) }),
-  );
-  collapseAttribution(map);
-  watchAttributionHeight(map);
-  // 建物を立体で描くので、傾きを操作する手段を出しておく。
-  // visualizePitch を付けるとコンパスが傾きも表し、クリックで方位と傾きが
-  // 0に戻る。つまり「2Dに戻す」手段が標準で付いてくるので、自前で切り替えUIを持たない。
-  // 左上は検索欄、右下は出典表示があるので右上に置く。
-  map.addControl(new NavigationControl({ visualizePitch: true }), 'top-right');
-  // 地形を切る手段。平野部では起伏が無く、タイルを読むだけになる場面もある。
-  // 一覧の「標高 (地形)」の行と同じもの (どちらで切っても、もう一方が追随する)。
-  // 地図の上ですぐ切れるので残す。地形がカタログに無ければ出さない。
-  const hasTerrain = collections.some((c) => c.kind === 'terrain' && c.tileLink);
-  if (hasTerrain) map.addControl(new TerrainControl({ source: TERRAIN_SOURCE }), 'top-right');
-
-  map.on('error', (e) => console.error('[map] error', e.error ?? e));
-
-  return new Promise((resolve) => {
-    map.on('load', () => {
-      // **重ね順の目印** (描かない)。地図タイルは `anchor/tiles` の直下、データは
-      // `anchor/data` の直下に、一覧の順で積む (ui/layer-list.ts の applyOrder)。
-      // 目印の間に置くので、データは地図タイルより常に上、周辺検索とハイライトより下。
-      const anchor = (id: string) =>
-        map.addLayer({ id, type: 'background', layout: { visibility: 'none' } });
-      anchor(LAYER_ANCHORS.tile);
-
-      // 人口メッシュは一番下に敷く。判断の背景であって、主役ではない。
-      map.addSource('population-mesh', {
-        type: 'geojson',
-        data: EMPTY_FEATURE_COLLECTION,
-      });
-      map.addLayer({
-        id: 'population-mesh-fill',
-        type: 'fill',
-        source: 'population-mesh',
-        paint: {
-          // 色はSORAの iGRC の区切りで段を切る (`IGRC_BANDS`)。
-          // 連続的なグラデーションにすると「濃い/薄い」しか読めない。
-          'fill-color': ['get', 'color'],
-          // 下の地図 (地名や道路) が透けて見える濃さにする。
-          // 判断に使うのは色の段であって、塗りつぶしそのものではない。
-          'fill-opacity': 0.55,
-        },
-      });
-
-      // 道路は人口メッシュの上、鉄道の下。**鉄道より下に敷く**のは、
-      // 交差点で鉄道の方が見えてほしいため (踏切と立体交差の区別は付かないが、
-      // 線路の連続性が切れる方が読みにくい)。
-      // 送電線・川。道路の下に敷く (道路の方が細かく読まれるため)。
-      // 種別ごとに1組。見せ方は `LINE_STYLES` (川は実線、送電線は破線)。
-      for (const kind of LINE_KINDS) {
-        const style = LINE_STYLES[kind];
-        map.addSource(`line-${kind}`, { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
-        map.addLayer({
-          id: `line-${kind}`,
-          type: 'line',
-          source: `line-${kind}`,
-          paint: {
-            'line-color': style.color,
-            'line-width': ['interpolate', ['linear'], ['zoom'], 6, style.width * 0.6, 14, style.width * 1.6],
-            'line-opacity': 0.85,
-            ...(style.dash ? { 'line-dasharray': style.dash } : {}),
-          },
-          layout: { 'line-cap': 'round', 'line-join': 'round' },
-        });
-      }
-
-      map.addSource('road', {
-        type: 'geojson',
-        data: EMPTY_FEATURE_COLLECTION,
-      });
-      map.addLayer({
-        id: 'road-line',
-        type: 'line',
-        source: 'road',
-        // 色と太さは引くときに決めてしまう (`ROAD_STYLES`)。鉄道と同じ作り。
-        paint: {
-          'line-color': ['get', 'color'],
-          'line-width': ['get', 'width'],
-          'line-opacity': 0.9,
-        },
-      });
-
-      // 鉄道は人口メッシュの上、建物の下。メッシュの色が透けて読める濃さにする。
-      map.addSource('railway', {
-        type: 'geojson',
-        data: EMPTY_FEATURE_COLLECTION,
-      });
-      map.addLayer({
-        id: 'railway-line',
-        type: 'line',
-        source: 'railway',
-        // 色は引くときに決めてしまう (`RAILWAY_COLORS`)。人口メッシュと同じく、
-        // スタイル式で分岐を組むより凡例と同じ表から作る方がずれない。
-        paint: {
-          'line-color': ['get', 'color'],
-          // 引いたときに線が潰れないよう、ズームで太さを変える。
-          'line-width': ['interpolate', ['linear'], ['zoom'], 8, 1, 12, 2, 16, 3.5],
-          'line-opacity': 0.9,
-        },
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
-      });
-
-      // 駅も線 (原典がホームの延長を線で持っている) なので、太さと白い縁取りで
-      // 路線と区別する。点に潰すと原典より情報が減る。
-      map.addSource('railway-stations', {
-        type: 'geojson',
-        data: EMPTY_FEATURE_COLLECTION,
-      });
-      map.addLayer({
-        id: 'railway-station-casing',
-        type: 'line',
-        source: 'railway-stations',
-        paint: {
-          'line-color': '#ffffff',
-          'line-width': ['interpolate', ['linear'], ['zoom'], 10, 5, 16, 11],
-        },
-        layout: { 'line-cap': 'round' },
-      });
-      map.addLayer({
-        id: 'railway-station',
-        type: 'line',
-        source: 'railway-stations',
-        paint: {
-          'line-color': ['get', 'color'],
-          'line-width': ['interpolate', ['linear'], ['zoom'], 10, 3, 16, 7],
-        },
-        layout: { 'line-cap': 'round' },
-      });
-
-      // 建物はハイライトより先に追加して、下に敷く。
-      // 出典表示はカタログ由来のものが上の AttributionControl に入っている。
-      map.addSource('buildings', {
-        type: 'geojson',
-        data: EMPTY_FEATURE_COLLECTION,
-      });
-      // 立体 (fill-extrusion) で描く。平面用と2枚持たないのは、傾き0度なら
-      // 真上から見ることになり、平面塗りとほとんど同じに見えるため。
-      // 2Dに戻したいときは NavigationControl のコンパスで傾きを0にする。
-      map.addLayer({
-        id: 'buildings-3d',
-        type: 'fill-extrusion',
-        source: 'buildings',
-        paint: {
-          // 既定は高さで塗る。「重要度で色分けする」を入れると段で塗る
-          // (`BUILDING_COLOR_BY_TIER` に差し替える)。
-          'fill-extrusion-color': BUILDING_COLOR_BY_HEIGHT,
-          // 高さが無い建物にも既定値を与える。0にすると描画されず、
-          // Overtureは高さが1.5%しか入っていないのでほぼ全部消えてしまう。
-          'fill-extrusion-height': ['coalesce', ['get', 'height'], 3],
-          // **地盤標高を入れないこと。** 地形が有効なとき、MapLibreは
-          // get_elevation(重心) を base と height の両方に加算する
-          // (fill_extrusion.vertex.glsl)。base は地形面からの相対値なので、
-          // ここに海抜を入れると二重に足して建物が空へ飛ぶ。
-          'fill-extrusion-base': 0,
-          // 1未満にすると面同士が透けて見える描画崩れが出るので、下地を
-          // わずかに透かす程度に留める。
-          'fill-extrusion-opacity': 0.9,
-        },
-      });
-
-      // 建物の整備範囲。引くと建物そのものは消えるので、どこにデータがあるかを
-      // 1kmのメッシュで示す。偶然その場所へ行かないと機能に気づけない、という状態を避ける。
-      map.addSource('buildings-coverage', {
-        type: 'geojson',
-        data: EMPTY_FEATURE_COLLECTION,
-      });
-      map.addLayer({
-        id: 'buildings-coverage-fill',
-        type: 'fill',
-        source: 'buildings-coverage',
-        paint: {
-          'fill-color': '#4a6785',
-          // **充足率で濃淡を付ける。** 建物の数で濃くすると人口密集部が濃くなる
-          // だけなので使わない。束ねた1kmセルのうち何割にデータがあるかで塗る。
-          //
-          // **低い側を広く取り、底を上げる。** 直線の傾斜にすると、80kmメッシュで
-          // 数セルしか無いところ (6400分の数) が事実上見えなくなる。実測では
-          // 80kmの平均充足率は7.2%しかないので、そこが消えると意味が逆転する。
-          // 「少しはある」と「全く無い」は別物なので、**描かれる限り必ず見える**
-          // 0.12を下限にする。8桁 (1km) では必ず1なので一様に塗られる。
-          'fill-opacity': [
-            'interpolate',
-            ['linear'],
-            ['get', 'ratio'],
-            0,
-            0.12,
-            0.05,
-            0.18,
-            0.25,
-            0.26,
-            1,
-            0.36,
-          ],
-        },
-      });
-      map.addLayer({
-        id: 'buildings-coverage-outline',
-        type: 'line',
-        source: 'buildings-coverage',
-        paint: {
-          'line-color': '#4a6785',
-          'line-width': 1.5,
-          // 縁は薄く。3万セルの縁を濃く引くと網目が潰れて塗りが読めない。
-          'line-opacity': 0.3,
-        },
-      });
-      anchor(LAYER_ANCHORS.data);
-
-      // 周辺検索の範囲 (起点から○m) と、範囲に入った建物。ハイライトの下に敷く。
-      map.addSource('nearby-zone', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
-      map.addLayer({
-        id: 'nearby-zone-fill',
-        type: 'fill',
-        source: 'nearby-zone',
-        // 範囲は**はっきり見える**ように。結果を目立たせるときは周りを薄くするので、
-        // 範囲の縁が「どこまで調べたか」の唯一の手がかりになる。
-        paint: { 'fill-color': '#ff6600', 'fill-opacity': 0.12 },
-      });
-      map.addLayer({
-        id: 'nearby-zone-line',
-        type: 'line',
-        source: 'nearby-zone',
-        paint: { 'line-color': '#ff6600', 'line-width': 3, 'line-dasharray': [4, 1] },
-      });
-      map.addSource('nearby-hits', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
-      map.addLayer({
-        id: 'nearby-hits',
-        // **立体で描く。** 地面に塗るだけだと、立体の建物 (薄くしても) の中に埋もれて
-        // 見えなかった。元の建物より少しだけ高くして、重なった面がちらつかないようにする。
-        type: 'fill-extrusion',
-        source: 'nearby-hits',
-        // 重要度で色分けと同じ色。段の無い出所は橙。
-        paint: {
-          'fill-extrusion-color': [
-            'match',
-            ['get', 'tierRank'],
-            0,
-            '#c0392b',
-            1,
-            '#e09a3e',
-            2,
-            '#8a94a0',
-            '#ff6600',
-          ],
-          'fill-extrusion-height': ['+', ['coalesce', ['get', 'height'], 3], 0.5],
-          'fill-extrusion-base': 0,
-          'fill-extrusion-opacity': 0.95,
-        },
-      });
-      // 範囲に入った線 (駅・鉄道・道路・送電線・川)。種類ごとの色は一覧の線と揃える。
-      map.addSource('nearby-hit-lines', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
-      map.addLayer({
-        id: 'nearby-hit-lines',
-        type: 'line',
-        source: 'nearby-hit-lines',
-        paint: {
-          'line-color': [
-            'match',
-            ['get', 'kind'],
-            '駅',
-            '#8e1b1b',
-            '鉄道',
-            '#444444',
-            '道路',
-            '#d9822b',
-            '送電線',
-            '#d19a00',
-            '川',
-            '#2f6fd1',
-            '#ff6600',
-          ],
-          'line-width': ['match', ['get', 'kind'], '駅', 6, 3],
-          'line-opacity': 0.9,
-        },
-      });
-      // **起点** (押したもの)。結果より上に、太く縁取って描く。何を起点にしたかが一目で分かるように。
-      map.addSource('nearby-origin', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
-      // 起点が建物 (面) なら**青い立体**で。地面に枠を引くと、立体表示では建物の足元に
-      // 線が出るだけで、どの建物かが分かりにくかった。
-      map.addLayer({
-        id: 'nearby-origin-fill',
-        type: 'fill-extrusion',
-        source: 'nearby-origin',
-        filter: ['==', ['geometry-type'], 'Polygon'],
-        paint: {
-          'fill-extrusion-color': '#1f3a93',
-          'fill-extrusion-height': ['+', ['coalesce', ['get', 'height'], 3], 1],
-          'fill-extrusion-base': 0,
-          'fill-extrusion-opacity': 0.95,
-        },
-      });
-      // 線 (鉄道・川など) は白い縁取りの太線で。面には引かない (上の立体で示す)。
-      map.addLayer({
-        id: 'nearby-origin-casing',
-        type: 'line',
-        source: 'nearby-origin',
-        filter: ['!=', ['geometry-type'], 'Polygon'],
-        paint: { 'line-color': '#ffffff', 'line-width': 7, 'line-opacity': 0.9 },
-      });
-      map.addLayer({
-        id: 'nearby-origin-line',
-        type: 'line',
-        source: 'nearby-origin',
-        filter: ['!=', ['geometry-type'], 'Polygon'],
-        paint: { 'line-color': '#1f3a93', 'line-width': 4 },
-      });
-      map.addLayer({
-        id: 'nearby-origin-point',
-        type: 'circle',
-        source: 'nearby-origin',
-        filter: ['==', ['geometry-type'], 'Point'],
-        paint: {
-          'circle-radius': 8,
-          'circle-color': '#1f3a93',
-          'circle-stroke-color': '#ffffff',
-          'circle-stroke-width': 3,
-        },
-      });
-
-      map.addSource('highlight', {
-        type: 'geojson',
-        data: EMPTY_FEATURE_COLLECTION,
-      });
-      map.addLayer({
-        id: 'highlight-fill',
-        type: 'fill',
-        source: 'highlight',
-        // **ポリゴンのときだけ塗る。** ソースは行政区域 (ポリゴン) と
-        // 路線 (線) で使い回していて、MapLibre の fill は**線のジオメトリも
-        // 閉じた輪とみなして塗ってしまう**。東海道線のように品川〜武蔵小杉〜鶴見と
-        // 品川〜川崎〜鶴見が輪を作る路線では、線の内側が丸ごと橙色になる。
-        filter: ['==', ['geometry-type'], 'Polygon'],
-        paint: { 'fill-color': '#ff6600', 'fill-opacity': 0.35 },
-      });
-      map.addLayer({
-        id: 'highlight-casing',
-        type: 'line',
-        source: 'highlight',
-        // **白で縁取ってから橙を載せる。** 路線を選ぶと線そのものがここに入るが、
-        // 鉄道レイヤーを出していると同じような太さの色線が並び、橙だけでは
-        // どれが選んだ路線か分からない。白の縁があると下地の色から浮く。
-        paint: { 'line-color': '#ffffff', 'line-width': 9 },
-      });
-      map.addLayer({
-        id: 'highlight-outline',
-        type: 'line',
-        source: 'highlight',
-        // **破線にする。** 鉄道レイヤーの線と色だけで見分けさせると、
-        // 色の見え方によっては区別がつかない。形が違えば色に頼らずに済む。
-        paint: { 'line-color': '#ff6600', 'line-width': 5, 'line-dasharray': [1.6, 1.1] },
-      });
-
-      // 行政区域データ(N03)は市区町村・行政区までしか持たないため、
-      // 丁目を選んでもポリゴンは区全体になる。どの丁目を選んだかは
-      // 位置参照情報の代表点(ポイント)で示す。
-      map.addSource('selected-point', {
-        type: 'geojson',
-        data: EMPTY_FEATURE_COLLECTION,
-      });
-      map.addLayer({
-        id: 'selected-point-circle',
-        type: 'circle',
-        source: 'selected-point',
-        paint: {
-          'circle-radius': 7,
-          'circle-color': '#d94500',
-          'circle-stroke-color': '#fff',
-          'circle-stroke-width': 2,
-        },
-      });
-      // 地形は最後に有効にする。ここまで来ていれば、以降タイルが取れなくても
-      // 起伏が出ないだけで地図は使える。起動を外部サービスに握らせない。
-      if (hasTerrain) map.setTerrain({ source: TERRAIN_SOURCE, exaggeration: 1 });
-      resolve(map);
-    });
-  });
-}
-
 async function main() {
   const input = document.querySelector<HTMLInputElement>('#search-input')!;
   const resultsEl = document.querySelector<HTMLUListElement>('#results')!;
   const clearButton = document.querySelector<HTMLButtonElement>('#clear-button')!;
   const pickButton = document.querySelector<HTMLButtonElement>('#pick-location')!;
   const nearbyButton = document.querySelector<HTMLButtonElement>('#nearby-button')!;
-  const nearbyPanel = document.querySelector<HTMLDivElement>('#nearby-panel')!;
-  const nearbyDistance = document.querySelector<HTMLSelectElement>('#nearby-distance')!;
-  const nearbyOriginEl = document.querySelector<HTMLParagraphElement>('#nearby-origin')!;
-  const nearbyResultsEl = document.querySelector<HTMLDivElement>('#nearby-results')!;
-  const nearbyFromSearch = document.querySelector<HTMLButtonElement>('#nearby-from-search')!;
+  /** 検索で選んだものを周辺検索の起点として覚える。周辺検索のパネルを作ったら差し替える。 */
+  let rememberSelection: (label: string, geometry: GeoJSON.Geometry) => void = () => {};
   const loadingEl = document.querySelector<HTMLDivElement>('#loading')!;
   const loadingMessageEl = document.querySelector<HTMLParagraphElement>('#loading-message')!;
   const busyEl = document.querySelector<HTMLDivElement>('#busy')!;
@@ -1256,8 +589,10 @@ async function main() {
   const layerStatus = new Map<string, string>();
   const setLayerStatus = (id: string, text: string) => {
     layerStatus.set(id, text);
-    for (const el of document.querySelectorAll(`[data-layer-status="${id}"]`)) {
+    for (const el of document.querySelectorAll<HTMLElement>(`[data-layer-status="${id}"]`)) {
       el.textContent = text;
+      // 一覧では1行で切るので、全文は吹き出しで読めるようにする。
+      el.title = text;
     }
   };
 
@@ -3062,13 +2397,11 @@ async function main() {
   // 待ち受け中は十字、建物の上ではポインタ。どちらも同じ canvas の style を
   // 触るので、条件をここに集めて一箇所から書く。
   let picking = false;
-  /** 周辺検索の待ち受け中。📍と同じく、押してから地図をクリックする。 */
-  let nearbyMode = false;
   /** 吹き出しの出る地物の上にいるか (ポインタの形を変える)。 */
   let hoveringFeature = false;
   const updateCursor = () => {
     map.getCanvas().style.cursor =
-      picking || nearbyMode ? 'crosshair' : hoveringFeature ? 'pointer' : '';
+      picking || nearby.choosing() ? 'crosshair' : hoveringFeature ? 'pointer' : '';
   };
 
   // 📍と◎は**どちらか一方だけ**。両方が待ち受けていると、1回のクリックで
@@ -3076,26 +2409,36 @@ async function main() {
   const setPicking = (on: boolean) => {
     picking = on;
     pickButton.setAttribute('aria-pressed', String(on));
-    if (on && nearbyMode) setNearbyMode(false);
+    if (on && nearby.choosing()) nearby.setChoosing(false);
     updateCursor();
   };
-  const setNearbyMode = (on: boolean) => {
-    nearbyMode = on;
-    nearbyButton.setAttribute('aria-pressed', String(on));
-    if (on && picking) setPicking(false);
-    // **押したらパネルを出して、何をすればいいかを言う。** 検索で選んだものがあれば、
-    // 地図をクリックせずにそれを起点にもできる。
-    if (on) {
-      nearbyPanel.hidden = false;
-      nearbyOriginEl.textContent = '地図の点・線・建物をクリックしてください';
-      nearbyResultsEl.replaceChildren();
-      nearbyFromSearch.hidden = lastSelection === null;
-    }
-    updateCursor();
-  };
-
   pickButton.addEventListener('click', () => setPicking(!picking));
-  nearbyButton.addEventListener('click', () => setNearbyMode(!nearbyMode));
+
+  // ---- 周辺検索 (ui/nearby-panel.ts) ---------------------------------------------
+  //
+  // **吹き出し (下の createHover) より先に作る。** 起点を選ぶクリックは周辺検索の側が
+  // 先に受け取って印を付ける (`preventDefault`) ので、吹き出しは出さない。
+  const nearby = createNearbyPanel({
+    map,
+    conn,
+    collections,
+    sources: {
+      buildings: buildingSources,
+      railways: railwaySources,
+      road: roadSource,
+      lines: lineSources,
+      meshes: meshSources,
+    },
+    busy,
+    ensureSpatial,
+    setSourceData,
+    currentBounds,
+    onChoosingChange: (on) => {
+      if (on && picking) setPicking(false);
+      updateCursor();
+    },
+  });
+  rememberSelection = nearby.remember;
 
   // Escの出口を1本にまとめる。押している最中なら解除が先、そうでなければ
   // 出ている結果を消す。window で拾うのは、判定した直後はフォーカスが地図側にあり、
@@ -3108,747 +2451,33 @@ async function main() {
       setPicking(false);
       return;
     }
-    if (nearbyMode) {
-      setNearbyMode(false);
+    if (nearby.choosing()) {
+      nearby.setChoosing(false);
       return;
     }
     // 周辺検索の結果を出していれば、それを先に閉じる (× を探させない)。
-    if (!nearbyPanel.hidden) {
-      clearNearby();
+    if (nearby.isOpen()) {
+      nearby.clear();
       return;
     }
     clearSearch();
   });
 
-  // ---- 周辺検索 ---------------------------------------------------------------
-  //
-  // 起点は4通り: 検索で選んだもの / 地図上の点 / 地図上の線 / 建物。
-  // 地図上のものは◎を押してからクリックする。何も無いところなら点、
-  // 線や建物の上ならそれを起点にする。
-  let lastSelection: NearbyOrigin | null = null;
-  let currentOrigin: NearbyOrigin | null = null;
-
-  /**
-   * 結果の見せ方。**種類ごとに地図への表示を切り替え** (`hidden`)、**名前を押すとそれだけを
-   * 残して寄る** (`focus`)。「当たった川はどこか」「当たった駅だけ見たい」に答えるため。
-   *
-   * `hidden` の鍵は種類の名前 (「鉄道」「駅」…)、建物全体は「建物」、建物の段は `段:公共施設`。
-   */
-  let nearbyView: { hidden: Set<string>; focus: { kind: string; name: string } | null } = {
-    hidden: new Set(),
-    focus: null,
-  };
-  /** 最後に描いた結果 (名前を押したときに寄る先を探す)。 */
-  let nearbyDrawn: { buildings: GeoJSON.Feature[]; lines: GeoJSON.Feature[] } = { buildings: [], lines: [] };
-
-  const TRUE: ExpressionSpecification = ['==', 1, 1];
-  const FALSE: ExpressionSpecification = ['==', 1, 0];
-
-  /** 見せ方を地図の絞り込み (filter) に写す。 */
-  const applyNearbyView = () => {
-    const { hidden, focus } = nearbyView;
-    const tiers = [...hidden].filter((key) => key.startsWith('段:')).map((key) => key.slice(2));
-    const onlyName = (kind: string): ExpressionSpecification =>
-      focus ? (focus.kind === kind ? ['==', ['get', 'name'], focus.name] : FALSE) : TRUE;
-    if (map.getLayer('nearby-hits')) {
-      map.setFilter('nearby-hits', [
-        'all',
-        hidden.has('建物') ? FALSE : TRUE,
-        ['!', ['in', ['get', 'tier'], ['literal', tiers]]],
-        onlyName('建物'),
-      ]);
-    }
-    if (map.getLayer('nearby-hit-lines')) {
-      map.setFilter('nearby-hit-lines', [
-        'all',
-        ['!', ['in', ['get', 'kind'], ['literal', [...hidden]]]],
-        focus ? ['all', ['==', ['get', 'kind'], focus.kind], ['==', ['get', 'name'], focus.name]] : TRUE,
-      ]);
-    }
-  };
-
-  /** 名前を押したとき: それだけを残し、そこへ寄る。もう一度押すと戻す。 */
-  const focusNearby = (kind: string, name: string) => {
-    const same = nearbyView.focus?.kind === kind && nearbyView.focus.name === name;
-    nearbyView.focus = same ? null : { kind, name };
-    applyNearbyView();
-    if (!same) {
-      const pool = kind === '建物' ? nearbyDrawn.buildings : nearbyDrawn.lines;
-      const matched = pool.filter(
-        (f) => f.properties?.name === name && (kind === '建物' || f.properties?.kind === kind),
-      );
-      const box = unionBbox(matched.map((f) => geometryBbox(f.geometry)));
-      if (box) {
-        map.fitBounds(
-          [
-            [box[0], box[1]],
-            [box[2], box[3]],
-          ],
-          { padding: 80, maxZoom: 17, duration: 600 },
-        );
-      }
-    }
-  };
-  let nearbyToken = 0;
-
-  /** 検索で選んだものを覚えておく。周辺検索のパネルから起点にできる。 */
-  const rememberSelection = (label: string, geometry: GeoJSON.Geometry) => {
-    lastSelection = { label, geometry };
-    nearbyFromSearch.hidden = false;
-  };
-
-  /** 起点に使える地図上のレイヤーと、その呼び名・名前の属性。上ほど優先。 */
-  const ORIGIN_LAYERS: { layer: string; label: string; nameKey: string | null }[] = [
-    { layer: 'buildings-3d', label: '建物', nameKey: null },
-    { layer: 'line-power_line', label: '送電線', nameKey: 'name' },
-    { layer: 'line-waterway', label: '川', nameKey: 'name' },
-    { layer: 'railway-station', label: '駅', nameKey: 'stationName' },
-    { layer: 'railway-line', label: '鉄道', nameKey: 'lineName' },
-    { layer: 'road-line', label: '道路', nameKey: 'roadName' },
-  ];
-
-  /**
-   * クリックした場所の起点を決める。**線は同じ名前の区間をまとめて起点にする**
-   * (川や送電線は区間に切れているので、1区間だけだと「川沿い」にならない)。
-   * 名前は表示中のデータから集めるので、画面に出ている範囲の分になる。
-   */
-  const originAt = async (
-    point: { x: number; y: number },
-    lngLat: { lng: number; lat: number },
-  ): Promise<NearbyOrigin> => {
-    const layers = ORIGIN_LAYERS.filter(({ layer }) => map.getLayer(layer));
-    const hits = map.queryRenderedFeatures([point.x, point.y], {
-      layers: layers.map(({ layer }) => layer),
-    });
-    const hit = hits[0];
-    const spec = hit && layers.find(({ layer }) => layer === hit.layer.id);
-    if (!hit || !spec) {
-      return {
-        label: `地図上の点 (${lngLat.lat.toFixed(5)}, ${lngLat.lng.toFixed(5)})`,
-        geometry: { type: 'Point', coordinates: [lngLat.lng, lngLat.lat] },
-      };
-    }
-    if (spec.nameKey === null) {
-      return {
-        label: `${spec.label} ${(hit.properties.name as string | null) ?? '(名称なし)'}`,
-        geometry: hit.geometry,
-        height: (hit.properties.height as number | null | undefined) ?? null,
-      };
-    }
-    const name = hit.properties[spec.nameKey] as string | null;
-    if (!name) return { label: `${spec.label} (名前なし)`, geometry: hit.geometry };
-    const data = await (map.getSource(hit.source) as GeoJSONSource).getData();
-    const lines: GeoJSON.Position[][] = [];
-    if (data.type === 'FeatureCollection') {
-      for (const feature of data.features) {
-        if (feature.properties?.[spec.nameKey] !== name) continue;
-        const g = feature.geometry;
-        if (g.type === 'LineString') lines.push(g.coordinates);
-        if (g.type === 'MultiLineString') lines.push(...g.coordinates);
-      }
-    }
-    return {
-      label: `${spec.label} ${name}`,
-      geometry: lines.length > 0 ? { type: 'MultiLineString', coordinates: lines } : hit.geometry,
-    };
-  };
-
-  map.on('click', (e) => {
-    if (!nearbyMode) return;
-    // このクリックは起点を選ぶもの。吹き出し (下の click) には渡さない。
-    e.preventDefault();
-    setNearbyMode(false);
-    void originAt(e.point, e.lngLat).then(runNearby);
-  });
-
-  // **結果だけを目立たせる。** 周辺検索の結果を出しているあいだ、うちのデータの層を
-  // 薄くする (消しはしない — 薄く残すと、結果がどこに当たっているかの手がかりになる)。
-  // 背景地図と周辺検索の層 (起点・範囲・結果) はそのまま。
-  const NEARBY_KEEP = /^(basemap\/|nearby-|highlight|selected-point)/;
-  type PaintProperty = Parameters<MapLibreMap['getPaintProperty']>[1];
-  const DIM_PROPERTIES: Record<string, PaintProperty[]> = {
-    fill: ['fill-opacity'],
-    line: ['line-opacity'],
-    circle: ['circle-opacity', 'circle-stroke-opacity'],
-    symbol: ['text-opacity', 'icon-opacity'],
-  };
-  const NEARBY_DIM = 0.12;
-  /** 周辺検索の層。**下から上の順** (範囲 → 当たったもの → 起点)。 */
-  const NEARBY_LAYERS = [
-    'nearby-zone-fill',
-    'nearby-zone-line',
-    'nearby-hits',
-    'nearby-hit-lines',
-    'nearby-origin-fill',
-    'nearby-origin-casing',
-    'nearby-origin-line',
-    'nearby-origin-point',
-  ];
-  /** 薄くした層と、元の値 (戻すため)。元が既定値なら undefined で、戻すと既定に戻る。 */
-  type PaintValue = Parameters<MapLibreMap['setPaintProperty']>[2];
-  const dimmed = new Map<string, [PaintProperty, PaintValue][]>();
-  const nearbyFocusInput = document.querySelector<HTMLInputElement>('#nearby-focus')!;
-
-  /** 隠した立体の層 (戻すため)。 */
-  const hiddenExtrusions = new Set<string>();
-
-  const setNearbyFocus = (on: boolean) => {
-    if (!on) {
-      for (const [id, properties] of dimmed) {
-        if (!map.getLayer(id)) continue;
-        for (const [property, value] of properties) map.setPaintProperty(id, property, value);
-      }
-      dimmed.clear();
-      for (const id of hiddenExtrusions) {
-        if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'visible');
-      }
-      hiddenExtrusions.clear();
-      return;
-    }
-    for (const layer of map.getStyle().layers) {
-      if (NEARBY_KEEP.test(layer.id) || dimmed.has(layer.id) || hiddenExtrusions.has(layer.id)) continue;
-      // **立体は薄くせず隠す。** 当たった建物を同じ場所に立体で重ねるので、薄くした元の
-      // 建物と壁が重なって縞模様にちらついた。薄い立体は手がかりとしても読みにくい。
-      if (layer.type === 'fill-extrusion') {
-        if (layer.layout?.visibility === 'none') continue;
-        hiddenExtrusions.add(layer.id);
-        map.setLayoutProperty(layer.id, 'visibility', 'none');
-        continue;
-      }
-      const properties = DIM_PROPERTIES[layer.type];
-      if (!properties) continue;
-      dimmed.set(
-        layer.id,
-        properties.map((property) => [property, map.getPaintProperty(layer.id, property)]),
-      );
-      for (const property of properties) map.setPaintProperty(layer.id, property, NEARBY_DIM);
-    }
-  };
-
-  nearbyFocusInput.addEventListener('change', () => {
-    setNearbyFocus(nearbyFocusInput.checked && currentOrigin !== null);
-  });
-
-  const clearNearby = () => {
-    if (nearbyMode) setNearbyMode(false);
-    nearbyToken++;
-    currentOrigin = null;
-    nearbyPanel.hidden = true;
-    setNearbyFocus(false);
-    Promise.all(
-      ['nearby-zone', 'nearby-hits', 'nearby-hit-lines', 'nearby-origin'].map((id) =>
-        setSourceData(id, null),
-      ),
-    ).catch((e: unknown) => console.error('[nearby] clear failed', e));
-  };
-
-  /** 周辺を調べて、パネルと地図に出す。 */
-  const runNearby = async (origin: NearbyOrigin) => {
-    // 起点が変わったら、種類ごとの表示の切り替えと絞り込みを戻す
-    // (距離を変えただけなら、選んでいた見せ方を保つ)。
-    if (origin !== currentOrigin) nearbyView = { hidden: new Set(), focus: null };
-    currentOrigin = origin;
-    nearbyPanel.hidden = false;
-    nearbyFromSearch.hidden = lastSelection === null;
-    const distance = Number(nearbyDistance.value);
-    nearbyOriginEl.textContent = `起点: ${origin.label} (${distance} m 以内)`;
-    nearbyResultsEl.textContent = '調べています…';
-    const token = ++nearbyToken;
-    const frame = nearbyFrame(origin, distance, currentBounds());
-    // **押したものをすぐ強調する** (結果を待たずに、何を起点にしたかが分かるように)。
-    void (map.getSource('nearby-origin') as GeoJSONSource | undefined)?.setData({
-      type: 'Feature',
-      properties: { height: origin.height ?? null },
-      geometry: origin.geometry,
-    });
-    // 周辺検索の層を**いちばん上へ**。地図を作るときは早く足すので、あとから足した
-    // 建物 (立体)・鉄道・地理院の層の下に隠れていた。下から 範囲 → 結果 → 起点 の順。
-    for (const id of NEARBY_LAYERS) if (map.getLayer(id)) map.moveLayer(id);
-
-    try {
-      const result = await busy('周辺を調べています…', async () => {
-        await ensureSpatial();
-        const zone = await conn.query(
-          `SELECT ST_AsGeoJSON(${fromMeters(frame, `ST_Buffer(${frame.origin}, ${distance})`)}) AS g;`,
-        );
-        const zoneGeometry = JSON.parse(
-          (zone.toArray()[0].toJSON() as { g: string }).g,
-        ) as GeoJSON.Geometry;
-
-        const buildings: NearbyBuildings[] = [];
-        for (const source of buildingSources) {
-          await source.ensure();
-          const found = await fetchNearbyBuildings(conn, source, frame);
-          if (found) buildings.push(found);
-        }
-        // [種類, 結果, 出所のCollection ID]。出所は当たったものの吹き出しに使う。
-        const names: [string, { names: string[]; total: number; features: GeoJSON.Feature[] }, string][] = [];
-        for (const source of railwaySources) {
-          await source.ensure();
-          const expression =
-            source.kind === 'railway_station'
-              ? `station_name || '駅 (' || line_name || ')'`
-              : `line_name || ' (' || operator || ')'`;
-          names.push([
-            source.kind === 'railway_station' ? '駅' : '鉄道',
-            await fetchNearbyNames(conn, source, frame, expression),
-            source.id,
-          ]);
-        }
-        if (roadSource) {
-          await roadSource.ensure();
-          names.push([
-            '道路',
-            await fetchNearbyNames(
-              conn,
-              roadSource,
-              frame,
-              `coalesce(nullif(array_to_string(route_names, '・'), ''), road_name)`,
-            ),
-            roadSource.id,
-          ]);
-        }
-        for (const source of lineSources) {
-          await source.ensure();
-          names.push([source.title, await fetchNearbyNames(conn, source, frame, 'name'), source.id]);
-        }
-        // 人口は**いちばん細かいメッシュ**で数える (粗いと範囲からはみ出す分が増える)。
-        let population: { population: number; cells: number; label: string } | null = null;
-        for (const source of [...meshSources].sort((a, b) => b.digits - a.digits)) {
-          if (!source.bbox || !bboxOverlaps(source.bbox, frame.bounds)) continue;
-          await source.ensure();
-          const found = await fetchNearbyPopulation(conn, source, frame);
-          if (found && found.cells > 0) {
-            population = { ...found, label: MESH_SIZE_LABELS[source.digits] ?? `${source.digits}桁` };
-            break;
-          }
-        }
-        return { zoneGeometry, buildings, names, population };
-      });
-      if (token !== nearbyToken) return;
-
-      await setSourceData('nearby-zone', result.zoneGeometry);
-      // 建物は1棟ずつ段の色で塗るので、属性ごと FeatureCollection で渡す。
-      nearbyDrawn = {
-        buildings: result.buildings.flatMap((b) => b.features),
-        // 線は種類 (駅・鉄道・道路・送電線・川) で塗り分け、種類ごとに切り替える。
-        lines: result.names.flatMap(([kind, found, origin]) =>
-          found.features.map((feature) => ({
-            ...feature,
-            properties: { ...feature.properties, kind, origin },
-          })),
-        ),
-      };
-      const hitSource = map.getSource('nearby-hits') as GeoJSONSource | undefined;
-      await hitSource?.setData({ type: 'FeatureCollection', features: nearbyDrawn.buildings });
-      const lineHits = map.getSource('nearby-hit-lines') as GeoJSONSource | undefined;
-      await lineHits?.setData({ type: 'FeatureCollection', features: nearbyDrawn.lines });
-      applyNearbyView();
-      setNearbyFocus(nearbyFocusInput.checked);
-      renderNearby(result, frame);
-    } catch (e) {
-      console.error('[nearby] failed', e);
-      if (token === nearbyToken) nearbyResultsEl.textContent = '調べられませんでした';
-    }
-  };
-
-  const renderNearby = (
-    result: {
-      buildings: NearbyBuildings[];
-      names: [string, { names: string[]; total: number }, string][];
-      population: { population: number; cells: number; label: string } | null;
+  // 吹き出し (ホバーと、指で押したとき) は ui/hover.ts。**周辺検索の click より後に作る**
+  // (起点を選んだクリックは、周辺検索の側が先に受け取って印を付ける)。
+  const hover = createHover({
+    map,
+    collections,
+    vectorOverlays,
+    railwayVintage,
+    roadVintage,
+    nearbyDistance: nearby.distance,
+    picking: () => picking,
+    choosingOrigin: nearby.choosing,
+    onHovering: (on) => {
+      hoveringFeature = on;
+      updateCursor();
     },
-    frame: NearbyFrame,
-  ) => {
-    const list = document.createElement('dl');
-    /**
-     * 1種類ぶんの行。見出しに**地図に出すかのチェック** (`key` があるとき)、中身に件数と名前。
-     * 件数は数字を大きく出して、名前は押せる札にする (押すとそれだけを残して寄る)。
-     */
-    const row = (term: string, key: string | null, ...value: (string | Node)[]) => {
-      const dt = document.createElement('dt');
-      if (key) {
-        const label = document.createElement('label');
-        const box = document.createElement('input');
-        box.type = 'checkbox';
-        box.checked = !nearbyView.hidden.has(key);
-        box.dataset.nearbyKind = key;
-        box.title = '地図に出す';
-        box.addEventListener('change', () => {
-          if (box.checked) nearbyView.hidden.delete(key);
-          else nearbyView.hidden.add(key);
-          applyNearbyView();
-        });
-        label.append(box, term);
-        dt.append(label);
-      } else {
-        dt.textContent = term;
-      }
-      const dd = document.createElement('dd');
-      dd.append(...value);
-      list.append(dt, dd);
-    };
-    const count = (n: number, unit: string) => {
-      const strong = document.createElement('strong');
-      strong.className = 'nearby-count';
-      strong.textContent = `${n.toLocaleString()} ${unit}`;
-      return strong;
-    };
-    /** 押せる名前の札。押すとそれだけを残して寄る (もう一度で戻る)。 */
-    const chips = (kind: string, names: string[], rest: number): HTMLElement => {
-      const box = document.createElement('div');
-      box.className = 'nearby-chips';
-      for (const name of names) {
-        const chip = document.createElement('button');
-        chip.type = 'button';
-        chip.className = 'nearby-chip';
-        chip.textContent = name;
-        chip.title = 'これだけを地図に残して寄る';
-        const pressed = nearbyView.focus?.kind === kind && nearbyView.focus.name === name;
-        chip.setAttribute('aria-pressed', String(pressed));
-        chip.addEventListener('click', () => {
-          focusNearby(kind, name);
-          // 名前の札だけを戻す (段の札は出し入れの印なので触らない)。
-          for (const other of nearbyResultsEl.querySelectorAll('.nearby-chip:not(.tier)')) {
-            other.setAttribute('aria-pressed', 'false');
-          }
-          chip.setAttribute('aria-pressed', String(nearbyView.focus !== null));
-        });
-        box.append(chip);
-      }
-      if (rest > 0) {
-        const more = document.createElement('span');
-        more.className = 'nearby-more';
-        more.textContent = `ほか${rest}件`;
-        box.append(more);
-      }
-      return box;
-    };
-    /** 建物の段ごとの件数。押すと、その段を地図に出すかを切り替える。 */
-    const tierToggles = (counts: [string, number][]): HTMLElement => {
-      const box = document.createElement('div');
-      box.className = 'nearby-chips';
-      counts.forEach(([title, n], rank) => {
-        if (n === 0) return;
-        const key = `段:${title}`;
-        const chip = document.createElement('button');
-        chip.type = 'button';
-        chip.className = 'nearby-chip tier';
-        chip.dataset.rank = String(rank);
-        chip.textContent = `${title} ${n.toLocaleString()}`;
-        chip.title = 'この段を地図に出す / 隠す';
-        chip.setAttribute('aria-pressed', String(!nearbyView.hidden.has(key)));
-        chip.addEventListener('click', () => {
-          if (nearbyView.hidden.has(key)) nearbyView.hidden.delete(key);
-          else nearbyView.hidden.add(key);
-          chip.setAttribute('aria-pressed', String(!nearbyView.hidden.has(key)));
-          applyNearbyView();
-        });
-        box.append(chip);
-      });
-      return box;
-    };
-
-    if (result.buildings.length === 0 && buildingSources.length > 0) row('建物', null, 'なし');
-    for (const found of result.buildings) {
-      const group = collections.find((c) => c.id === found.source.id)?.group?.title;
-      const total = found.counts.reduce((sum, [, n]) => sum + n, 0);
-      const shown = found.named.slice(0, 10);
-      row(
-        `建物${group ? ` (${group})` : ''}`,
-        '建物',
-        count(total, '棟'),
-        tierToggles(found.counts),
-        ...(shown.length > 0 ? [chips('建物', shown, found.named.length - shown.length)] : []),
-      );
-    }
-    for (const [label, { names, total }] of result.names) {
-      if (total === 0) {
-        row(label, null, 'なし');
-        continue;
-      }
-      row(label, label, count(total, '件'), chips(label, names, total - names.length));
-    }
-    if (result.population) {
-      row(
-        '人口',
-        null,
-        count(Math.round(result.population.population), '人'),
-        ` (概算。${result.population.label}メッシュ ${result.population.cells.toLocaleString()} 個の合計)`,
-      );
-    }
-    const notes: string[] = [];
-    if (result.population) {
-      notes.push('人口は範囲に掛かるメッシュの値の合計なので、範囲より広い分を含みます。');
-    }
-    if (frame.clipped) {
-      notes.push('起点が画面より大きいので、表示範囲の中だけを数えています。');
-    }
-    if (result.buildings.some((b) => b.features.length >= NEARBY_DRAW_LIMIT)) {
-      notes.push(`地図に描く建物は${NEARBY_DRAW_LIMIT.toLocaleString()}件までです (数は全部)。`);
-    }
-    const note = document.createElement('p');
-    note.className = 'note';
-    note.textContent = notes.join(' ');
-    nearbyResultsEl.replaceChildren(list, ...(notes.length > 0 ? [note] : []));
-  };
-
-  nearbyDistance.addEventListener('change', () => {
-    if (currentOrigin) void runNearby(currentOrigin);
-  });
-  nearbyFromSearch.addEventListener('click', () => {
-    if (!lastSelection) return;
-    setNearbyMode(false);
-    void runNearby(lastSelection);
-  });
-  document.querySelector('#nearby-close')!.addEventListener('click', clearNearby);
-
-  // ホバー用。マウスを追うだけなので閉じるボタンは出さない。
-  const hoverPopup = new Popup({
-    closeButton: false,
-    closeOnClick: false,
-    offset: 12,
-    className: 'hover-popup',
-  });
-
-  /**
-   * ホバーの中身を組み立てる。
-   *
-   * **`setText` に改行を渡しても効かない。** テキストノードになるので `\n` は
-   * 空白に潰れ、項目が横一列に並んで読めなくなる。かといって `setHTML` は
-   * データ由来の文字列 (駅名や事業者名) をそのままHTMLとして解釈するので使わない。
-   * 要素を組んで `setDOMContent` に渡す。
-   *
-   * `rows` は [項目名, 値]。**項目名が空なら見出し**として大きく出す。
-   */
-  const hoverContent = (rows: [string, string | null][]): HTMLElement => {
-    const box = document.createElement('div');
-    box.className = 'hover-info';
-    for (const [label, value] of rows) {
-      if (value === null) continue;
-      const line = document.createElement('div');
-      if (label) {
-        const name = document.createElement('span');
-        name.className = 'label';
-        name.textContent = label;
-        line.append(name, document.createTextNode(value));
-      } else {
-        line.className = 'title';
-        line.textContent = value;
-      }
-      box.append(line);
-    }
-    return box;
-  };
-
-  // ---- 吹き出し (ホバーと、指で押したとき) ------------------------------------------
-  //
-  // **層ごとに「何を出すか」を表にし、地図全体で1つの仕掛けで拾う。** 以前は層ごとに
-  // mousemove を登録していて、周辺検索の結果 (上に重ねた別の層) には吹き出しが出なかった
-  // (当たった建物の上では元の建物を隠すので、建物の吹き出しも消えていた)。
-  // いちばん上に描かれているものの吹き出しを出す。
-  //
-  // **指で押しても同じものを出す** (スマホにはホバーが無い)。
-
-  type Props = Record<string, unknown>;
-  type HoverRows = [string, string | null][];
-  /** 吹き出しの中身と、**同じものか**の鍵 (同じなら作り直さない — 区間の境でちらつくため)。 */
-  type Hover = { key: string; rows: HoverRows };
-
-  const text = (value: unknown) => (value === null || value === undefined || value === '' ? null : String(value));
-  const originOf = (props: Props) => collections.find((c) => c.id === props.origin);
-
-  /** 建物。**どちらの出所の建物か**も言う (PLATEAUとOvertureは同時に出せて、色だけでは見分けにくい)。 */
-  const buildingRows = (props: Props): HoverRows => {
-    const origin = originOf(props);
-    return [
-      ['', text(props.name) ?? '(名称なし)'],
-      ['用途', text(props.category)],
-      ['高さ', props.height ? `${props.height as number} m` : null],
-      ['重要度', (props.tierRank as number | undefined) !== -1 ? text(props.tier) : null],
-      ['出所', origin?.group?.title ?? origin?.title ?? null],
-    ];
-  };
-
-  /** 周辺検索で当たったもの、と分かる1行。 */
-  const nearbyRow = (): [string, string] => ['周辺検索', `起点から ${nearbyDistance.value} m 以内`];
-
-  const HOVER_LAYERS: Record<string, (props: Props) => Hover> = {
-    'nearby-hits': (p) => ({
-      key: `nearby|${p.origin}|${p.name}|${p.height}|${p.category}`,
-      rows: [...buildingRows(p), nearbyRow()],
-    }),
-    'nearby-hit-lines': (p) => {
-      const origin = originOf(p);
-      return {
-        key: `nearby-line|${p.kind}|${p.name}`,
-        rows: [
-          ['', text(p.name) ?? '(名前なし)'],
-          ['種類', text(p.kind)],
-          ['出所', origin?.group?.title ?? null],
-          ['時点', origin?.vintage ?? null],
-          nearbyRow(),
-        ],
-      };
-    },
-    'buildings-3d': (p) => ({
-      key: `building|${p.origin}|${p.name}|${p.height}|${p.category}`,
-      rows: buildingRows(p),
-    }),
-    // 整備範囲のメッシュ。**どのメッシュか、どの自治体かが読めること。**
-    // 塗りの濃さは埋まり具合しか表さないので、中身はここでしか分からない。
-    'buildings-coverage-fill': (p) => {
-      const code = p.code as string;
-      const cities = (p.cities as string) || '(不明)';
-      const filled = p.filled as number;
-      const total = p.total as number;
-      return {
-        key: `cell|${code}`,
-        rows: [
-          ['', `${MESH_SIZE_LABELS[code.length] ?? `${code.length}桁`}メッシュ`],
-          ['メッシュコード', code],
-          // **束ねると自治体が増える。** 80kmまで引くと何十も並ぶので、多いときは数だけにする。
-          ['自治体', cities.split('、').length > 6 ? `${cities.split('、').length} 市区町村` : cities],
-          // **濃淡を数で裏付ける。** 1kmで見ているときは必ず1/1なので出さない。
-          [
-            'データのある1kmセル',
-            total > 1
-              ? `${filled.toLocaleString()} / ${total.toLocaleString()} (${Math.round((filled / total) * 100)}%)`
-              : null,
-          ],
-          ['建物', `${(p.buildings as number).toLocaleString()} 棟`],
-        ],
-      };
-    },
-    // 駅なら駅名を見出しにする。路線には駅名が入っていない。
-    'railway-station': (p) => railwayHover(p),
-    'railway-line': (p) => railwayHover(p),
-    // 道路は交差点ごとに区間が切れている。名前と路線と等級が同じなら同じ道として扱う。
-    'road-line': (p) => {
-      const routes = text(p.routeNames) ?? '';
-      const name = text(p.roadName);
-      return {
-        key: `road|${name ?? ''}|${routes}|${p.roadClass}`,
-        rows: [
-          // 名前が無い区間もある。その場合は路線名を見出しに繰り上げる。
-          ['', name || routes || '(名前なし)'],
-          // **路線は複数あることがある。** 見出しに使ったものと同じなら繰り返さない。
-          ['路線', routes && routes !== name ? routes : null],
-          ['種別', text(p.roadClass)],
-          ['時点', roadVintage ?? null],
-        ],
-      };
-    },
-    ...Object.fromEntries(
-      LINE_KINDS.map((kind) => [
-        `line-${kind}`,
-        (p: Props): Hover => {
-          const origin = originOf(p);
-          return {
-            key: `line|${kind}|${p.name ?? ''}|${p.lineClass}`,
-            rows: [
-              ['', text(p.name) ?? '(名前なし)'],
-              ['種別', text(p.lineClass)],
-              ['出所', origin?.group?.title ?? null],
-              ['時点', origin?.vintage ?? null],
-            ],
-          };
-        },
-      ]),
-    ),
-  };
-
-  function railwayHover(p: Props): Hover {
-    const station = text(p.stationName);
-    return {
-      key: `rail|${station ?? ''}|${p.lineName}|${p.operator}`,
-      rows: [
-        ['', station ? `${station}駅` : text(p.lineName)],
-        ['路線', station ? text(p.lineName) : null],
-        ['事業者', text(p.operator)],
-        ['種別', text(p.institutionType)],
-        ['区分', text(p.railwayClass)],
-        ['時点', railwayVintage ?? null],
-      ],
-    };
-  }
-
-  /** うちのデータ (と周辺検索の結果) で、その点のいちばん上にあるもの。 */
-  const ownHoverAt = (point: { x: number; y: number }): Hover | null => {
-    const ids = Object.keys(HOVER_LAYERS).filter((id) => map.getLayer(id));
-    const top = map.queryRenderedFeatures([point.x, point.y], { layers: ids })[0];
-    return top ? HOVER_LAYERS[top.layer.id](top.properties) : null;
-  };
-
-  /**
-   * 外部のベクトルタイル (地理院)。描画の層が123あって表に書ききれないので、
-   * その点にある地物から地理院の層のものを探す。**うちのデータが無いときだけ**使う。
-   */
-  const vectorHoverAt = (point: { x: number; y: number }): Hover | null => {
-    if (vectorOverlays.length === 0) return null;
-    for (const feature of map.queryRenderedFeatures([point.x, point.y])) {
-      const overlay = vectorOverlays.find((o) => o.styleLayers.has(feature.layer.id));
-      if (!overlay) continue;
-      const sourceLayer = overlay.styleLayers.get(feature.layer.id)!;
-      const props = feature.properties;
-      const theme = overlay.collection.themes?.find((t) => t.layers.some((l) => l.id === sourceLayer));
-      const layer = theme?.layers.find((l) => l.id === sourceLayer);
-      return {
-        key: `vector|${sourceLayer}|${props.vt_code ?? ''}|${props.vt_text ?? ''}`,
-        rows: [
-          ['', text(props.vt_text) ?? `${theme?.title ?? ''} › ${layer?.title ?? sourceLayer}`],
-          ['層', `${layer?.title ?? sourceLayer} (${sourceLayer})`],
-          // 地物の種別のコード。意味は配布元の「地物種別コード一覧」にある。
-          ['種別コード', text(props.vt_code)],
-          ['出所', `${overlay.collection.group?.title ?? ''} ${overlay.collection.title}`.trim()],
-          ['時点', overlay.collection.vintage ?? null],
-        ],
-      };
-    }
-    return null;
-  };
-
-  let hoveredKey = '';
-  const showHover = (lngLat: { lng: number; lat: number }, hover: Hover) => {
-    hoverPopup.setLngLat(lngLat).addTo(map);
-    if (hover.key === hoveredKey) return;
-    hoveredKey = hover.key;
-    hoverPopup.setDOMContent(hoverContent(hover.rows));
-  };
-  const hideHover = () => {
-    if (!hoveredKey) return;
-    hoveredKey = '';
-    hoverPopup.remove();
-  };
-
-  map.on('mousemove', (e) => {
-    // **判定中はホバーを出さない。** 判定の結果も吹き出しで出すので、
-    // 2つ並ぶとどちらが押した場所のものか分からなくなる。
-    if (picking) return;
-    const own = ownHoverAt(e.point);
-    hoveringFeature = own !== null;
-    updateCursor();
-    const hover = own ?? vectorHoverAt(e.point);
-    if (hover) showHover(e.lngLat, hover);
-    else hideHover();
-  });
-  map.getCanvas().addEventListener('mouseleave', () => {
-    hoveringFeature = false;
-    updateCursor();
-    hideHover();
-  });
-
-  // **押したときも出す** (スマホ)。📍や◎で押した地点は、そちらが先に受け取って
-  // 印を付ける (`preventDefault`)。何も無いところを押したら閉じる。
-  map.on('click', (e) => {
-    if (e.defaultPrevented || picking || nearbyMode) return;
-    const hover = ownHoverAt(e.point) ?? vectorHoverAt(e.point);
-    if (hover) {
-      hoveredKey = '';
-      showHover(e.lngLat, hover);
-    } else {
-      hideHover();
-    }
   });
 
   // 逆ジオコーディング: クリックした地点がどの行政区域かを引き、
@@ -3863,7 +2492,7 @@ async function main() {
     // **ホバーの吹き出しを先に片付ける。** 判定の結果も吹き出しで出すので、
     // 残っていると2つ並んでどちらが押した場所のものか分からない。
     // 整備範囲のメッシュは引いた表示で常に出ているぶん、ここに必ず当たる。
-    hoverPopup.remove();
+    hover.hide();
     popup.setLngLat(e.lngLat).setText('判定中…').addTo(map);
 
     busy('地点を判定中…', async () => {

@@ -331,7 +331,7 @@
       </div>
       <div class="card kpi">
         <div class="label">公開待ちのコミット</div>
-        <div class="value">22 <small>件</small></div>
+        <div class="value">24 <small>件</small></div>
         <span class="status you">R2へのアップロード → push 待ち</span>
       </div>
       <div class="card kpi">
@@ -484,11 +484,11 @@
               <td>ブラウザの中で GeoParquet を書き、出典と規約を KV に入れる</td>
             </tr>
             <tr>
-              <td><a href="../web/src/ui/layer-list.ts">ui/layer-list.ts</a> の <code>applyOrder</code> · <code>place</code></td>
-              <td>一覧の順番を地図の層へ写す (区分ごとの目印の層の直下に積む)。足したもの・順番を端末に覚える</td>
+              <td><a href="../web/src/ui/layer-list.ts">ui/layer-list.ts</a> の <code>applyOrder</code> · <code>startDrag</code></td>
+              <td>一覧の順番を地図の層へ写す (区分ごとの目印の層の直下に積む)。ドラッグは Pointer Events で、動きは window で拾う</td>
             </tr>
             <tr>
-              <td>main.ts の <code>HOVER_LAYERS</code> · <code>setNearbyFocus</code></td>
+              <td><a href="../web/src/ui/hover.ts">ui/hover.ts</a> の <code>HOVER_LAYERS</code> · <a href="../web/src/ui/nearby-panel.ts">ui/nearby-panel.ts</a> の <code>setFocusMode</code></td>
               <td>吹き出しを層ごとの表で1つの仕掛けに (周辺検索の結果にも、指で押しても出る) / 周辺検索でほかの層を薄くして閉じたら戻す</td>
             </tr>
             <tr class="group"><th colspan="2">判断の記録 (docs)</th></tr>
@@ -517,8 +517,8 @@
           <li>
             <b>表示部分のライブラリ化 (続き)</b>
             <span class="sub">
-              問い合わせ・検索・初期化・一覧・出典を web/src/lib/ と ui/ に分けた (main.ts 7,741→3,890行)。
-              残りはデータの種類ごとの描き方 (refresh と絞り込みのパネル) と周辺検索のパネル
+              問い合わせ・検索・初期化・地図・一覧・周辺検索・吹き出し・出典を web/src/lib/ と ui/ に分けた
+              (main.ts 7,741→2,519行)。残りはデータの種類ごとの描き方 (refresh と絞り込みのパネル) と ⓘ のカード
             </span>
           </li>
           <li>
