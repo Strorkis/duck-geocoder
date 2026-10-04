@@ -3280,3 +3280,35 @@ test('一覧は出所ごとに開け閉めでき、既定では表示中の出�
   await page.locator('#layer-filter').fill('道路');
   await expect(page.locator(`[data-layer="${LAYER.road}"]`)).toBeVisible();
 });
+
+/**
+ * **読み込み中に外したら、遅れて届いた結果を描かない。** 全部外したときの早期 return が
+ * 世代を進めておらず、前の要求が「まだ最新」のまま終わって、外したあとに建物が
+ * 描かれていた (起動直後に外すと再現した)。読み込みを止めておいて外し、放してから見る。
+ */
+test('読み込み中に建物を外しても、遅れて届いた結果は描かない', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let waiting = 0;
+  await page.route(/\/plateau_bldg_[^/]*\.parquet/, async (route) => {
+    waiting += 1;
+    await held;
+    await route.continue();
+  });
+
+  await page.evaluate(() => {
+    (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7671, 35.6812], zoom: 15.5 });
+  });
+  // 建物の読み込みが始まった (止めてある) ところで外す。
+  await expect.poll(() => waiting).toBeGreaterThan(0);
+  await hideLayer(page, LAYER.plateauBuildings);
+  release();
+
+  // 止めていた読み込みが終わるのを待ってから見る。
+  await expect(page.locator('#busy')).toBeHidden({ timeout: 30_000 });
+  await page.waitForTimeout(500);
+  expect(await sourceFeatureCount(page, 'buildings')).toBe(0);
+});

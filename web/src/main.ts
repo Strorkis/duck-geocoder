@@ -4463,6 +4463,9 @@ async function main() {
     const mapSource = map.getSource('buildings') as GeoJSONSource | undefined;
     const coverage = map.getSource('buildings-coverage') as GeoJSONSource | undefined;
     if (!mapSource || buildingSources.length === 0) return;
+    // **世代は最初に進める。** 全部外したときの早期 return の前でないと、読み込み中だった
+    // 前の要求が「まだ最新」のまま終わり、外したあとに建物を描いてしまう (実際に起きた)。
+    const token = ++buildingsToken;
 
     const visible = buildingSources.filter((source) => isLayerVisible(source.id));
     // 取得を始める前に件数表示を空にする。引いていたときの「拡大すると建物が出ます」が
@@ -4476,7 +4479,6 @@ async function main() {
     }
 
     const zoom = map.getZoom();
-    const token = ++buildingsToken;
     const bounds = currentBounds();
 
     // 状態は最後にまとめて出す。途中で打ち切ったとき (地図が動いた) に
@@ -4660,6 +4662,8 @@ async function main() {
       meshSummaryEl.textContent = message;
     };
 
+    // 世代は最初に進める (外したあとに読み込み中の結果が描かれないように。建物と同じ)。
+    const token = ++meshToken;
     // 行は細かさ違いのCollectionを束ねた1つで、IDは先頭のもの (一覧側と同じ規則)。
     if (!isLayerVisible(meshSources[0]?.id ?? '')) {
       await clear('');
@@ -4676,7 +4680,6 @@ async function main() {
       return;
     }
 
-    const token = ++meshToken;
     const cells = await busy('人口密度を読み込み中…', async () => {
       await source.ensure();
       const b = map.getBounds();
@@ -4780,6 +4783,8 @@ async function main() {
 
     // **路線と駅は別のCollectionなので、一覧でも別の行。** ONの方だけを引く。
     // 絞り込み (事業者種別) と設定パネルは両方で共有する。
+    // 世代は最初に進める (外したあとに読み込み中の結果が描かれないように。建物と同じ)。
+    const token = ++railwayToken;
     const visibleSources = railwaySources.filter((source) => isLayerVisible(source.id));
     if (visibleSources.length === 0) {
       await clear('');
@@ -4790,7 +4795,6 @@ async function main() {
       .filter((input) => input.checked)
       .map((input) => input.value);
 
-    const token = ++railwayToken;
     const results = await busy('鉄道を読み込み中…', async () => {
       const b = map.getBounds();
       const c = map.getCenter();
@@ -4923,6 +4927,8 @@ async function main() {
       roadSummaryEl.textContent = message;
     };
 
+    // 世代は最初に進める (外したあとに読み込み中の結果が描かれないように。建物と同じ)。
+    const token = ++roadToken;
     if (!isLayerVisible(roadSource.id)) {
       await clear('');
       return;
@@ -4938,7 +4944,6 @@ async function main() {
     const heldBack = selectedClasses.length - shownClasses.length;
 
     const lod = lodForZoom(roadSource, zoom);
-    const token = ++roadToken;
     const features = await busy('道路を読み込み中…', async () => {
       await roadSource.ensure();
       const b = map.getBounds();
@@ -5024,6 +5029,9 @@ async function main() {
   const refreshLine = async (source: LineSource) => {
     const mapSource = map.getSource(`line-${source.kind}`) as GeoJSONSource | undefined;
     if (!mapSource) return;
+    // 世代は最初に進める (外したあとに読み込み中の結果が描かれないように。建物と同じ)。
+    const token = (lineTokens.get(source.id) ?? 0) + 1;
+    lineTokens.set(source.id, token);
     if (!isLayerVisible(source.id)) {
       if (lineShown.has(source.id)) {
         await mapSource.setData(EMPTY_FEATURE_COLLECTION);
@@ -5034,8 +5042,6 @@ async function main() {
     }
     const zoom = map.getZoom();
     const lod = lodForZoom(source, zoom);
-    const token = (lineTokens.get(source.id) ?? 0) + 1;
-    lineTokens.set(source.id, token);
     const features = await busy(`${source.title}を読み込み中…`, async () => {
       await source.ensure();
       return fetchLinesInView(conn, source, currentBounds(), detail.roadLimit, lod);
