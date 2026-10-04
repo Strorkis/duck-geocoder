@@ -173,6 +173,11 @@ const SUB_CATALOGS: &[SubCatalog] = &[
         title: "Mapterhorn",
         description: "世界の標高タイル。うちでは複製せず、公開元を直接指す。",
     },
+    SubCatalog {
+        dir: "reearth",
+        title: "Re:Earth",
+        description: "Re:Earth が公開している標高タイルと 3D の建物 (3D Tiles)。うちでは複製せず、公開元を直接指す。",
+    },
 ];
 
 fn sub_catalog(dir: &str) -> Result<&'static SubCatalog> {
@@ -551,17 +556,53 @@ const WEB_MAP_LINKS_EXTENSION: &str =
 
 /// **外部のラスタタイル** (背景地図・標高) の Collection。Item もアセットも無く、
 /// web-map-links 拡張のリンクでタイルを指す (タイルは1ファイルではないので、アセットにならない)。
-fn raster_collection(raster: &ExternalRaster, dir: &str) -> Value {
+fn raster_collection(
+    raster: &ExternalRaster,
+    dir: &str,
+    dirs: &BTreeMap<String, String>,
+) -> Result<Value> {
     let tiles = match &raster.link {
         TileLink::Xyz {
             template,
             media_type,
-        } => json!({ "rel": "xyz", "href": template, "type": media_type, "title": raster.title }),
-        TileLink::TileJson { url } => {
-            json!({ "rel": "tilejson", "href": url, "type": JSON_MEDIA_TYPE, "title": raster.title })
-        }
+        } => Some(
+            json!({ "rel": "xyz", "href": template, "type": media_type, "title": raster.title }),
+        ),
+        TileLink::TileJson { url } => Some(
+            json!({ "rel": "tilejson", "href": url, "type": JSON_MEDIA_TYPE, "title": raster.title }),
+        ),
+        TileLink::ThreeDTiles { url } => Some(
+            json!({ "rel": "3d-tiles", "href": url, "type": JSON_MEDIA_TYPE, "title": raster.title }),
+        ),
+        TileLink::None => None,
     };
-    json!({
+    let mut links = vec![
+        json!({ "rel": "root", "href": root_href(dir), "type": JSON_MEDIA_TYPE }),
+        json!({ "rel": "parent", "href": CATALOG_FILE, "type": JSON_MEDIA_TYPE }),
+        json!({ "rel": "self", "href": collection_file(raster.id), "type": JSON_MEDIA_TYPE }),
+        via_link(raster.via),
+    ];
+    links.extend(tiles);
+    // **何から作られたか。** 行き先はこのカタログの Collection (無ければ作り方の誤り)。
+    for source in raster.derived_from {
+        let Some(target_dir) = dirs.get(*source) else {
+            bail!(
+                "{} の derived_from {source:?} がカタログにありません",
+                raster.id
+            );
+        };
+        let href = if target_dir == dir {
+            collection_file(source)
+        } else {
+            format!("../{}", in_dir(target_dir, &collection_file(source)))
+        };
+        links.push(json!({ "rel": "derived_from", "href": href, "type": JSON_MEDIA_TYPE }));
+    }
+    // この地図で描けないもの (3D Tiles) を見る先。HTML のページなので `alternate`。
+    if let Some(viewer) = raster.viewer {
+        links.push(json!({ "rel": "alternate", "href": viewer, "type": "text/html", "title": "公式のビューア" }));
+    }
+    let mut body = json!({
         "type": "Collection",
         "stac_version": STAC_VERSION,
         "stac_extensions": [WEB_MAP_LINKS_EXTENSION],
@@ -576,6 +617,8 @@ fn raster_collection(raster: &ExternalRaster, dir: &str) -> Value {
         "duck:kind": match raster.role {
             RasterRole::Basemap => "raster_tiles",
             RasterRole::Terrain => "terrain",
+            RasterRole::ThreeDTiles => "3d_tiles",
+            RasterRole::Reference => "reference",
         },
         // **タイルが実際にあるズーム。** 無いズームを要求すると 404 を撃ち続ける。
         "duck:zoom": [raster.minzoom, raster.maxzoom],
@@ -589,14 +632,16 @@ fn raster_collection(raster: &ExternalRaster, dir: &str) -> Value {
             "spatial": { "bbox": [raster.bounds] },
             "temporal": { "interval": [[null, null]] },
         },
-        "links": [
-            { "rel": "root", "href": root_href(dir), "type": JSON_MEDIA_TYPE },
-            { "rel": "parent", "href": CATALOG_FILE, "type": JSON_MEDIA_TYPE },
-            { "rel": "self", "href": collection_file(raster.id), "type": JSON_MEDIA_TYPE },
-            via_link(raster.via),
-            tiles,
-        ],
-    })
+        "links": links,
+    });
+    // 同じ役割 (背景地図・地形) の中で既定に使うもの。
+    if raster.default {
+        body["duck:default"] = json!(true);
+    }
+    if let Some(dem) = &raster.dem {
+        body["duck:dem"] = json!(dem);
+    }
+    Ok(body)
 }
 
 /// カタログをSTACの文書一式にする。
@@ -657,6 +702,18 @@ pub fn build(
     }
 
     // 背景地図を先に並べる (一覧でも、国土地理院の見出しの下で地図が先に来る)。
+    // Collection の ID → 置き場所。`derived_from` のリンクを相対で書くのに使う。
+    let mut dirs: BTreeMap<String, String> = BTreeMap::new();
+    for (id, entries) in &grouped {
+        dirs.insert(id.to_string(), collection_dir(entries)?);
+    }
+    for tileset in externals {
+        dirs.insert(tileset.id.to_string(), tileset.dir.to_string());
+    }
+    for raster in rasters {
+        dirs.insert(raster.id.to_string(), raster.dir.to_string());
+    }
+
     for raster in rasters {
         by_dir
             .entry(raster.dir.to_string())
@@ -669,7 +726,7 @@ pub fn build(
             }));
         documents.push(Document {
             path: in_dir(raster.dir, &collection_file(raster.id)),
-            body: raster_collection(raster, raster.dir),
+            body: raster_collection(raster, raster.dir, &dirs)?,
         });
     }
     for tileset in externals {
@@ -764,8 +821,62 @@ mod tests {
     #[test]
     fn external_rasters_link_their_tiles() {
         use crate::external::EXTERNAL_RASTERS;
-        let datasets = vec![entry("mesh_pop_13", "estat/mesh_pop_13.parquet", None)];
+        // Re:Earth Buildings の元 (derived_from) になる Overture の建物。
+        let mut overture = entry(
+            "overture_buildings_1312212",
+            "overture/overture_buildings_1312212.parquet",
+            None,
+        );
+        overture.collection = "overture-buildings";
+        let datasets = vec![
+            entry("mesh_pop_13", "estat/mesh_pop_13.parquet", None),
+            overture,
+        ];
         let documents = super::build(&datasets, &[GSI_OPTIMAL_BVMAP], EXTERNAL_RASTERS).unwrap();
+
+        // **何から作られたか**を辿れる。別のサブカタログへは `../` で。
+        let derived = |document: &Value| -> Vec<String> {
+            document["links"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|link| link["rel"] == "derived_from")
+                .map(|link| link["href"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let mapterhorn = find(&documents, "mapterhorn/mapterhorn-terrain.json");
+        assert_eq!(derived(mapterhorn), ["../gsi/gsi-dem-source.json"]);
+        assert_eq!(mapterhorn["duck:dem"]["encoding"], "terrarium");
+        // 地形の既定は Mapterhorn (並び順ではなくカタログが示す)。ほかは名乗らない。
+        assert_eq!(mapterhorn["duck:default"], true);
+        assert!(find(&documents, "gsi/gsi-dem.json")["duck:default"].is_null());
+        let gsi_dem = find(&documents, "gsi/gsi-dem.json");
+        assert_eq!(derived(gsi_dem), ["gsi-dem-source.json"]);
+        assert_eq!(gsi_dem["duck:dem"]["encoding"], "gsi");
+        assert_eq!(
+            find(&documents, "gsi/gsi-dem-source.json")["duck:kind"],
+            "reference"
+        );
+        // 3D Tiles は rel "3d-tiles" で指し、公式のビューアを添える。
+        let buildings = find(&documents, "reearth/reearth-buildings.json");
+        assert_eq!(buildings["duck:kind"], "3d_tiles");
+        let rels: Vec<&str> = buildings["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|link| link["rel"].as_str().unwrap())
+            .collect();
+        assert!(
+            rels.contains(&"3d-tiles") && rels.contains(&"alternate"),
+            "{rels:?}"
+        );
+        assert_eq!(
+            derived(buildings),
+            [
+                "../overture/overture-buildings.json",
+                "reearth-terrain.json"
+            ]
+        );
 
         // 背景地図は XYZ のリンクで指す。範囲 (ズーム) を書く — 白地図は5〜14しか無い。
         let blank = find(&documents, "gsi/gsi-blank.json");
@@ -813,6 +924,18 @@ mod tests {
             .collect();
         assert_eq!(children.first(), Some(&"gsi-pale.json"));
         assert_eq!(children.last(), Some(&"gsi-optimal-bvmap.json"));
+    }
+
+    /// `derived_from` の行き先がカタログに無ければ止める (黙って壊れたリンクを書かない)。
+    #[test]
+    fn rejects_derived_from_outside_the_catalog() {
+        use crate::external::EXTERNAL_RASTERS;
+        let datasets = vec![entry("mesh_pop_13", "estat/mesh_pop_13.parquet", None)];
+        // overture-buildings が無いので、Re:Earth Buildings の derived_from が解決できない。
+        let Err(error) = super::build(&datasets, &[GSI_OPTIMAL_BVMAP], EXTERNAL_RASTERS) else {
+            panic!("通ってしまった");
+        };
+        assert!(error.to_string().contains("overture-buildings"), "{error}");
     }
 
     #[test]

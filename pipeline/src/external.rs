@@ -278,6 +278,10 @@ pub enum TileLink {
     },
     /// TileJSON。中身 (タイルのURL・エンコード) は読む側が TileJSON から取る。
     TileJson { url: &'static str },
+    /// 3D Tiles の `tileset.json`。この地図 (MapLibre) では描けないが、カタログからは指す。
+    ThreeDTiles { url: &'static str },
+    /// タイルを持たない (**元データの参照**だけ。派生物の `derived_from` の行き先になる)。
+    None,
 }
 
 /// ラスタタイルの役割。UI がどう重ねるかを決める。
@@ -287,6 +291,21 @@ pub enum RasterRole {
     Basemap,
     /// 標高 (地形)。地図を立体にする。
     Terrain,
+    /// 3D Tiles。この地図では描けない (公式のビューアで見る)。
+    ThreeDTiles,
+    /// 元データ。配っていない (派生物がどこから来たかを示すためだけに載せる)。
+    Reference,
+}
+
+/// 標高タイルの形式 (`duck:dem`)。**同じ「標高タイル」でも中身の約束が違う**ので書く。
+#[derive(Debug, serde::Serialize)]
+pub struct DemSpec {
+    /// `terrarium` / `mapbox` (Terrain-RGB) / `gsi` (地理院の独自形式)。
+    pub encoding: &'static str,
+    /// 高さの基準。`orthometric` (海面から) / `ellipsoid` (WGS84 楕円体から)。
+    pub vertical: &'static str,
+    /// 人向けの説明 (計算式・値なしの扱い・解像度)。
+    pub description: &'static str,
 }
 
 /// 外部のラスタタイル1つ。STAC の Collection 1つになる (Item もアセットも無い)。
@@ -308,6 +327,16 @@ pub struct ExternalRaster {
     pub tile_size: u16,
     /// 収録範囲 [西, 南, 東, 北]。
     pub bounds: [f64; 4],
+    /// 標高の形式。地形だけが持つ。
+    pub dem: Option<DemSpec>,
+    /// **何から作られたか** (Collection の ID)。STAC の `rel: "derived_from"` になる。
+    /// 「Mapterhorn の日本は基盤地図情報」のような関係をカタログで辿れるようにする。
+    pub derived_from: &'static [&'static str],
+    /// 公式のビューア (この地図で描けないものを見る先)。
+    pub viewer: Option<&'static str>,
+    /// **同じ役割の中で既定に使うもの** (`duck:default`)。地形は1つしか選べないので、
+    /// 何を最初に使うかをカタログが示す (並び順に頼ると、サブカタログの順で変わってしまう)。
+    pub default: bool,
 }
 
 /// 地理院タイル。利用規約により出典表示が必須。
@@ -363,6 +392,11 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         maxzoom: 18,
         tile_size: 256,
         bounds: JAPAN_BOUNDS,
+        dem: None,
+        derived_from: &[],
+        viewer: None,
+        // 背景地図の既定。色を抑えてあり、重ねたデータが読みやすい。
+        default: true,
     },
     ExternalRaster {
         id: "gsi-std",
@@ -380,6 +414,10 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         maxzoom: 18,
         tile_size: 256,
         bounds: JAPAN_BOUNDS,
+        dem: None,
+        derived_from: &[],
+        viewer: None,
+        default: false,
     },
     ExternalRaster {
         id: "gsi-photo",
@@ -397,6 +435,10 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         maxzoom: 18,
         tile_size: 256,
         bounds: JAPAN_BOUNDS,
+        dem: None,
+        derived_from: &[],
+        viewer: None,
+        default: false,
     },
     ExternalRaster {
         id: "gsi-blank",
@@ -414,12 +456,17 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         maxzoom: 14,
         tile_size: 256,
         bounds: JAPAN_BOUNDS,
+        dem: None,
+        derived_from: &[],
+        viewer: None,
+        default: false,
     },
+    // ---- 標高 (地形) — **1つだけ選んで使う** ----
     ExternalRaster {
         id: "mapterhorn-terrain",
         dir: "mapterhorn",
-        title: "標高 (地形)",
-        description: "世界の標高タイル。日本は基盤地図情報 (数値標高モデル、1m・5m・10m)。\
+        title: "Mapterhorn 標高",
+        description: "世界の標高タイル。日本は基盤地図情報 (数値標高モデル、1m・5m・10m) から作られている。\
                       地図を立体にする。表示専用で SQL では引けない。",
         attribution: MAPTERHORN,
         via: "https://mapterhorn.com/",
@@ -430,9 +477,185 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         minzoom: 0,
         maxzoom: 16,
         tile_size: 512,
-        bounds: [-180.0, -85.051_128_7, 180.0, 85.051_128_7],
+        bounds: WORLD_BOUNDS,
+        dem: Some(DemSpec {
+            encoding: "terrarium",
+            vertical: "orthometric",
+            description: "Terrarium (高さ = R×256 + G + B/256 − 32768 m)。海面からの高さ。\
+                          ズーム16まで (TileJSON は最大ズームを書いていない)。",
+        }),
+        // 日本の部分の元データ。
+        derived_from: &["gsi-dem-source"],
+        viewer: None,
+        // 地形の既定。ズーム16まであり、世界を覆い、そのまま (変換なしで) 読める。
+        default: true,
+    },
+    ExternalRaster {
+        id: "reearth-terrain",
+        dir: "reearth",
+        title: "Re:Earth Terrain 標高",
+        description: "Mapterhorn の標高を配り直したもの。海面からの高さ (elevation) と、\
+                      EGM2008 のジオイドを足した WGS84 楕円体からの高さ (ellipsoid) を選べる。\
+                      ここでは MapLibre に合う海面からの高さを使う。3D の地球儀 (Cesium) と\
+                      合わせるときは楕円体高の版を使う。",
+        attribution: REEARTH_TERRAIN,
+        via: "https://terrain.reearth.land/",
+        role: RasterRole::Terrain,
+        link: TileLink::TileJson {
+            url: "https://terrain.reearth.land/terrarium/elevation/tilejson.json",
+        },
+        minzoom: 0,
+        maxzoom: 14,
+        tile_size: 512,
+        bounds: WORLD_BOUNDS,
+        dem: Some(DemSpec {
+            encoding: "terrarium",
+            vertical: "orthometric",
+            description: "Terrarium (高さ = R×256 + G + B/256 − 32768 m)。海面からの高さ。\
+                          同じ形で楕円体高 (/terrarium/ellipsoid/) と Terrain-RGB (/mapbox/) の版もある。ズーム14まで。",
+        }),
+        derived_from: &["mapterhorn-terrain"],
+        viewer: Some("https://terrain.reearth.land/viewer"),
+        default: false,
+    },
+    ExternalRaster {
+        id: "gsi-dem",
+        dir: "gsi",
+        title: "標高タイル",
+        description: "地理院タイルの標高タイル (基盤地図情報 数値標高モデルから作ったもの)。\
+                      **独自の形式**なので、地形に使うときはブラウザで Terrarium に詰め直す。\
+                      ズーム14まで (10mメッシュ)。より細かい 5m (ズーム15) と 1m (ズーム17) は別のタイル。",
+        attribution: GSI_DEM_TILES,
+        via: "https://maps.gsi.go.jp/development/demtile.html",
+        role: RasterRole::Terrain,
+        link: TileLink::Xyz {
+            template: "https://cyberjapandata.gsi.go.jp/xyz/dem_png/{z}/{x}/{y}.png",
+            media_type: "image/png",
+        },
+        minzoom: 1,
+        maxzoom: 14,
+        tile_size: 256,
+        bounds: JAPAN_BOUNDS,
+        dem: Some(DemSpec {
+            encoding: "gsi",
+            vertical: "orthometric",
+            description: "x = R×2¹⁶ + G×2⁸ + B。x < 2²³ なら 高さ = x × 0.01 m、x = 2²³ (128,0,0) は値なし (海など)、\
+                          x > 2²³ なら 高さ = (x − 2²⁴) × 0.01 m (負の値)。線形の部分は Terrain-RGB と同じ形だが、\
+                          値なしと負の値はそのままでは読めない。z15 は dem5a_png (5m)、z17 は dem1a_png (1m)。",
+        }),
+        derived_from: &["gsi-dem-source"],
+        viewer: None,
+        default: false,
+    },
+    // ---- 元データ (配っていない。派生物の出どころとして載せる) ----
+    ExternalRaster {
+        id: "gsi-dem-source",
+        dir: "gsi",
+        title: "基盤地図情報 数値標高モデル (元データ)",
+        description: "地理院の標高タイルと、Mapterhorn の日本の部分の元データ。1m・5m・10m のメッシュ。\
+                      **基本測量成果なので、複製・使用には測量法の承認が要る** (Mapterhorn は取得している)。\
+                      このカタログからは配っていない。",
+        attribution: GSI_DEM_SOURCE,
+        via: "https://service.gsi.go.jp/kiban/",
+        role: RasterRole::Reference,
+        link: TileLink::None,
+        minzoom: 0,
+        maxzoom: 0,
+        tile_size: 0,
+        bounds: JAPAN_BOUNDS,
+        dem: None,
+        derived_from: &[],
+        viewer: None,
+        default: false,
+    },
+    // ---- 3D Tiles (この地図では描けない) ----
+    ExternalRaster {
+        id: "reearth-buildings",
+        dir: "reearth",
+        title: "Re:Earth Buildings (3D Tiles)",
+        description: "Overture の建物から作った 3D Tiles 1.1 (glTF)。Cesium 向けで、この地図 (MapLibre) では\
+                      描けないので、公式のビューアで見る。**高さは WGS84 楕円体から** (地盤の高さは\
+                      Re:Earth Terrain の楕円体高で焼き込み済み)。海面からの高さの地形と重ねると、\
+                      日本では40m前後浮く。",
+        attribution: REEARTH_BUILDINGS,
+        via: "https://buildings.reearth.land/",
+        role: RasterRole::ThreeDTiles,
+        link: TileLink::ThreeDTiles {
+            url: "https://buildings.reearth.land/tileset.json",
+        },
+        minzoom: 12,
+        maxzoom: 14,
+        tile_size: 0,
+        bounds: WORLD_BOUNDS,
+        dem: None,
+        derived_from: &["overture-buildings", "reearth-terrain"],
+        viewer: Some("https://buildings.reearth.land/"),
+        default: false,
     },
 ];
+
+/// 世界 (Web メルカトルで描ける範囲)。
+const WORLD_BOUNDS: [f64; 4] = [-180.0, -85.051_128_7, 180.0, 85.051_128_7];
+
+/// 地理院の標高タイル。地理院タイルと同じ規約。
+const GSI_DEM_TILES: Attribution = Attribution {
+    text: "国土地理院 (標高タイル)",
+    url: "https://maps.gsi.go.jp/development/demtile.html",
+    license: "other",
+    provider: "国土地理院",
+    terms: GSI_TERMS,
+};
+
+/// 基盤地図情報 (数値標高モデル)。**基本測量成果** — 複製・使用には測量法の承認が要る。
+const GSI_DEM_SOURCE: Attribution = Attribution {
+    text: "基盤地図情報（数値標高モデル）国土地理院",
+    url: "https://service.gsi.go.jp/kiban/",
+    license: "other",
+    provider: "国土地理院",
+    terms: Terms {
+        name: "測量法に基づく承認 (複製・使用) が必要",
+        url: "https://www.gsi.go.jp/LAW/2930-index.html",
+        commercial: Commercial::NotRestricted,
+        attribution_required: true,
+        note_modification: true,
+        share_alike: false,
+    },
+};
+
+/// Re:Earth Terrain。中身は Mapterhorn (CC BY 4.0) と EGM2008 (NGA、パブリックドメイン)。
+/// 出典は TileJSON の `attribution` の書き方に合わせる。
+const REEARTH_TERRAIN: Attribution = Attribution {
+    text: "Re:Earth Terrain / Mapterhorn / EGM2008 (NGA)",
+    url: "https://terrain.reearth.land/",
+    license: "other",
+    provider: "Re:Earth",
+    terms: Terms {
+        name: "Re:Earth Terrain の出典 (Mapterhorn は CC BY 4.0、EGM2008 はパブリックドメイン)",
+        url: "https://github.com/reearth/reearth-terrain#data-sources",
+        commercial: Commercial::NotRestricted,
+        attribution_required: true,
+        note_modification: false,
+        share_alike: false,
+    },
+};
+
+/// Re:Earth Buildings。Overture (ODbL) から作った **Produced Work** — 表示には出典が要るが、
+/// 継承 (share-alike) は Produced Work には及ばない (README の説明)。
+const REEARTH_BUILDINGS: Attribution = Attribution {
+    text: "Re:Earth Buildings — Buildings © OpenStreetMap contributors, Overture Maps Foundation (ODbL) · \
+           Terrain by Re:Earth Terrain (Mapterhorn / EGM2008)",
+    url: "https://buildings.reearth.land/",
+    license: "ODbL-1.0",
+    provider: "Re:Earth",
+    terms: Terms {
+        name: "ODbL 1.0 (Produced Work。表示には出典が要る)",
+        url: "https://github.com/reearth/reearth-buildings#license--required-attribution",
+        commercial: Commercial::Allowed,
+        attribution_required: true,
+        note_modification: false,
+        share_alike: false,
+    },
+};
 
 #[cfg(test)]
 mod tests {
