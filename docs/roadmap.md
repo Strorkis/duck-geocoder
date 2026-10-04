@@ -562,6 +562,56 @@ Collection とは分けて扱う。いまは UI のコードに入っている (
 ここが使っているものとほぼ同じ。**アプリを書き換えず、Navaraに此処のSTACを
 読ませてみる**なら、「別のエンジンから素直に読めるか」という配信側の検証になる。
 
+**試した (2026-10-04、リポジトリの外の使い捨てのページで):** `@navaramap/three` 0.1.1 で、
+Re:Earth Terrain (Terrarium) ＋ 地理院の写真 ＋ Re:Earth Buildings (3D Tiles) を東京駅の上から
+描けた。**コードは30行ほど**で、Vite でそのまま動いた (WASM・Worker の設定は要らなかった)。
+
+- 配る大きさ: ビルドで 31MB (WASM 4.7MB、大気の描画用のテクスチャが約10MB)。
+  写真のような空・大気 (`addDefaultPhotorealScene`) を使わなければ減る
+- 地理院の標高 (独自形式) のデコーダが最初から入っている (`JAPAN_GSI_ELEVATION_DECODER`)
+- MapLibre に重ねる部品ではなく別のエンジンなので、入れるなら**別のページ** (「3Dで見る」) にする。
+  一覧と周辺検索はいまの地図のまま
+- まだ 0.1 で、露出 (`toneMappingExposure`) の調整など見た目は詰めていない
+
+## 調べたこと (2026-10-04)
+
+### GeoArrow
+
+DuckDB-WASM は、ジオメトリの列を**そのまま返すと既に GeoArrow** (`geoarrow.wkb`、CRS 付き) で返す。
+東京駅付近の建物 2.8万棟で測った (読み込み済み、ネットワークを除く):
+
+| 経路 | 問い合わせ | JS 側 | 計 |
+| --- | ---: | ---: | ---: |
+| いま: `ST_AsGeoJSON` → `JSON.parse` | 245 ms | 72 ms | 317 ms |
+| GeoArrow (WKB) のまま返す | 160 ms | (WKB を読む。未実装) | — |
+| (参考) MapLibre の `setData` | | 430 ms | |
+
+GeoArrow にすると問い合わせ側で約 1/3 減るが、**大きいのはネットワークと MapLibre の `setData`**
+(GeoJSON を地図の Worker でタイルに切り直す)。`setData` を避けるには GeoJSON を経由しない描き方
+(deck.gl の GeoArrow 層など) が要る。geoarrow-js は WKB を読まない (読むのは geoarrow-rs の WASM) ので、
+入れるなら WKB を読む小さな関数を自前で書くのが軽い。**急がない** (描き方の作り直しのときに一緒に)。
+
+### STAC Browser
+
+Radiant Earth の STAC Browser (Vue のページ) は、**地図ではなくページで**カタログを辿る標準の画面。
+このカタログのリンクにもう対応している: `rel: "3d-tiles"` は Cesium Sandcastle で開く、
+GeoParquet のアセットは geoparquet.info で開く、PMTiles は Protomaps のビューアで開く。
+
+| 使い方 | 手間 | 要るもの |
+| --- | --- | --- |
+| 公開されているもの (radiantearth.github.io/stac-browser) に URL を渡す | 無し | R2 の CORS にそのオリジンを足す |
+| ビルドして GitHub Pages の `/browser/` に置く | デプロイに1工程 | `catalogUrl`・`pathPrefix`・`historyMode: hash` を設定。同じオリジンなので CORS はそのまま |
+
+### テストの時間
+
+全体 (114件) は2並列で約17分。1件の中央値は17秒で、**何もしないテストでも約8秒**かかる
+(テストごとに DuckDB-WASM を起こすため: 35MB の取得とコンパイルで約2.7秒、行政区域などの準備で
+約1.3秒、並列で CPU を取り合ってさらに伸びる)。同じブラウザで読み直しても速くならなかった。
+
+- 手順を変えた: 作業中は関係するテストだけを流し、区切りで**本番ビルドを1回だけ**全部流す
+  (以前は開発サーバーと本番ビルドで2回流していた)
+- 起動そのものを速くするなら、行政区域のビューを使うときまで作らない (利用者にも効く、約1秒)
+
 ## 気をつけること: ODbLの感染範囲
 
 **再頒布そのものは4つとも認められている** ([README](../README.md) のライセンス節)。
