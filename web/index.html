@@ -13,7 +13,7 @@
             <input
               id="search-input"
               type="text"
-              placeholder="市区町村・地名で検索 (例: 港区)"
+              placeholder="地名・駅・路線で検索"
               autocomplete="off"
               disabled
             />
@@ -82,20 +82,21 @@
             <div id="layer-body">
             <!-- 一覧には**使うものだけ**を置く。足すのは「＋ 追加」(カタログのダイアログ)、
                  外すのは行の ✕。チェックを外しても一覧からは消えない。
-                 どちらの区分も**上の行ほど上に重なる** (↑↓ で入れ替える)。 -->
-            <!-- **データ**: SQL で引ける GeoParquet。 -->
+                 どちらの区分も、上の行が上に重なる (行の ⋮⋮ を掴んで並べ替える)。
+                 重なりの説明は区分の見出しには書かない (短く言うと「上ほど上」になり、かえって読めない)。 -->
+            <!-- **データ**: GeoParquet。検索や周辺検索の対象になる。 -->
             <section id="data-section" class="layer-section">
               <div class="layer-section-title">
-                <span>データ <span class="layer-section-note">SQL で引ける · 上ほど上</span></span>
+                <span>データ</span>
                 <button type="button" class="layer-add-button" data-section="data" title="カタログからデータを足す">＋ 追加</button>
               </div>
               <div id="layer-rows"></div>
               <p id="layer-empty" class="layer-empty" hidden>「＋ 追加」から使うデータを選んでください</p>
             </section>
-            <!-- **地図タイル**: 見るだけのもの (ベクタータイル・背景地図・標高)。 -->
+            <!-- **地図タイル**: 見るだけのもの (ベクタータイル・背景地図・標高)。調べられないことを見出しで言う。 -->
             <section id="tile-section" class="layer-section">
               <div class="layer-section-title">
-                <span>地図タイル <span class="layer-section-note">上ほど上</span></span>
+                <span>地図タイル <span class="layer-section-note">表示のみ</span></span>
                 <button type="button" class="layer-add-button" data-section="tile" title="カタログから地図タイルを足す">＋ 追加</button>
               </div>
               <div id="tile-rows"></div>
@@ -290,8 +291,8 @@
           <h3>データを見る</h3>
           <ul>
             <li>左の一覧には<b>使うものだけ</b>を置きます。<b>＋ 追加</b>でカタログを開き、出所ごとに並んだ中から足します。語を入れると出所をまたいで<b>絞り込め</b>ます (例: 「送電」「水部」)</li>
-            <li>チェックで地図に出す / 隠す、<b>✕</b> で一覧から外します。足したものと順番はこの端末に覚えておきます</li>
-            <li>データと地図タイル (背景地図など) は、それぞれ<b>上の行ほど上に重なります</b>。<b>↑↓</b> で入れ替えます</li>
+            <li>チェックで地図に出す / 隠す、<b>✕</b> で一覧から外します。読み直すと既定 (建物と淡色地図) に戻ります</li>
+            <li>データと地図タイル (背景地図など) は、それぞれ一覧で上にある行が地図でも上に重なります。行の <b>⋮⋮</b> を掴んで並べ替えます (キーボードでは ⋮⋮ を選んで ↑↓)</li>
             <li><b>▸</b> で中の層を開き、層ごとに出し入れできます (国土地理院)。ズームを変えても設定は戻りません</li>
             <li><b>⚙</b> で絞り込み・色分け・不透明度を、その行の下に開きます (地図を見ながら動かせます)</li>
             <li><b>ⓘ</b> でデータについて (カタログ・使う条件・版) を開き、<b>この範囲を取得</b>できます (GeoParquet・CityGML)</li>
@@ -343,10 +344,6 @@
         />
         <div id="catalog-rows"></div>
         <p id="layer-filter-empty" class="layer-empty" hidden>当てはまるものがありません</p>
-        <p class="catalog-foot">
-          足したものと順番はこの端末に覚えておきます。
-          <button type="button" id="layer-reset">一覧を既定に戻す</button>
-        </p>
       </div>
     </dialog>
     <dialog id="search-dialog" class="info-dialog">

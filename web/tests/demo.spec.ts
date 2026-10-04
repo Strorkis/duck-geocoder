@@ -197,6 +197,21 @@ async function openCatalogFor(page: Page, layer: string) {
   throw new Error(`${layer} がカタログに無い`);
 }
 
+/**
+ * 一覧の行を、行の ⋮⋮ を掴んで `target` の行の位置へドラッグする (`where` はその上か下か)。
+ * マウスの操作で動かす (Pointer Events で書いてあるので、指でも同じ経路を通る)。
+ */
+async function dragRow(page: Page, layer: string, target: string, where: 'above' | 'below') {
+  const handle = page.locator(`.layer-row[data-layer="${layer}"] .layer-drag-handle`);
+  const from = (await handle.boundingBox())!;
+  const to = (await page.locator(`.layer-row[data-layer="${target}"]`).boundingBox())!;
+  const y = where === 'above' ? to.y + 2 : to.y + to.height - 2;
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(from.x + from.width / 2, y, { steps: 8 });
+  await page.mouse.up();
+}
+
 /** カタログのダイアログを開いていれば閉じる。 */
 async function closeCatalog(page: Page) {
   const dialog = page.locator('#layer-catalog-dialog');
@@ -952,7 +967,7 @@ function visibleBasemaps(page: Page): Promise<string[]> {
  * **背景地図も一覧の行** (QGISと同じく、重ねられるレイヤーの1つ)。既定では淡色地図だけ。
  * カタログから足すと実際にそのタイルを取りに行き、**いちばん上に入る** (足したものが見えるように)。
  * **隠しても一覧からは消えず、重ね順も変わらない** (以前は隠すと一覧から外れ、出し直すと
- * いちばん上へ動いた)。順番は ↑↓ だけが変える。
+ * いちばん上へ動いた)。順番は並べ替え (ドラッグ) だけが変える。
  */
 test('背景地図はカタログから足すと上に重なり、隠しても一覧と順番に残る', async ({ page }) => {
   expect(await visibleBasemaps(page)).toEqual([BASEMAP.pale]);
@@ -973,8 +988,8 @@ test('背景地図はカタログから足すと上に重なり、隠しても�
   await showLayer(page, BASEMAP.pale);
   expect(await visibleBasemaps(page)).toEqual([BASEMAP.pale, BASEMAP.photo]);
 
-  // ↑ で淡色地図を上へ。
-  await page.locator(`.layer-row[data-layer="${BASEMAP.pale}"] .layer-move-button`, { hasText: '↑' }).click();
+  // 淡色地図を写真の上へドラッグ。
+  await dragRow(page, BASEMAP.pale, BASEMAP.photo, 'above');
   await expect.poll(() => visibleBasemaps(page)).toEqual([BASEMAP.photo, BASEMAP.pale]);
 
   // 不透明度は行の ⚙ で変えられる (地図を見ながら動かすので、行の下に開く)。
@@ -2398,16 +2413,29 @@ test('路線名でも駅が引ける', async ({ page }) => {
 });
 
 /**
- * 説明文は**切らない**。読ませたいものを省略記号で切るのは失敗の仕方として違う
- * (「国土数値情報 · N02-25 (2026-03-06)」が `...` になっていた)。
+ * **一覧の行は2段まで。** 状態は2段目に1行で切るが、全文は吹き出し (`title`) で読める。
+ * 出所と版は名前の吹き出しに出す。行ごとに2〜3行あると、足すたびに一覧が大きく伸びた。
  */
-test('レイヤーの説明が切れていない', async ({ page }) => {
-  const clipped = await page.evaluate(() =>
-    [...document.querySelectorAll('.layer-row .layer-source, .layer-row .layer-status')]
-      .filter((el) => el.scrollWidth > el.clientWidth + 1)
-      .map((el) => el.textContent),
+test('一覧の行は2段に収まり、切った状態は吹き出しで全文が読める', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+  await page.evaluate(() => {
+    (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7454, 35.6586], zoom: 12 });
+  });
+  const status = page.locator(`[data-layer-status="${LAYER.plateauBuildings}"]`);
+  await expect(status).toContainText('整備範囲');
+  // 吹き出しは状態の全文。
+  expect(await status.getAttribute('title')).toBe(await status.textContent());
+  // 名前の吹き出しに出所と版。
+  await expect(page.locator(`.layer-row[data-layer="${LAYER.plateauBuildings}"] .layer-name`)).toHaveAttribute(
+    'title',
+    /PLATEAU/,
   );
-  expect(clipped, `見切れている: ${clipped.join(' / ')}`).toEqual([]);
+  // 状態は1行 (行の高さは1段目 + 状態1行)。
+  const { height, fontSize } = await status.evaluate((el) => ({
+    height: el.getBoundingClientRect().height,
+    fontSize: parseFloat(getComputedStyle(el).fontSize),
+  }));
+  expect(height).toBeLessThan(fontSize * 2);
 });
 
 /**
@@ -2440,29 +2468,32 @@ test('検索していないときは左上が地図を塞がない', async ({ pa
  * 背景地図と地形は**出所の見出しの下の行**。既定で出ているが、それを理由に見出しは開かない
  * (開くと国土地理院とMapterhornが常に開いて一覧が伸びる)。見出しの件数で出ていると分かる。
  */
-test('地図タイルは足したものを重ね順に並べ、↑↓ で入れ替え、✕ で外せる', async ({ page }) => {
+test('地図タイルは足したものを重ね順に並べ、ドラッグで入れ替え、✕ で外せる', async ({ page }) => {
   // 既定では淡色地図だけ。ほかはカタログのダイアログの中。
   expect(await shownTiles(page)).toEqual([BASEMAP.pale]);
   await expect(page.locator('#terrain-toggle')).toBeChecked();
-  await expect(page.locator(`[data-layer="${BASEMAP.pale}"]`)).toContainText('地図タイル');
+  await expect(page.locator(`[data-layer="${BASEMAP.pale}"] .layer-name`)).toHaveAttribute('title', /地図タイル/);
 
   // 足すと**いちばん上**に入り、一覧でも上に並ぶ (何が上かが一覧で見える)。
   await showLayer(page, BASEMAP.photo);
   expect(await shownTiles(page)).toEqual([BASEMAP.photo, BASEMAP.pale]);
   expect(await visibleBasemaps(page)).toEqual([BASEMAP.pale, BASEMAP.photo]);
 
-  // ↓ で写真を下へ。地図の重ね順も入れ替わる。
-  await page.locator(`[data-layer="${BASEMAP.photo}"] .layer-move-button`, { hasText: '↓' }).click();
-  expect(await shownTiles(page)).toEqual([BASEMAP.pale, BASEMAP.photo]);
+  // 写真を淡色地図の下へドラッグ。地図の重ね順も入れ替わる。
+  await dragRow(page, BASEMAP.photo, BASEMAP.pale, 'below');
+  await expect.poll(() => shownTiles(page)).toEqual([BASEMAP.pale, BASEMAP.photo]);
   await expect.poll(() => visibleBasemaps(page)).toEqual([BASEMAP.photo, BASEMAP.pale]);
-  // いちばん上の ↑ と、いちばん下の ↓ は押せない。
-  await expect(
-    page.locator(`[data-layer="${BASEMAP.pale}"] .layer-move-button`, { hasText: '↑' }),
-  ).toBeDisabled();
+  // キーボードでも動かせる (⋮⋮ を選んで ↓)。動かしたあともフォーカスは同じ行に残る。
+  const handle = page.locator(`.layer-row[data-layer="${BASEMAP.pale}"] .layer-drag-handle`);
+  await handle.focus();
+  await page.keyboard.press('ArrowDown');
+  await expect.poll(() => shownTiles(page)).toEqual([BASEMAP.photo, BASEMAP.pale]);
+  await expect(handle).toBeFocused();
+  await expect.poll(() => visibleBasemaps(page)).toEqual([BASEMAP.pale, BASEMAP.photo]);
 
   // 隠しても一覧に残る。✕ で外すと一覧から消え、地図からも消える。
   await hideLayer(page, BASEMAP.photo);
-  expect(await shownTiles(page)).toEqual([BASEMAP.pale, BASEMAP.photo]);
+  expect(await shownTiles(page)).toEqual([BASEMAP.photo, BASEMAP.pale]);
   await showLayer(page, BASEMAP.photo);
   await page.locator(`[data-layer="${BASEMAP.photo}"] .layer-remove-button`).click();
   expect(await shownTiles(page)).toEqual([BASEMAP.pale]);
@@ -2475,7 +2506,7 @@ test('地図タイルは足したものを重ね順に並べ、↑↓ で入れ�
 
 /**
  * **データも上の行ほど上に重なる。** 足すと既定の重なりの位置に入り (人口メッシュは
- * 建物の下)、↑↓ で入れ替えると地図の層の順も入れ替わる。データは地図タイルより常に上。
+ * 建物の下)、ドラッグで入れ替えると地図の層の順も入れ替わる。データは地図タイルより常に上。
  */
 test('データの重ね順も一覧で入れ替えられる', async ({ page }) => {
   test.skip(!(await hasBuildings(page)), '建物データが無い');
@@ -2493,29 +2524,22 @@ test('データの重ね順も一覧で入れ替えられる', async ({ page }) 
   expect(o.mesh).toBeLessThan(o.buildings);
   expect(o.tiles).toBeLessThan(o.mesh);
 
-  await page.locator(`[data-layer="${LAYER.mesh}"] .layer-move-button`, { hasText: '↑' }).click();
-  expect(await rows()).toEqual([LAYER.mesh, LAYER.plateauBuildings]);
+  await dragRow(page, LAYER.mesh, LAYER.plateauBuildings, 'above');
+  await expect.poll(rows).toEqual([LAYER.mesh, LAYER.plateauBuildings]);
   o = await order();
   expect(o.mesh).toBeGreaterThan(o.buildings);
   expect(o.tiles).toBeLessThan(o.buildings);
 });
 
 /**
- * **足したものと順番は端末に覚えておく。** 読み直しても同じ一覧で始まり、
- * 「一覧を既定に戻す」で既定 (建物と淡色地図) に戻る。
+ * **読み直せば既定に戻る** (端末には覚えない)。覚えておくと、前に何を足したかで
+ * 起動時の見た目と読み込む量が変わる。
  */
-test('足したものと順番は読み直しても残り、既定に戻せる', async ({ page }) => {
+test('足したものは読み直すと既定に戻る', async ({ page }) => {
   await showLayer(page, BASEMAP.photo);
   await hideLayer(page, BASEMAP.pale);
   await page.reload();
   await waitForReady(page);
-  expect(await shownTiles(page)).toEqual([BASEMAP.photo, BASEMAP.pale]);
-  await expect(page.locator(`#layer-toggle-${BASEMAP.pale}`)).not.toBeChecked();
-  expect(await visibleBasemaps(page)).toEqual([BASEMAP.photo]);
-
-  await page.locator('.layer-add-button[data-section="tile"]').click();
-  await page.locator('#layer-reset').click();
-  await closeCatalog(page);
   expect(await shownTiles(page)).toEqual([BASEMAP.pale]);
   expect(await visibleBasemaps(page)).toEqual([BASEMAP.pale]);
 });

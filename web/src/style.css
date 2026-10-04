@@ -410,8 +410,9 @@ body,
   left: 1rem;
   bottom: 1rem;
   z-index: 1;
-  /* 用途を2列で並べるので、長い名前 (店舗等併用共同住宅など) が切れない幅を取る。 */
-  width: 17.5rem;
+  /* 用途を2列で並べるので、長い名前 (店舗等併用共同住宅など) が切れない幅を取る。
+     行の1段目に掴む印・チェック・名前・ボタン3〜4つが並ぶので、少し広げた。 */
+  width: 19rem;
   max-width: calc(100vw - 2rem);
   max-height: calc(100vh - 5rem);
   overflow-y: auto;
@@ -1117,21 +1118,6 @@ body,
   cursor: default;
 }
 
-.catalog-foot {
-  margin: 0.8rem 0 0;
-  font-size: 0.75rem;
-  color: #777;
-}
-
-#layer-reset {
-  margin-left: 0.4rem;
-  border: 1px solid #ccc;
-  border-radius: 0.25rem;
-  background: white;
-  font: inherit;
-  cursor: pointer;
-}
-
 /* STACの文書を開くボタン。目立たせない — 読む人は読む。見た目はリンクに寄せる。 */
 .json-link {
   flex: none;
@@ -1726,13 +1712,69 @@ body,
   background: #f5f9fd;
 }
 
-/* 行の2段目: 出所と版が残りの幅を取り、↑↓✕ は右端に寄せる。状態はその下に折り返す。 */
-.layer-sub {
-  align-items: center;
+/* ---- 一覧の行は2段まで ----------------------------------------------------------
+   1段目に操作、2段目に状態を**1行だけ**。行ごとに2〜3行あると、足すたびに一覧が
+   大きく伸びた。出所と版は名前の吹き出しと ⓘ、状態の全文は状態の吹き出しで読む。 */
+.layer-head {
+  gap: 0.2rem;
 }
 
-.layer-sub .layer-source {
-  flex: 1;
+.layer-row .layer-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.layer-sub {
+  flex-wrap: nowrap;
+  align-items: baseline;
+  /* 掴む印とチェックボックスの幅だけ字下げして、名前の下に揃える。 */
+  padding-left: 2.3rem;
+}
+
+.layer-row .layer-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.layer-absent-note {
+  flex: none;
+  margin-right: 0.3rem;
+  color: #a05a00;
+}
+
+/* 並べ替えの持ち手。掴める形 (grab) にし、指で触ってもページが動かないようにする。 */
+.layer-drag-handle {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 1rem;
+  min-height: 1.75rem;
+  padding: 0;
+  border: none;
+  border-radius: 0.2rem;
+  background: transparent;
+  color: #999;
+  font-size: 0.75rem;
+  letter-spacing: -0.2em;
+  cursor: grab;
+  touch-action: none;
+}
+
+.layer-drag-handle:hover,
+.layer-drag-handle:focus-visible {
+  background: #eef3f9;
+  color: #14508c;
+}
+
+/* 掴んでいる行。持ち上がって見えるようにする。 */
+.layer-row.dragging {
+  background: #f5f9fd;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  cursor: grabbing;
 }
 
 .layer-remove-button {
@@ -1749,6 +1791,15 @@ body,
 
 #terrain-row[hidden] {
   display: none;
+}
+
+/* 地形の行は並べ替えない (1つだけ選ぶ) ので ⋮⋮ が無い。その幅だけ字下げして、ほかの行と揃える。 */
+#terrain-row .layer-head {
+  padding-left: 1.2rem;
+}
+
+#terrain-row .layer-sub {
+  padding-left: 2.5rem;
 }
 
 #terrain-source {
@@ -1773,7 +1824,6 @@ body,
 .layer-detail-button,
 .layer-zoom-button,
 .layer-expander,
-.layer-move-button,
 .layer-remove-button {
   display: inline-grid;
   place-items: center;
@@ -1788,22 +1838,8 @@ body,
 .layer-detail-button:hover,
 .layer-zoom-button:hover,
 .layer-expander:hover,
-.layer-move-button:hover:not(:disabled),
 .layer-remove-button:hover {
   background: #eef3f9;
-}
-
-.layer-move-button {
-  flex: none;
-  border: none;
-  background: transparent;
-  color: #666;
-  cursor: pointer;
-}
-
-.layer-move-button:disabled {
-  color: #ccc;
-  cursor: default;
 }
 
 .layer-head input[type='checkbox'],
@@ -1819,11 +1855,15 @@ body,
   .layer-detail-button,
   .layer-zoom-button,
   .layer-expander,
-  .layer-move-button,
   .layer-remove-button {
     min-width: 2.5rem;
     min-height: 2.5rem;
     font-size: 1.1rem;
+  }
+
+  .layer-drag-handle {
+    width: 1.6rem;
+    min-height: 2.5rem;
   }
 
   .layer-head input[type='checkbox'],

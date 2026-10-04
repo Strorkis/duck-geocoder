@@ -6,17 +6,18 @@
  * 足すのはダイアログから、外すのは行の ✕ から。**チェックを外しても一覧からは消えない**
  * (以前は地図タイルを外すと「足す」の中へ戻り、出し直すたびに探し直していた)。
  *
- * 区分はデータ (GeoParquet) と地図タイルの2つ。どちらも**上の行ほど上に重なり**、↑↓ で入れ替える。
- * データは地図タイルより常に上。
+ * 区分はデータ (GeoParquet) と地図タイルの2つ。どちらも**上の行が上に重なり**、
+ * 行の ⋮⋮ を掴んで並べ替える。データは地図タイルより常に上。
  *
- * 置いたもの・順番・出しているかは端末に覚えておく (localStorage)。
+ * **端末には覚えない。** 読み直せば既定 (建物と淡色地図) に戻る (利用者の判断。
+ * 覚えておくと、前に何を足したかで起動時の見た目と読み込む量が変わる)。
  */
 import type { Map as MapLibreMap } from 'maplibre-gl';
 import type { Bbox, CatalogGroup, Collection, VectorLayerInfo } from '../lib/stac';
 import type { BuildingCoverage } from '../lib/sources';
 import type { VectorOverlay } from '../lib/tiles';
 
-/** 一覧の区分。データ (SQL で引ける GeoParquet) と、見るだけの地図タイル。 */
+/** 一覧の区分。データ (GeoParquet) と、見るだけの地図タイル。 */
 export type Section = 'data' | 'tile';
 
 /**
@@ -31,7 +32,7 @@ export interface Layer {
   group: CatalogGroup | undefined;
   /** この行を作っているCollection。ⓘ で中身を見せる。 */
   collections: Collection[];
-  /** 行の2段目に添える版や形式 (出所の名前は一覧が足す)。 */
+  /** 版や形式。カタログのダイアログと、一覧の名前の吹き出しに出す。 */
   vintage?: string;
   /** 収録範囲。**この場所にあるか**の判定に使う。複数Collectionなら和。 */
   bbox: Bbox | null;
@@ -83,32 +84,6 @@ export interface LayerList {
   render: () => void;
   /** 地図の重ね順を一覧に合わせる。**層をあとから作ったら呼ぶ** (地理院のテーマ)。 */
   applyOrder: () => void;
-  /** 一覧に置いているか。 */
-  isPlaced: (id: string) => boolean;
-}
-
-const STORAGE_KEY = 'duck-geocoder:layers';
-
-/** 覚えておく1行ぶん。中の層は、出しているもの (隠しているなら、出すときに戻すもの)。 */
-interface SavedRow {
-  id: string;
-  visible: boolean;
-  parts?: string[];
-}
-
-type Saved = Record<Section, SavedRow[]>;
-
-function loadSaved(): Saved | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const value = JSON.parse(raw) as Partial<Saved>;
-    if (!Array.isArray(value.data) || !Array.isArray(value.tile)) return null;
-    return { data: value.data, tile: value.tile };
-  } catch {
-    // 壊れていたら既定で始める (覚えておくのは便利のためで、無くても使える)。
-    return null;
-  }
 }
 
 const SECTION_TITLES: Record<Section, string> = { data: 'データ', tile: '地図タイル' };
@@ -169,20 +144,6 @@ export function createLayerList(options: LayerListOptions): LayerList {
     }
   };
 
-  const save = () => {
-    const rows = (section: Section): SavedRow[] =>
-      order[section].map((id) => {
-        const layer = byId.get(id)!;
-        const parts = layer.parts ? (layer.visible ? shownParts(layer) : lastParts.get(id)) : undefined;
-        return { id, visible: layer.visible, ...(parts ? { parts } : {}) };
-      });
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ data: rows('data'), tile: rows('tile') }));
-    } catch {
-      // 保存できない環境 (プライベートモードなど) でも一覧は使える。
-    }
-  };
-
   /**
    * 重ね順を地図に写す。**下から順に、区分の目印の直下へ動かす** (動かすたびにその直下へ
    * 入るので、最後に動かしたものがいちばん上になる)。
@@ -215,7 +176,6 @@ export function createLayerList(options: LayerListOptions): LayerList {
     setVisible(layer, true, parts);
     layer.refresh();
     applyOrder();
-    save();
     render();
   };
 
@@ -226,19 +186,75 @@ export function createLayerList(options: LayerListOptions): LayerList {
     setVisible(layer, false);
     lastParts.delete(layer.id);
     layer.refresh();
-    save();
     render();
   };
 
-  const move = (layer: Layer, delta: -1 | 1) => {
-    const list = order[layer.section];
-    const index = list.indexOf(layer.id);
-    const target = index + delta;
-    if (index < 0 || target < 0 || target >= list.length) return;
-    [list[index], list[target]] = [list[target], list[index]];
+  /** 並びを替える (ドラッグを放したとき・キーボードの ↑↓)。 */
+  const reorder = (section: Section, ids: string[]) => {
+    if (ids.join() === order[section].join()) return;
+    order[section] = ids;
     applyOrder();
-    save();
     render();
+  };
+
+  // ---- 並べ替え (ドラッグ) -------------------------------------------------------
+  //
+  // **ドラッグで並べ替える** (QGIS など、レイヤーの並べ替えはこれが普通)。HTML の
+  // Drag and Drop API は指で触る端末で動かないので、Pointer Events で自前に書く。
+  // 掴むのは行の ⋮⋮ だけ (行のどこでも掴めると、チェックやスクロールと取り合う)。
+  // キーボードでは ⋮⋮ にフォーカスして ↑↓ で動かす。
+
+  const startDrag = (e: PointerEvent, row: HTMLElement, section: Section) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const container = rowsEl[section];
+    // 動きは window で拾う。持ち手に setPointerCapture すると、行を DOM の中で動かした
+    // 時点でキャプチャが外れ、続きのイベントが届かなくなる (実際にそれで動かなかった)。
+    row.classList.add('dragging');
+    const onMove = (move: PointerEvent) => {
+      if (move.pointerId !== e.pointerId) return;
+      // 指している行の上半分ならその前へ、下半分ならその後ろへ。**DOMの並びを直接動かす**
+      // (放すまで描き直さない。描き直すと掴んでいる要素が消える)。
+      const siblings = [...container.querySelectorAll<HTMLElement>(':scope > .layer-row')].filter(
+        (other) => other !== row,
+      );
+      const after = siblings.find((other) => {
+        const box = other.getBoundingClientRect();
+        return move.clientY < box.top + box.height / 2;
+      });
+      if (after) container.insertBefore(row, after);
+      else container.append(row);
+    };
+    const onUp = (up: PointerEvent) => {
+      if (up.pointerId !== e.pointerId) return;
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      row.classList.remove('dragging');
+      const ids = [...container.querySelectorAll<HTMLElement>(':scope > .layer-row')].map(
+        (el) => el.dataset.layer!,
+      );
+      reorder(section, ids);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  };
+
+  const keyMove = (e: KeyboardEvent, layer: Layer) => {
+    const delta = e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0;
+    if (delta === 0) return;
+    e.preventDefault();
+    const ids = [...order[layer.section]];
+    const index = ids.indexOf(layer.id);
+    const target = index + delta;
+    if (target < 0 || target >= ids.length) return;
+    [ids[index], ids[target]] = [ids[target], ids[index]];
+    reorder(layer.section, ids);
+    // 描き直したので、新しい行の ⋮⋮ にフォーカスを戻す (続けて押せるように)。
+    rowsEl[layer.section]
+      .querySelector<HTMLElement>(`[data-layer="${CSS.escape(layer.id)}"] .layer-drag-handle`)
+      ?.focus();
   };
 
   // ---- 一覧の行 ------------------------------------------------------------------
@@ -249,6 +265,7 @@ export function createLayerList(options: LayerListOptions): LayerList {
     button.className = className;
     button.textContent = text;
     button.title = title;
+    button.setAttribute('aria-label', title);
     button.addEventListener('click', onClick);
     return button;
   };
@@ -256,11 +273,25 @@ export function createLayerList(options: LayerListOptions): LayerList {
   /** 中身のある設定か。送電線・川・地理院のテーマは絞り込みを持たない (⚙ を出さない)。 */
   const hasSettings = (layer: Layer) => layer.settings.childElementCount > 0;
 
+  /**
+   * 一覧の1行。**1段目に操作、2段目に状態を1行だけ。** 出所と版は名前の吹き出しと ⓘ に
+   * 回した (行ごとに2〜3行あると、足すたびに一覧が大きく伸びた)。状態も1行で切り、
+   * 全文は吹き出しで読む。
+   */
   const row = (layer: Layer): HTMLElement => {
     const present = isPresent(layer);
     const el = document.createElement('div');
     el.className = present ? 'layer-row' : 'layer-row absent';
     el.dataset.layer = layer.id;
+
+    const handle = document.createElement('button');
+    handle.type = 'button';
+    handle.className = 'layer-drag-handle';
+    handle.textContent = '⋮⋮';
+    handle.title = '掴んで並べ替える (↑↓キーでも動かせる)';
+    handle.setAttribute('aria-label', `${layer.title}の重ね順を変える`);
+    handle.addEventListener('pointerdown', (e) => startDrag(e, el, layer.section));
+    handle.addEventListener('keydown', (e) => keyMove(e, layer));
 
     const toggle = document.createElement('input');
     toggle.type = 'checkbox';
@@ -278,7 +309,6 @@ export function createLayerList(options: LayerListOptions): LayerList {
       // テーマを中間の印から押したら、覚えている層ではなく全部を出す。
       setVisible(layer, toggle.checked, parts && toggle.checked ? parts.layers.map((p) => p.id) : undefined);
       layer.refresh();
-      save();
       if (parts) render();
     });
 
@@ -286,20 +316,20 @@ export function createLayerList(options: LayerListOptions): LayerList {
     name.className = 'layer-name';
     name.htmlFor = toggle.id;
     name.textContent = layer.title;
+    name.title = [layer.group?.title, layer.title, layer.vintage].filter(Boolean).join(' · ');
 
-    // **いまの位置のまま寄る。** 見たい場所は既に画面にあることが多く、足りないのはズームだけ。
+    // **いまの位置のまま寄る。** 出るズームより引いているときだけ出す (寄っていれば要らない)。
     const zoomIn = iconButton('layer-zoom-button', '🔍', `ズーム${layer.minZoom ?? 0}まで寄る`, () => {
       if (layer.minZoom === undefined) return;
       // 出していなければ一緒に出す。寄っただけで何も出ないのは分かりにくい。
       if (!layer.visible) {
         setVisible(layer, true);
         toggle.checked = true;
-        save();
       }
       map.easeTo({ zoom: layer.minZoom, duration: 600 });
       layer.refresh();
     });
-    zoomIn.hidden = layer.minZoom === undefined;
+    zoomIn.hidden = layer.minZoom === undefined || map.getZoom() >= layer.minZoom;
 
     // **ボタンは性格で分ける。** ⚙ = 地図を見ながら動かすもの (絞り込み・色分け・不透明度) を
     // この行の下に開く。ⓘ = 読むもの (カタログ・使う条件・取得) をダイアログで開く。
@@ -321,35 +351,30 @@ export function createLayerList(options: LayerListOptions): LayerList {
     const detail = iconButton('layer-detail-button', 'ⓘ', `${layer.title}について (カタログ・使う条件・取得)`, () =>
       openDetails(layer),
     );
+    const removeButton = iconButton('layer-remove-button', '✕', `${layer.title}を一覧から外す`, () =>
+      remove(layer),
+    );
 
     const head = document.createElement('div');
     head.className = 'layer-head';
-    head.append(toggle, name, zoomIn, settings, detail);
+    head.append(handle, toggle, name, zoomIn, settings, detail, removeButton);
 
-    // 2段目: 出所と版、重ね順 (↑↓) と外す (✕)。状態はその下に折り返す。
-    // **1段目に詰めない** — ボタンが6つ並ぶと名前が潰れる (17.5remのパネル)。
-    const source = document.createElement('span');
-    source.className = 'layer-source';
-    source.textContent = [layer.group?.title, layer.vintage, present ? null : 'この範囲には無い']
-      .filter(Boolean)
-      .join(' · ');
-    const list = order[layer.section];
-    const index = list.indexOf(layer.id);
-    const up = iconButton('layer-move-button', '↑', '上へ (上に重ねる)', () => move(layer, -1));
-    up.disabled = index <= 0;
-    const down = iconButton('layer-move-button', '↓', '下へ (下に重ねる)', () => move(layer, 1));
-    down.disabled = index === list.length - 1;
-    const removeButton = iconButton('layer-remove-button', '✕', '一覧から外す', () => remove(layer));
-
-    // 状態 (件数や「拡大すると出ます」) は**行に出す**。設定の中に置くと開かない限り読めない。
+    // 2段目: 状態 (件数や「ズーム14から」)。**行に出す** — 設定の中に置くと開かない限り
+    // 読めない。1行で切り、全文は吹き出し (`title`) で読む。
     const status = document.createElement('span');
     status.className = 'layer-status';
     status.dataset.layerStatus = layer.id;
     status.textContent = statusOf(layer.id);
-
+    status.title = status.textContent;
     const sub = document.createElement('div');
     sub.className = 'layer-sub';
-    sub.append(source, up, down, removeButton, status);
+    if (!present) {
+      const absent = document.createElement('span');
+      absent.className = 'layer-absent-note';
+      absent.textContent = 'この範囲には無い';
+      sub.append(absent);
+    }
+    sub.append(status);
 
     el.append(head, sub);
     if (parts) appendParts(el, head, status, layer, parts);
@@ -383,6 +408,7 @@ export function createLayerList(options: LayerListOptions): LayerList {
     // 出しているのに、いまのズームでは1つも描かれないなら、いつから描かれるかを言う。
     if (shown.length > 0 && shown.every((part) => zoom < part.minzoom)) {
       status.textContent = `${fromZoom(Math.min(...shown.map((part) => part.minzoom)))}描かれます`;
+      status.title = status.textContent;
     }
 
     // 中が1層だけなら開く意味が無い (注記・建物・送電線)。
@@ -416,7 +442,6 @@ export function createLayerList(options: LayerListOptions): LayerList {
         parts.overlay.visible.set(part.id, box.checked);
         layer.visible = parts.layers.some((p) => parts.overlay.visible.get(p.id));
         layer.refresh();
-        save();
         render();
       });
       const title = document.createElement('span');
@@ -590,58 +615,14 @@ export function createLayerList(options: LayerListOptions): LayerList {
     renderCatalog();
   });
 
-  // ---- 既定と、覚えている一覧 ------------------------------------------------------
+  // ---- 既定 ----------------------------------------------------------------------
 
-  /** 既定で出しているもの (カタログの `duck:default` と、先頭の建物)。 */
-  const defaults = layers.filter((layer) => layer.visible).map((layer) => layer.id);
-
-  const placeDefaults = () => {
-    for (const section of ['data', 'tile'] as const) {
-      order[section] = layers
-        .filter((layer) => layer.section === section && defaults.includes(layer.id))
-        .sort((a, b) => (section === 'data' ? a.rank - b.rank : 0))
-        .map((layer) => layer.id);
-    }
-    for (const layer of layers) setVisible(layer, defaults.includes(layer.id));
-  };
-
-  const restore = (saved: Saved) => {
-    for (const layer of layers) setVisible(layer, false);
-    lastParts.clear();
-    for (const section of ['data', 'tile'] as const) {
-      order[section] = [];
-      for (const entry of saved[section]) {
-        const layer = byId.get(entry.id);
-        // カタログから消えたもの・区分が変わったもの・描けないものは捨てる。
-        if (!layer || layer.section !== section || layer.viewOnly || order[section].includes(layer.id)) continue;
-        order[section].push(layer.id);
-        if (entry.parts && entry.parts.length > 0) lastParts.set(layer.id, entry.parts);
-        setVisible(layer, entry.visible, entry.parts);
-      }
-    }
-  };
-
-  // 「一覧を既定に戻す」。覚えている一覧を捨てて、既定で出すものだけにする。
-  document.querySelector('#layer-reset')!.addEventListener('click', () => {
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      // 消せなくても既定には戻す。
-    }
-    settingsRowId = null;
-    placeDefaults();
-    for (const layer of layers) layer.refresh();
-    applyOrder();
-    render();
-  });
-
-  const saved = loadSaved();
-  if (saved) {
-    restore(saved);
-    // 既定と違うものを出しているかもしれないので、全部の行に描き直させる。
-    for (const layer of layers) layer.refresh();
-  } else {
-    placeDefaults();
+  // 既定で出しているもの (カタログの `duck:default` と、先頭の建物) を置いて始める。
+  for (const section of ['data', 'tile'] as const) {
+    order[section] = layers
+      .filter((layer) => layer.section === section && layer.visible)
+      .sort((a, b) => (section === 'data' ? a.rank - b.rank : 0))
+      .map((layer) => layer.id);
   }
   for (const layer of layers) storeEl.append(layer.settings);
   applyOrder();
@@ -651,5 +632,5 @@ export function createLayerList(options: LayerListOptions): LayerList {
     if (dialog.open) renderCatalog();
   };
 
-  return { render, applyOrder, isPlaced: (id) => order.data.includes(id) || order.tile.includes(id) };
+  return { render, applyOrder };
 }
