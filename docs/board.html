@@ -331,7 +331,7 @@
       </div>
       <div class="card kpi">
         <div class="label">公開待ちのコミット</div>
-        <div class="value">20 <small>件</small></div>
+        <div class="value">22 <small>件</small></div>
         <span class="status you">R2へのアップロード → push 待ち</span>
       </div>
       <div class="card kpi">
@@ -454,7 +454,7 @@
               <td><a href="../pipeline/src/external.rs">external.rs</a> · <a href="../pipeline/src/pmtiles.rs">pmtiles.rs</a></td>
               <td>外部の PMTiles をスナップショット (追跡) からカタログへ。テーマが層をちょうど覆うことを検証</td>
             </tr>
-            <tr class="group"><th colspan="2">使い方 (web/src/lib/ と main.ts)</th></tr>
+            <tr class="group"><th colspan="2">使い方 (web/src/lib/ · ui/ と main.ts)</th></tr>
             <tr>
               <td><a href="../web/src/lib/stac.ts">lib/stac.ts</a> の <code>walkCatalog</code></td>
               <td>カタログを歩いて Collection を作る。相対リンクは<b>その文書からの相対</b>で解く</td>
@@ -476,16 +476,20 @@
               <td>背景地図と地形を<b>カタログから組む</b>。地理院の標高 (独自形式) は読み込むときに Terrarium へ詰め直す</td>
             </tr>
             <tr>
-              <td>main.ts の <code>buildingDepth</code> · <code>fetchBuildingsInView</code></td>
+              <td>main.ts の <code>buildingDepth</code> · <a href="../web/src/lib/queries.ts">lib/queries.ts</a> の <code>fetchBuildingsInView</code></td>
               <td>1ズーム引くごとに1段減らす間引き (<code>lod &lt;= 段</code>)。転送量の上限はここ</td>
             </tr>
             <tr>
-              <td>main.ts の <code>exportParquet</code> (initDuckDb の中)</td>
+              <td><a href="../web/src/lib/duckdb.ts">lib/duckdb.ts</a> の <code>exportParquet</code></td>
               <td>ブラウザの中で GeoParquet を書き、出典と規約を KV に入れる</td>
             </tr>
             <tr>
-              <td>main.ts の <code>applyTileOrder</code> · <code>setNearbyFocus</code></td>
-              <td>地図タイルの重ね順を一覧から地図に写す / 周辺検索でほかの層を薄くして閉じたら戻す</td>
+              <td><a href="../web/src/ui/layer-list.ts">ui/layer-list.ts</a> の <code>applyOrder</code> · <code>place</code></td>
+              <td>一覧の順番を地図の層へ写す (区分ごとの目印の層の直下に積む)。足したもの・順番を端末に覚える</td>
+            </tr>
+            <tr>
+              <td>main.ts の <code>HOVER_LAYERS</code> · <code>setNearbyFocus</code></td>
+              <td>吹き出しを層ごとの表で1つの仕掛けに (周辺検索の結果にも、指で押しても出る) / 周辺検索でほかの層を薄くして閉じたら戻す</td>
             </tr>
             <tr class="group"><th colspan="2">判断の記録 (docs)</th></tr>
             <tr>
@@ -513,17 +517,13 @@
           <li>
             <b>表示部分のライブラリ化 (続き)</b>
             <span class="sub">
-              カタログ・地図タイル・データの出所・周辺検索は web/src/lib/ に分けた (main.ts 7,700→6,400行)。
-              残りは DuckDB の問い合わせ (建物・線・検索) と、画面 (一覧・周辺検索のパネル)
+              問い合わせ・検索・初期化・一覧・出典を web/src/lib/ と ui/ に分けた (main.ts 7,741→3,890行)。
+              残りはデータの種類ごとの描き方 (refresh と絞り込みのパネル) と周辺検索のパネル
             </span>
           </li>
           <li>
             <b>周辺検索の見直し (続き)</b>
-            <span class="sub">立体で描く・種類ごとの出し入れ・名前で寄る・Esc を入れた。触ってみての指摘を待っている</span>
-          </li>
-          <li>
-            <b>データの重ね順</b>
-            <span class="sub">地図タイルは一覧で並べ替えられるようにした。データ (建物・道路…) も同じ扱いにするか</span>
+            <span class="sub">当たったものにも吹き出し (押しても出る) を入れた。触ってみての指摘を待っている</span>
           </li>
           <li>
             <b>描き方 (スタイル) の置き場所</b>
@@ -560,8 +560,8 @@
             <span class="sub">duck-geocoder は実態から外れた。方針が文になってから選ぶ</span>
           </li>
           <li>
-            <b>表示部分をライブラリにするか</b>
-            <span class="sub"><code>web/src/main.ts</code> にデモと部品が混ざっている (約6,800行)</span>
+            <b>表示部分を別のパッケージにするか</b>
+            <span class="sub">lib/ と ui/ に分けた。別リポジトリ (npm) に出すかは、使う人が出てから</span>
           </li>
         </ul>
       </section>
