@@ -74,6 +74,15 @@ pub struct VectorLayer {
     /// 属性名 → 型 ("Number" / "String" など)。
     #[serde(default)]
     pub fields: BTreeMap<String, String>,
+    /// **形の種類** ("Point" / "LineString" / "Polygon")。`tilestats` から写す。
+    ///
+    /// `vector_layers` には無い。これがあれば、配布元の描き方 (スタイル) に頼らず
+    /// 面・線・点で描き分けられる。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<String>,
+    /// 地物の数 (全ズームの延べ)。`tilestats` から写す。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<u64>,
 }
 
 /// メタデータのうち、カタログに要るもの。
@@ -84,6 +93,30 @@ pub struct Metadata {
     /// **どう作ったか** (tippecanoe の引数など)。簡略化の度合いがここで分かる。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generator_options: Option<String>,
+}
+
+/// tippecanoe が書く `tilestats` (層ごとの形と件数)。読むだけで、書き出さない。
+#[derive(Debug, Deserialize)]
+struct RawMetadata {
+    #[serde(default)]
+    vector_layers: Vec<VectorLayer>,
+    #[serde(default)]
+    generator_options: Option<String>,
+    #[serde(default)]
+    tilestats: Option<TileStats>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TileStats {
+    #[serde(default)]
+    layers: Vec<TileStatsLayer>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TileStatsLayer {
+    layer: String,
+    geometry: Option<String>,
+    count: Option<u64>,
 }
 
 /// メタデータを読む。圧縮はヘッダの `internal_compression` に従う。
@@ -100,7 +133,22 @@ pub fn parse_metadata(bytes: &[u8], compression: u8) -> Result<Metadata> {
         }
         other => bail!("メタデータの圧縮 {other} には対応していません (gzip だけ)"),
     };
-    serde_json::from_slice(&json).context("メタデータが JSON として読めません")
+    let raw: RawMetadata =
+        serde_json::from_slice(&json).context("メタデータが JSON として読めません")?;
+    // 形と件数は `tilestats` にしか無いので、層ごとに写す。
+    let mut vector_layers = raw.vector_layers;
+    if let Some(stats) = raw.tilestats {
+        for layer in &mut vector_layers {
+            if let Some(stat) = stats.layers.iter().find(|stat| stat.layer == layer.id) {
+                layer.geometry.clone_from(&stat.geometry);
+                layer.count = stat.count;
+            }
+        }
+    }
+    Ok(Metadata {
+        vector_layers,
+        generator_options: raw.generator_options,
+    })
 }
 
 #[cfg(test)]
@@ -167,5 +215,23 @@ mod tests {
         // 素のJSONも読める。
         assert_eq!(parse_metadata(json.as_bytes(), 1).unwrap(), metadata);
         assert!(parse_metadata(b"", 3).is_err());
+        // tilestats が無ければ、形も件数も分からないまま。
+        assert_eq!(metadata.vector_layers[0].geometry, None);
+    }
+
+    /// **形と件数は tilestats から写す。** 配布元の描き方に頼らず描き分けるのに要る。
+    #[test]
+    fn copies_geometry_and_count_from_tilestats() {
+        let json = r#"{"vector_layers":[
+              {"id":"BldA","minzoom":14,"maxzoom":16},
+              {"id":"Anno","minzoom":4,"maxzoom":16}],
+            "tilestats":{"layerCount":2,"layers":[
+              {"layer":"Anno","geometry":"Point","count":62236079},
+              {"layer":"BldA","geometry":"Polygon","count":80556822}]}}"#;
+        let metadata = parse_metadata(json.as_bytes(), 1).unwrap();
+        let bld = &metadata.vector_layers[0];
+        assert_eq!(bld.geometry.as_deref(), Some("Polygon"));
+        assert_eq!(bld.count, Some(80_556_822));
+        assert_eq!(metadata.vector_layers[1].geometry.as_deref(), Some("Point"));
     }
 }

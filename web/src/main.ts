@@ -10,7 +10,8 @@ import {
   addProtocol,
   setWorkerUrl,
   type ExpressionSpecification,
-  type RasterTileSource,
+  type LayerSpecification,
+  type RasterSourceSpecification,
   type StyleSpecification,
 } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -76,6 +77,10 @@ interface VectorLayerInfo {
   minzoom: number;
   maxzoom: number;
   fields: string[];
+  /** 形の種類 ("Point" / "LineString" / "Polygon")。**描き方はこれで決める。** */
+  geometry?: string;
+  /** 地物の数 (全ズームの延べ)。 */
+  count?: number;
 }
 
 /**
@@ -2876,18 +2881,42 @@ const GSI_TERMS_URL = 'https://maps.gsi.go.jp/development/ichiran.html';
  * 選べる地図。**先頭が既定** (建物の出所と同じ流儀)。
  *
  * 出典はどれも「国土地理院」で同じなので、切り替えても出典表示は変えなくてよい。
- * 3種とも z18 までタイルがあることを実測で確かめてある (港区・高尾山)。
+ * 淡色・標準・写真は z18 までタイルがあることを実測で確かめてある (港区・高尾山)。
+ * **範囲 (minzoom / maxzoom) は地図ごとに持つ。** 無いズームを要求すると404を撃ち続ける。
  * 地形を入れたときは航空写真の方が起伏が分かる。
  */
-const BASEMAPS = [
-  { id: 'pale', label: '淡色地図', url: 'https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png' },
-  { id: 'std', label: '標準地図', url: 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png' },
+const BASEMAPS: readonly { id: string; label: string; url: string; minzoom: number; maxzoom: number }[] = [
+  {
+    id: 'pale',
+    label: '淡色地図',
+    url: 'https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png',
+    minzoom: 0,
+    maxzoom: 18,
+  },
+  {
+    id: 'std',
+    label: '標準地図',
+    url: 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png',
+    minzoom: 0,
+    maxzoom: 18,
+  },
   {
     id: 'photo',
     label: '航空写真',
     url: 'https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg',
+    minzoom: 0,
+    maxzoom: 18,
   },
-] as const;
+  // **白地図はズーム5〜14しか無い** (4と15は404。実測)。文字が無いので、重ねたデータや
+  // 地理院の注記が読みやすい。範囲が他と違うので、切り替えるときはソースを作り直す。
+  {
+    id: 'blank',
+    label: '白地図',
+    url: 'https://cyberjapandata.gsi.go.jp/xyz/blank/{z}/{x}/{y}.png',
+    minzoom: 5,
+    maxzoom: 14,
+  },
+];
 
 /**
  * 地形の標高タイル。
@@ -2912,12 +2941,116 @@ function registerPmtiles() {
   pmtilesRegistered = true;
 }
 
+/** テーマの見え方。色は1つで、形 (面・線・点) で描き分ける。 */
+interface VectorLook {
+  color: string;
+  /** 線を破線にするか (境界・送電線)。 */
+  dash?: number[];
+}
+
+/**
+ * テーマごとの色。**見え方は UI の持ち物**なので、カタログには書かない。
+ * 知らないテーマは既定の色で描く (テーマが増えても描けなくはならない)。
+ */
+const VECTOR_THEME_LOOKS: Record<string, VectorLook> = {
+  anno: { color: '#333333' },
+  road: { color: '#b8733e' },
+  rail: { color: '#555555' },
+  building: { color: '#8c7b6b' },
+  water: { color: '#3b7dd8' },
+  terrain: { color: '#a0794f' },
+  boundary: { color: '#8b4fa8', dash: [3, 2] },
+  structure: { color: '#7a7a7a' },
+  power: { color: '#d19a00', dash: [4, 2] },
+};
+const DEFAULT_VECTOR_LOOK: VectorLook = { color: '#666666' };
+
+/** 形の種類の呼び名。 */
+const GEOMETRY_LABELS: Record<string, string> = { Point: '点', LineString: '線', Polygon: '面' };
+
+/**
+ * タイルの層1つを描く地図の層。**カタログに書いた形の種類だけから決める**
+ * (面は塗りと輪郭、線は線、文字を持つ点は文字、それ以外の点は丸)。
+ *
+ * 配布元の描き方 (地理院の `std.json`) は使わない。規約が明示しているのはタイル
+ * (データ) で、スタイル・記号・フォントの扱いは書かれていないため。
+ * 文字はブラウザのフォントで描く (`glyphs` を指定しなければ MapLibre がそうする)。
+ */
+function vectorLayerSpecs(
+  source: string,
+  layer: VectorLayerInfo,
+  look: VectorLook,
+): LayerSpecification[] {
+  const base = {
+    source,
+    'source-layer': layer.id,
+    // 入れるまでは出さない。入り切りは `VectorOverlay.apply` が写す。
+    layout: { visibility: 'none' as const },
+  };
+  const id = (suffix: string) => `${source}/${layer.id}/${suffix}`;
+  const width: ExpressionSpecification = ['interpolate', ['linear'], ['zoom'], 8, 0.4, 16, 1.6];
+  switch (layer.geometry) {
+    case 'Polygon':
+      return [
+        { ...base, id: id('fill'), type: 'fill', paint: { 'fill-color': look.color, 'fill-opacity': 0.2 } },
+        {
+          ...base,
+          id: id('outline'),
+          type: 'line',
+          paint: { 'line-color': look.color, 'line-width': 0.6, 'line-opacity': 0.6 },
+        },
+      ];
+    case 'LineString':
+      return [
+        {
+          ...base,
+          id: id('line'),
+          type: 'line',
+          paint: {
+            'line-color': look.color,
+            'line-width': width,
+            'line-opacity': 0.8,
+            ...(look.dash ? { 'line-dasharray': look.dash } : {}),
+          },
+        },
+      ];
+    default:
+      if (layer.fields.includes('vt_text')) {
+        return [
+          {
+            ...base,
+            id: id('text'),
+            type: 'symbol',
+            layout: {
+              ...base.layout,
+              'text-field': ['get', 'vt_text'],
+              'text-font': ['sans-serif'],
+              'text-size': 11,
+            },
+            paint: {
+              'text-color': look.color,
+              'text-halo-color': 'rgba(255, 255, 255, 0.9)',
+              'text-halo-width': 1.2,
+            },
+          },
+        ];
+      }
+      return [
+        {
+          ...base,
+          id: id('point'),
+          type: 'circle',
+          paint: { 'circle-color': look.color, 'circle-radius': 2.5, 'circle-opacity': 0.8 },
+        },
+      ];
+  }
+}
+
 /**
  * **外部のベクトルタイルを重ねる。** 層ごとに入り切りできる。
  *
- * 描き方は**配布元が公開しているスタイルをそのまま使う** (地理院の `std.json`)。
- * 自前で書き起こすと、地理院地図と見え方がずれるうえ、123の描画の層を保守することになる。
- * スタイルの層は `source-layer` (タイルの層) で引き当て、タイルの層ごとに入り切りする。
+ * 描き方は**カタログに書いた形の種類から自前で決める** ([`vectorLayerSpecs`])。
+ * 配布元のスタイルは読まない — データだけで描けることが、置き方 (STAC + PMTiles) の確かめになる。
  *
  * **入り切りの状態はここが持ち、ズームでは変えない。** 地理院地図Vectorはズームで
  * 出る層が変わると絞り込みが戻ってしまい、使いにくかった。描かれるかどうかは
@@ -2947,37 +3080,22 @@ function createVectorOverlay(map: MapLibreMap, collection: Collection, beforeId:
 
   const load = async () => {
     const tiles = collection.assets.data?.href;
-    const styleUrl = collection.assets.style?.href;
-    if (!tiles || !styleUrl) throw new Error(`${collection.id}: タイルか描き方のアセットがありません`);
+    if (!tiles) throw new Error(`${collection.id}: タイルのアセットがありません`);
     registerPmtiles();
-    const response = await fetch(styleUrl);
-    if (!response.ok) throw new Error(`描き方を読めません (${response.status}): ${styleUrl}`);
-    const style = (await response.json()) as StyleSpecification;
-    // 文字とアイコン。**このアプリは自前では使っていない**ので、配布元のものをそのまま入れる。
-    if (style.glyphs) map.setGlyphs(style.glyphs);
-    if (typeof style.sprite === 'string') map.setSprite(style.sprite);
 
     const sourceId = collection.id;
     map.addSource(sourceId, { type: 'vector', url: `pmtiles://${tiles}` });
-    for (const layer of style.layers) {
-      // 背景は塗らない (下の地図を隠す)。タイルの層を持たないものも対象外。
-      if (layer.type === 'background' || !('source-layer' in layer) || !layer['source-layer']) continue;
-      const sourceLayer = layer['source-layer'];
-      const id = `${collection.id}/${layer.id}`;
-      map.addLayer(
-        {
-          ...layer,
-          id,
-          source: sourceId,
-          layout: { ...layer.layout, visibility: 'none' },
-        } as typeof layer,
-        // **うちのデータより下に敷く。** 重ねて見るための背景寄りのもので、主役はGeoParquet側。
-        map.getLayer(beforeId) ? beforeId : undefined,
-      );
-      const ids = bySourceLayer.get(sourceLayer) ?? [];
-      ids.push(id);
-      bySourceLayer.set(sourceLayer, ids);
-      styleLayers.set(id, sourceLayer);
+    for (const theme of collection.themes ?? []) {
+      const look = VECTOR_THEME_LOOKS[theme.id] ?? DEFAULT_VECTOR_LOOK;
+      for (const layer of theme.layers) {
+        const ids = vectorLayerSpecs(sourceId, layer, look).map((spec) => {
+          // **うちのデータより下に敷く。** 重ねて見るための背景寄りのもので、主役はGeoParquet側。
+          map.addLayer(spec, map.getLayer(beforeId) ? beforeId : undefined);
+          styleLayers.set(spec.id, layer.id);
+          return spec.id;
+        });
+        bySourceLayer.set(layer.id, ids);
+      }
     }
   };
 
@@ -2997,18 +3115,25 @@ function createVectorOverlay(map: MapLibreMap, collection: Collection, beforeId:
   return { collection, visible, apply, styleLayers };
 }
 
+/**
+ * 背景地図のソース。範囲は地図ごとに違う (白地図は5〜14) ので、切り替えるときは
+ * URLだけでなくソースごと作り直す ([`BASEMAPS`])。
+ */
+function basemapSource(basemap: (typeof BASEMAPS)[number]): RasterSourceSpecification {
+  return {
+    type: 'raster',
+    tiles: [basemap.url],
+    tileSize: 256,
+    minzoom: basemap.minzoom,
+    maxzoom: basemap.maxzoom,
+    attribution: creditLink(GSI_TERMS_URL, '国土地理院'),
+  };
+}
+
 const GSI_STYLE: StyleSpecification = {
   version: 8,
   sources: {
-    gsi: {
-      type: 'raster',
-      // 切り替えは setTiles でURLだけ差し替える。tileSize も maxzoom も出典も
-      // 3種で共通なので、ソースを作り直す必要がない。
-      tiles: [BASEMAPS[0].url],
-      tileSize: 256,
-      maxzoom: 18,
-      attribution: creditLink(GSI_TERMS_URL, '国土地理院'),
-    },
+    gsi: basemapSource(BASEMAPS[0]),
     terrain: {
       type: 'raster-dem',
       // tiles / encoding (terrarium) / tileSize / attribution は tilejson から読ませる。
@@ -3849,7 +3974,8 @@ async function main() {
   const layerRowsEl = document.querySelector<HTMLDivElement>('#layer-rows')!;
   const layerAbsentEl = document.querySelector<HTMLDivElement>('#layer-absent')!;
   const layerAbsentRowsEl = document.querySelector<HTMLDivElement>('#layer-absent-rows')!;
-  const layerSupportEl = document.querySelector<HTMLDivElement>('#layer-support')!;
+  /** 「検索できるもの」を開くボタン。裏方が揃ってから出す。中身はダイアログにある。 */
+  const layerSupportEl = document.querySelector<HTMLButtonElement>('#layer-support')!;
   const layerSupportRowsEl = document.querySelector<HTMLDivElement>('#layer-support-rows')!;
   const layerSettingsEl = document.querySelector<HTMLDivElement>('#layer-settings')!;
   const layerSettingsTitleEl = document.querySelector<HTMLParagraphElement>(
@@ -3963,7 +4089,18 @@ async function main() {
   basemapSelect.addEventListener('change', () => {
     const basemap = BASEMAPS.find((b) => b.id === basemapSelect.value);
     if (!basemap) return;
-    (map.getSource('gsi') as RasterTileSource | undefined)?.setTiles([basemap.url]);
+    // **ソースごと作り直す。** 範囲 (白地図は5〜14) が地図ごとに違い、setTiles では
+    // 変えられない。層はいちばん下に置き直す (その上にデータが重なっている)。
+    const styleLayers = map.getStyle().layers;
+    const index = styleLayers.findIndex((l) => l.id === 'gsi-basemap');
+    if (index < 0) return;
+    const layer = styleLayers[index];
+    // 元の位置に戻す (すぐ上にあった層の下へ)。
+    const below = styleLayers[index + 1]?.id;
+    map.removeLayer('gsi-basemap');
+    map.removeSource('gsi');
+    map.addSource('gsi', basemapSource(basemap));
+    map.addLayer(layer, below);
   });
 
   // 初期化のオーバーレイ (#loading) は上で消えるが、その後も数秒かかる操作がある。
@@ -5459,21 +5596,15 @@ async function main() {
     fact: (term: string, ...value: (string | Node)[]) => HTMLElement,
   ): HTMLElement[] => {
     const data = collection.assets.data;
-    const style = collection.assets.style;
     if (data) {
       const size = data['file:size'];
-      fact(
-        '形式',
-        'PMTiles',
-        size ? ` (${formatBytes(size)})` : '',
-        ' ',
-        externalLink(data.href, 'タイル'),
-        ...(style ? [' ', externalLink(style.href, '描き方')] : []),
-      );
+      fact('形式', 'PMTiles', size ? ` (${formatBytes(size)})` : '', ' ', externalLink(data.href, 'タイル'));
       const zoom = data['duck:zoom'];
       if (zoom) fact('ズーム', `${zoom[0]}〜${zoom[1]} (それより寄ると拡大して描く)`);
     }
     fact('引き方', '重ねて見るだけ。SQL では引けない (表示用に簡略化されている)');
+    // **配布元の描き方は使っていない。** 形の種類 (カタログに載っている) から描いている。
+    fact('描き方', 'データだけを読み、形 (面・線・点) ごとにこのアプリが描く');
     if (collection.bbox) fact('範囲', formatBbox(collection.bbox));
 
     // 層は24あるので、テーマごとにたたんでおく。属性も添える (ホバーで読めるもの)。
@@ -5487,7 +5618,8 @@ async function main() {
       for (const layer of theme.layers) {
         const item = document.createElement('li');
         const fields = layer.fields.length > 0 ? ` — ${layer.fields.join(', ')}` : '';
-        item.textContent = `${theme.title} › ${layer.title} (${layer.id}、ズーム${layer.minzoom}〜)${fields}`;
+        const shape = layer.geometry ? `${GEOMETRY_LABELS[layer.geometry] ?? layer.geometry}・` : '';
+        item.textContent = `${theme.title} › ${layer.title} (${layer.id}、${shape}ズーム${layer.minzoom}〜)${fields}`;
         list.append(item);
       }
     }
@@ -5779,30 +5911,71 @@ async function main() {
   };
 
   /** サブカタログの見出し。その文書のJSONへのリンクを添える。 */
-  const groupHeading = (group: CatalogGroup): HTMLElement => {
+  /**
+   * **出所ごとに開け閉めする。** 出所が増えるほど一覧が伸びるので、既定では閉じておき、
+   * **既定で出しているレイヤーのある出所 (PLATEAU) だけ開く。** 開け閉めは
+   * 描き直しても (moveend ごと) 保つ。絞り込み中は当たったものを全部見せる。
+   */
+  const openGroups = new Set(
+    layers.filter((layer) => layer.visible && layer.group).map((layer) => layer.group!.id),
+  );
+
+  const groupHeading = (group: CatalogGroup, rows: Layer[], open: boolean): HTMLElement => {
     const heading = document.createElement('div');
     heading.className = 'layer-group';
     heading.dataset.group = group.id;
     heading.title = group.description;
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'layer-group-toggle';
+    toggle.setAttribute('aria-expanded', String(open));
+    const chevron = document.createElement('span');
+    chevron.className = 'layer-group-chevron';
+    chevron.textContent = open ? '▾' : '▸';
     const title = document.createElement('span');
     title.className = 'layer-group-title';
     title.textContent = group.title;
-    heading.append(title, jsonLink(group.path, 'Catalog'));
+    // 閉じていても、**何件あって、いくつ出しているか**は見出しで分かるようにする。
+    const shown = rows.filter((layer) => layer.visible).length;
+    const count = document.createElement('span');
+    count.className = 'layer-group-count';
+    count.textContent = shown > 0 ? `${rows.length} · ${shown}件表示中` : String(rows.length);
+    toggle.append(chevron, title, count);
+    toggle.addEventListener('click', () => {
+      if (openGroups.has(group.id)) openGroups.delete(group.id);
+      else openGroups.add(group.id);
+      renderLayerList();
+    });
+
+    heading.append(toggle, jsonLink(group.path, 'Catalog'));
     return heading;
   };
 
-  /** 行を並べ、サブカタログが変わるところに見出しを挟む。 */
+  /**
+   * 行を並べ、サブカタログが変わるところに見出しを挟む。閉じた出所の行は作るが隠す
+   * (行の状態を読む仕掛けが、開け閉めに関係なく同じ要素を見られるように)。
+   */
   const withHeadings = (
     rows: Layer[],
     present: boolean,
     matches?: (text: string) => boolean,
   ): HTMLElement[] => {
     const nodes: HTMLElement[] = [];
-    let previous: CatalogGroup | undefined;
-    for (const layer of rows) {
-      if (layer.group && layer.group.id !== previous?.id) nodes.push(groupHeading(layer.group));
-      previous = layer.group;
-      nodes.push(layerRow(layer, present, matches));
+    for (let start = 0; start < rows.length; ) {
+      const group = rows[start].group;
+      let end = start + 1;
+      while (end < rows.length && rows[end].group?.id === group?.id) end++;
+      const members = rows.slice(start, end);
+      // 見出しの無い (ルート直下の) 行と、絞り込み中は常に開いて見せる。
+      const open = !group || matches !== undefined || openGroups.has(group.id);
+      if (group) nodes.push(groupHeading(group, members, open));
+      for (const layer of members) {
+        const row = layerRow(layer, present, matches);
+        row.hidden = !open;
+        nodes.push(row);
+      }
+      start = end;
     }
     return nodes;
   };

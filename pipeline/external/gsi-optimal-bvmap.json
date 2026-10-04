@@ -19,7 +19,9 @@
         "maxzoom": 16,
         "fields": {
           "vt_code": "Number"
-        }
+        },
+        "geometry": "Polygon",
+        "count": 3225783
       },
       {
         "id": "AdmBdry",
@@ -27,7 +29,9 @@
         "maxzoom": 16,
         "fields": {
           "vt_code": "Number"
-        }
+        },
+        "geometry": "LineString",
+        "count": 1368654
       },
       {
         "id": "Anno",
@@ -40,7 +44,9 @@
           "vt_dsppos": "String",
           "vt_flag17": "Number",
           "vt_text": "String"
-        }
+        },
+        "geometry": "Point",
+        "count": 62236079
       },
       {
         "id": "BldA",
@@ -49,7 +55,9 @@
         "fields": {
           "vt_code": "Number",
           "vt_lvorder": "Number"
-        }
+        },
+        "geometry": "Polygon",
+        "count": 80556822
       },
       {
         "id": "Cntr",
@@ -58,7 +66,9 @@
         "fields": {
           "vt_alti": "Number",
           "vt_code": "Number"
-        }
+        },
+        "geometry": "LineString",
+        "count": 199354010
       },
       {
         "id": "Cstline",
@@ -66,7 +76,9 @@
         "maxzoom": 16,
         "fields": {
           "vt_code": "Number"
-        }
+        },
+        "geometry": "LineString",
+        "count": 675378
       },
       {
         "id": "Isbt",
@@ -75,7 +87,9 @@
         "fields": {
           "vt_code": "Number",
           "vt_depth": "Number"
-        }
+        },
+        "geometry": "LineString",
+        "count": 147869
       },
       {
         "id": "PwrTrnsmL",
@@ -83,7 +97,9 @@
         "maxzoom": 16,
         "fields": {
           "vt_code": "Number"
-        }
+        },
+        "geometry": "LineString",
+        "count": 997920
       },
       {
         "id": "RailCL",
@@ -96,7 +112,9 @@
           "vt_railstate": "String",
           "vt_rtcode": "String",
           "vt_sngldbl": "String"
-        }
+        },
+        "geometry": "LineString",
+        "count": 783317
       },
       {
         "id": "RailTrCL",
@@ -105,7 +123,9 @@
         "fields": {
           "vt_code": "Number",
           "vt_drworder": "Number"
-        }
+        },
+        "geometry": "LineString",
+        "count": 576629
       },
       {
         "id": "RdCL",
@@ -121,7 +141,9 @@
           "vt_rnkwidth": "String",
           "vt_tollsect": "String",
           "vt_width": "Number"
-        }
+        },
+        "geometry": "LineString",
+        "count": 95635312
       },
       {
         "id": "RdCompt",
@@ -129,7 +151,9 @@
         "maxzoom": 16,
         "fields": {
           "vt_code": "Number"
-        }
+        },
+        "geometry": "LineString",
+        "count": 492672
       },
       {
         "id": "RdEdg",
@@ -138,7 +162,9 @@
         "fields": {
           "vt_code": "Number",
           "vt_drworder": "Number"
-        }
+        },
+        "geometry": "LineString",
+        "count": 32494229
       },
       {
         "id": "RvrCL",
@@ -146,7 +172,9 @@
         "maxzoom": 16,
         "fields": {
           "vt_code": "Number"
-        }
+        },
+        "geometry": "LineString",
+        "count": 18599845
       },
       {
         "id": "SpcfArea",
@@ -154,7 +182,9 @@
         "maxzoom": 16,
         "fields": {
           "vt_code": "Number"
-        }
+        },
+        "geometry": "LineString",
+        "count": 997718
       },
       {
         "id": "StrctArea",
@@ -162,7 +192,9 @@
         "maxzoom": 16,
         "fields": {
           "vt_code": "Number"
-        }
+        },
+        "geometry": "Polygon",
+        "count": 109824
       },
       {
         "id": "StrctLine",
@@ -170,7 +202,9 @@
         "maxzoom": 16,
         "fields": {
           "vt_code": "Number"
-        }
+        },
+        "geometry": "LineString",
+        "count": 3906
       },
       {
         "id": "TpgphArea",
@@ -179,7 +213,9 @@
         "fields": {
           "vt_code": "Number",
           "vt_flag17": "Number"
-        }
+        },
+        "geometry": "Polygon",
+        "count": 217572
       },
       {
         "id": "TpgphLine",
@@ -187,7 +223,9 @@
         "maxzoom": 16,
         "fields": {
           "vt_code": "Number"
-        }
+        },
+        "geometry": "LineString",
+        "count": 74642585
       },
       {
         "id": "WA",
@@ -195,7 +233,9 @@
         "maxzoom": 16,
         "fields": {
           "vt_code": "Number"
-        }
+        },
+        "geometry": "Polygon",
+        "count": 9317795
       },
       {
         "id": "WL",
@@ -203,7 +243,9 @@
         "maxzoom": 16,
         "fields": {
           "vt_code": "Number"
-        }
+        },
+        "geometry": "LineString",
+        "count": 5968107
       },
       {
         "id": "WRltLine",
@@ -212,7 +254,9 @@
         "fields": {
           "vt_angle": "Number",
           "vt_code": "Number"
-        }
+        },
+        "geometry": "LineString",
+        "count": 30921
       },
       {
         "id": "WStrA",
@@ -220,7 +264,9 @@
         "maxzoom": 16,
         "fields": {
           "vt_code": "Number"
-        }
+        },
+        "geometry": "Polygon",
+        "count": 25142
       },
       {
         "id": "WStrL",
@@ -229,7 +275,9 @@
         "fields": {
           "vt_code": "Number",
           "vt_flag17": "Number"
-        }
+        },
+        "geometry": "LineString",
+        "count": 1082142
       }
     ],
     "generator_options": "tippecanoe -P -f -q -pf -pk -S 2 -Z 4 -z 7 -B 4 -d 14 -D 14 -m 14 -o output/tiles-5000k.mbtiles; tippecanoe -P -f -q -pf -pk -S 2 -Z 8 -z 10 -B 8 -o output/tiles-1000k.mbtiles; tippecanoe -P -f -q -pf -pk -S 2 -Z 11 -z 13 -B 11 -o output/tiles-200k.mbtiles; tippecanoe -P -f -q -pf -pk -S 2 -Z 14 -z 16 -B 14 -o output/tiles-25k.mbtiles; tile-join -o ./26-07.mbtiles ./tiles-1000k.mbtiles ./tiles-200k.mbtiles ./tiles-25k.mbtiles ./tiles-5000k.mbtiles"

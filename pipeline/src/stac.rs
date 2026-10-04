@@ -450,7 +450,8 @@ fn external_collection(tileset: &ExternalTileset, dir: &str) -> Result<Value> {
             .iter()
             .find(|layer| layer.id == id)
     };
-    // テーマごとに、層の人向けの名前と、出るズーム・属性を添える。
+    // テーマごとに、層の人向けの名前と、出るズーム・属性・**形の種類**を添える。
+    // 形があれば、配布元の描き方に頼らず UI が面・線・点で描き分けられる。
     let themes: Vec<Value> = tileset
         .themes
         .iter()
@@ -467,6 +468,8 @@ fn external_collection(tileset: &ExternalTileset, dir: &str) -> Result<Value> {
                         "minzoom": found.minzoom,
                         "maxzoom": found.maxzoom,
                         "fields": found.fields.keys().collect::<Vec<_>>(),
+                        "geometry": found.geometry,
+                        "count": found.count,
                     })
                 })
                 .collect();
@@ -507,12 +510,6 @@ fn external_collection(tileset: &ExternalTileset, dir: &str) -> Result<Value> {
                 "roles": ["data"],
                 "file:size": snapshot.bytes,
                 "duck:zoom": [snapshot.min_zoom, snapshot.max_zoom],
-            },
-            "style": {
-                "href": tileset.style_url,
-                "type": JSON_MEDIA_TYPE,
-                "title": "描き方 (MapLibre のスタイル)",
-                "roles": ["style"],
             },
         },
         "links": [
@@ -696,7 +693,8 @@ mod tests {
                 .starts_with("https://cyberjapandata.gsi.go.jp/")
         );
         assert_eq!(collection["assets"]["data"]["type"], PMTILES_MEDIA_TYPE);
-        assert_eq!(collection["assets"]["style"]["roles"][0], "style");
+        // 配布元の描き方 (スタイル) は載せない。描き方は形の種類から決める。
+        assert!(collection["assets"]["style"].is_null());
         // Item は無い。
         assert!(
             collection["links"]
@@ -719,6 +717,7 @@ mod tests {
             .unwrap();
         assert_eq!(building["layers"][0]["id"], "BldA");
         assert_eq!(building["layers"][0]["minzoom"], 14);
+        assert_eq!(building["layers"][0]["geometry"], "Polygon");
         let layers: usize = themes
             .iter()
             .map(|theme| theme["layers"].as_array().unwrap().len())

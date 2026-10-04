@@ -211,10 +211,21 @@ body,
   margin-top: 0.2rem;
 }
 
+#help h3 {
+  margin: 0.6rem 0 0.1rem;
+  font-size: 0.85rem;
+  color: #14508c;
+}
+
+#help h3:first-child {
+  margin-top: 0;
+}
+
 #help ul {
   margin: 0.2rem 0 0.6rem;
   padding-left: 1.2rem;
   line-height: 1.6;
+  font-size: 0.85rem;
 }
 
 /* 出典。地図右下の ⓘ は1行に詰まって読みにくいので、こちらで読ませる。 */
@@ -881,11 +892,42 @@ body,
   margin-top: 0.1rem;
 }
 
-.layer-group-title {
+/* 見出しそのものが開け閉めのボタン。見た目は見出しのまま。 */
+.layer-group-toggle {
   flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.layer-group-chevron {
+  flex: none;
+  width: 0.7rem;
+  font-size: 0.65rem;
+  color: #666;
+}
+
+.layer-group-title {
   font-size: 0.75rem;
   font-weight: 600;
   color: #14508c;
+}
+
+/* 何件あって、いくつ出しているか。閉じていても読める。 */
+.layer-group-count {
+  font-size: 0.68rem;
+  color: #888;
+}
+
+.layer-row[hidden] {
+  display: none;
 }
 
 /* STACの文書を開くボタン。目立たせない — 読む人は読む。見た目はリンクに寄せる。 */
@@ -1206,6 +1248,10 @@ body,
   color: #14508c;
 }
 
+#info-panel > .info-open:first-child {
+  border-top: none;
+}
+
 /* 出典・使っている技術のダイアログ。**中身は内側の要素に入れ、dialog自身の余白は0**
    (STACの文書のダイアログと同じ。背景を押したときだけ dialog がクリックの的になる)。 */
 .info-dialog {
@@ -1389,10 +1435,14 @@ body,
 
 /* 「検索できるもの」。**出典とは別の節**にする (出典は表示義務、
    こちらは「何を打てば当たるか」の案内)。右下の情報パネルに置く。 */
-#info-panel #layer-support-rows {
+#search-dialog #layer-support-rows {
   padding-bottom: 0.3rem;
 }
 
-#info-panel .layer-row.support {
+#search-dialog .layer-row.support {
   padding-left: 0;
+}
+
+#layer-support[hidden] {
+  display: none;
 }

@@ -83,8 +83,9 @@ pub struct ExternalTileset {
     pub attribution: Attribution,
     /// 配布元 (説明のページ)。
     pub via: &'static str,
-    /// 描き方 (MapLibre のスタイル)。**配布元が公開しているものをそのまま使う。**
-    pub style_url: &'static str,
+    // **描き方 (配布元のスタイル) は載せない。** 規約が明示しているのはタイル (データ) で、
+    // スタイル・記号・フォントの扱いは書かれていない。データだけを載せ、描き方は
+    // カタログに書いた形の種類 (面・線・点) から UI が決める (docs/data-sources.md)。
     /// いつ時点か。PMTiles には書かれていないので、配布元の記載を写す。
     pub vintage: &'static str,
     /// `describe_pmtiles` が書いたスナップショット (JSON)。
@@ -132,6 +133,21 @@ impl ExternalTileset {
                 self.id
             );
         }
+        // **形の種類が分からない層は描けない** (描き方を形から決めるため)。
+        // tilestats の無い PMTiles を載せようとしたらここで止まる。
+        let shapeless: Vec<&str> = snapshot
+            .metadata
+            .vector_layers
+            .iter()
+            .filter(|layer| layer.geometry.is_none())
+            .map(|layer| layer.id.as_str())
+            .collect();
+        if !shapeless.is_empty() {
+            bail!(
+                "{}: 形の種類 (tilestats) が分からない層があります: {shapeless:?}",
+                self.id
+            );
+        }
         Ok(())
     }
 }
@@ -168,7 +184,6 @@ pub const GSI_OPTIMAL_BVMAP: ExternalTileset = ExternalTileset {
         terms: GSI_TERMS,
     },
     via: "https://github.com/gsi-cyberjapan/optimal_bvmap",
-    style_url: "https://gsi-cyberjapan.github.io/optimal_bvmap/style/std.json",
     // README の「データ更新情報」。
     vintage: "2026-07-01 時点",
     snapshot: include_str!("../external/gsi-optimal-bvmap.json"),

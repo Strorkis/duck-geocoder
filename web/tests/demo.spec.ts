@@ -164,24 +164,13 @@ async function skipIfDataMissing(page: Page) {
 }
 
 /**
- * 表示パネルの節を開く。
- *
- * できることは1枚のパネルにまとめてあり、**中身は既定でたたんである**。
- * 見出しだけが並ぶので「何ができるか」は読めるが、操作するには開く必要がある。
- *
- * **データのレイヤーはここには無い** ([`openLayerSettings`])。節を積むと
- * オープンデータが増えるだけ縦に伸びるので、一覧に移してある。
+ * 右下のダイアログ (使い方・検索できるもの・出典・使っている技術) を開く。右下のパネルは
+ * 狭く、長い文言が細切れに折り返すので、どれも節ではなくダイアログで出している。
  */
-async function openSection(page: Page, id: string) {
-  await page.locator(`#${id} > summary`).click();
-  await expect(page.locator(`#${id}`)).toHaveAttribute('open', '');
-}
-
-/**
- * 出典・使っている技術のダイアログを開く。右下のパネルは狭く、長い文言が
- * 細切れに折り返すので、これらは節ではなくダイアログで出している。
- */
-async function openInfoDialog(page: Page, id: 'credits-dialog' | 'tech-dialog') {
+async function openInfoDialog(
+  page: Page,
+  id: 'credits-dialog' | 'tech-dialog' | 'help-dialog' | 'search-dialog',
+) {
   await page.locator(`.info-open[data-dialog="${id}"]`).click();
   await expect(page.locator(`#${id}`)).toBeVisible();
 }
@@ -190,7 +179,28 @@ async function openInfoDialog(page: Page, id: 'credits-dialog' | 'tech-dialog') 
  * レイヤーの設定を開く。一覧の ⚙ を押すと、**パネルの中身が入れ替わる**
  * (重ねて出すと結局縦に伸びるため)。
  */
+/**
+ * 行が見えるように、**その行の出所 (見出し) を開く。** 一覧は出所ごとに開け閉めでき、
+ * 既定で開いているのは既定で出しているレイヤーのある出所 (PLATEAU) だけ。
+ */
+async function revealLayer(page: Page, layer: string) {
+  const row = page.locator(`[data-layer="${layer}"]`).first();
+  await expect(row).toBeAttached();
+  if (await row.isVisible()) return;
+  // 行の直前にある見出し = その行の出所。**ページの中で1回で探す** — 一覧は moveend ごとに
+  // 作り直されるので、行を掴んでから辿ると、その間に外れた要素を辿ることがある。
+  const group = await page.evaluate((id) => {
+    let node = document.querySelector(`[data-layer="${id}"]`)?.previousElementSibling;
+    while (node && !node.classList.contains('layer-group')) node = node.previousElementSibling;
+    return (node as HTMLElement | null | undefined)?.dataset.group ?? null;
+  }, layer);
+  expect(group, `${layer} の見出しが見つからない`).not.toBeNull();
+  await page.locator(`.layer-group[data-group="${group}"] .layer-group-toggle`).first().click();
+  await expect(row).toBeVisible();
+}
+
 async function openLayerSettings(page: Page, layer: string) {
+  await revealLayer(page, layer);
   await page.locator(`[data-layer="${layer}"] .layer-settings-button`).click();
   await expect(page.locator('#layer-settings')).toBeVisible();
   await expect(page.locator('#layer-list')).toBeHidden();
@@ -207,6 +217,7 @@ async function setLayerVisible(page: Page, layer: string, visible: boolean) {
     await page.locator('#layer-back').click();
     await expect(page.locator('#layer-list')).toBeVisible();
   }
+  await revealLayer(page, layer);
   const toggle = page.locator(`#layer-toggle-${layer}`);
   if (visible) await toggle.check();
   else await toggle.uncheck();
@@ -299,11 +310,17 @@ test('初期化が完了し、地図と検索欄が使える状態になる', as
 // 検索欄と地図しか無いと、クリックやホバーで何が起きるのか分からない。
 // 公開して最初に触る人がここで止まるので、操作は画面に書いておく。
 test('使い方に操作が一通り書かれている', async ({ page }) => {
+  await openInfoDialog(page, 'help-dialog');
   const help = page.locator('#help');
   await expect(help).toBeVisible();
   await expect(help).toContainText('検索');
   await expect(help).toContainText('クリック');
   await expect(help).toContainText('カーソルを合わせる');
+  // 画面のボタンは、同じ記号で全部説明されていること。
+  for (const mark of ['📍', '◎', '⚙', '▸']) await expect(help).toContainText(mark);
+  await expect(help).toContainText('周り');
+  await expect(help).toContainText('絞り込');
+  await expect(help).toContainText('この範囲を取得');
   // 出した結果の消し方。ここに書いていないと×とEscに気づけない。
   await expect(help).toContainText('Esc');
 });
@@ -683,21 +700,20 @@ test('出典に配布元へのリンクが出る', async ({ page }) => {
 test('できることは開かなくても分かる', async ({ page }) => {
   const panel = page.locator('#data-panel');
 
-  // データは一覧にそのまま並ぶ。**開く操作すら要らない。**
-  // 行の名前はCollectionの題名 (カタログが名乗っているもの)。
-  for (const layer of ['建物', '人口メッシュ']) {
-    await expect(panel.locator('.layer-row', { hasText: layer }).first()).toBeVisible();
+  // データは出所ごとの見出しで並ぶ。閉じていても**何が何件あるか**は見出しで分かる。
+  // 既定で出している建物は開いた出所にあるので、行が見える。
+  await expect(panel.locator('.layer-row', { hasText: '建物' }).first()).toBeVisible();
+  for (const group of ['PLATEAU', '国勢調査']) {
+    await expect(panel.locator('.layer-group', { hasText: group }).first()).toBeVisible();
   }
   // 背景地図もレイヤーの1つ。**たたまない** (selectが1つあるだけ)。
   await expect(panel.locator('#basemap-section')).toContainText('背景地図');
-  // 使い方・出典・使っている技術は右下 (MapLibreの ⓘ と同じ性格なので同じ側)。
-  await expect(page.locator('#info-panel summary', { hasText: '使い方' })).toBeVisible();
-  for (const heading of ['出典', '使っている技術']) {
+  // 使い方・検索できるもの・出典・使っている技術は右下 (MapLibreの ⓘ と同じ性格なので同じ側)。
+  for (const heading of ['使い方', '検索できるもの', '出典', '使っている技術']) {
     await expect(page.locator('#info-panel .info-open', { hasText: heading })).toBeVisible();
   }
-  // 中身は既定で出さない (使い方はたたみ、出典と技術はダイアログが閉じている)。
-  await expect(page.locator('#help')).not.toHaveAttribute('open', '');
-  for (const id of ['credits-dialog', 'tech-dialog']) {
+  // 中身は既定で出さない (どれもダイアログで、閉じている)。
+  for (const id of ['help-dialog', 'search-dialog', 'credits-dialog', 'tech-dialog']) {
     await expect(page.locator(`#${id}`)).toBeHidden();
   }
   // レイヤーの設定も既定では出さない (一覧が先)。
@@ -872,6 +888,28 @@ test('地図を航空写真に切り替えると写真のタイルを取りに�
   await page.locator('#basemap').selectOption({ label: '航空写真' });
 
   await expect.poll(() => requested.some((url) => url.includes('/seamlessphoto/'))).toBe(true);
+});
+
+/**
+ * **白地図はズーム5〜14しか無い。** 寄っても15以上を取りに行かず (404を撃たない)、
+ * 14を拡大して描く。背景はいちばん下のまま (データの上に被らない)。
+ */
+test('白地図に切り替えると、無いズームのタイルを取りに行かない', async ({ page }) => {
+  const blank: string[] = [];
+  page.on('request', (request) => {
+    if (request.url().includes('/xyz/blank/')) blank.push(request.url());
+  });
+  await page.locator('#basemap').selectOption({ label: '白地図' });
+  await page.evaluate(() => {
+    (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7671, 35.6812], zoom: 16.5 });
+  });
+  await expect.poll(() => blank.length).toBeGreaterThan(0);
+  await page.waitForTimeout(1000);
+  const zooms = blank.map((url) => Number(url.match(/\/xyz\/blank\/(\d+)\//)![1]));
+  expect(Math.max(...zooms)).toBeLessThanOrEqual(14);
+  // 背景はいちばん下。
+  const first = await page.evaluate(() => (window as unknown as TestWindow).__map!.getStyle().layers[0].id);
+  expect(first).toBe('gsi-basemap');
 });
 
 // 地図と地形は別々に選べる。片方の操作で、自分で選んだもう片方が勝手に変わらないこと。
@@ -1451,7 +1489,8 @@ async function showPopulationMesh(page: Page, zoom = 13) {
 test('人口密度は切り替えで出せる', async ({ page }) => {
   test.skip(!(await hasMesh(page)), '人口メッシュのデータが無い');
 
-  await expect(page.locator(`[data-layer="${LAYER.mesh}"]`)).toBeVisible();
+  // 出所 (国勢調査) は既定で閉じているので、開けば行が見える。
+  await revealLayer(page, LAYER.mesh);
   // 既定は消えている。チェックするまで読みにも行かない。
   expect(await sourceFeatureCount(page, 'population-mesh')).toBe(0);
 
@@ -1647,7 +1686,8 @@ async function showRailway(page: Page, zoom = 12) {
 test('鉄道は切り替えで出せる', async ({ page }) => {
   test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
 
-  await expect(page.locator(`[data-layer="${LAYER.railway}"]`)).toBeVisible();
+  // 出所 (国土数値情報) は既定で閉じているので、開けば路線と駅の行が見える。
+  await revealLayer(page, LAYER.railway);
   await expect(page.locator(`[data-layer="${LAYER.stations}"]`)).toBeVisible();
   // チェックするまで読みにも行かない。
   expect(await sourceFeatureCount(page, 'railway')).toBe(0);
@@ -2158,8 +2198,8 @@ test('レイヤーの説明が切れていない', async ({ page }) => {
  * 左下のデータと重なるので右下へ移した。
  */
 test('何で検索できるかが読める', async ({ page }) => {
-  await openSection(page, 'layer-support');
-  const support = page.locator('#info-panel #layer-support');
+  await openInfoDialog(page, 'search-dialog');
+  const support = page.locator('#search-dialog');
   // **打つ言葉で書く。**「位置参照情報」では何を打てばいいか分からない。
   await expect(support).toContainText('市区町村名');
   await expect(support).toContainText('駅名・路線名');
@@ -2377,7 +2417,8 @@ async function showRoads(page: Page, zoom = 13) {
 test('道路は切り替えで出せる', async ({ page }) => {
   test.skip(!(await hasRoads(page)), '道路のデータが無い');
 
-  await expect(page.locator(`[data-layer="${LAYER.road}"]`)).toBeVisible();
+  // 出所 (Overture) は既定で閉じているので、開けば行が見える。
+  await revealLayer(page, LAYER.road);
   // チェックするまで読みにも行かない。
   expect(await sourceFeatureCount(page, 'road')).toBe(0);
 
@@ -3077,8 +3118,8 @@ function gsiVisibility(page: Page, sourceLayer: string): Promise<string[]> {
 
 /**
  * **地理院のベクトルタイルは、テーマごとの行で出る。** カタログの「国土地理院」の下に
- * 9行 (注記・道路…)。入れるまでは**何も読まない**。入れると配布元のPMTilesと描き方を
- * 直接読み、うちのデータの下に描く。
+ * 9行 (注記・道路…)。入れるまでは**何も読まない**。入れると配布元のPMTiles (データ) だけを
+ * 直接読み、カタログの形の種類から自前で描いて、うちのデータの下に敷く。
  */
 test('地理院のベクトルタイルをテーマごとに重ねられる', async ({ page }) => {
   test.skip(!(await hasGsiVector(page)), '地理院のベクトルタイルがカタログに無い');
@@ -3113,7 +3154,8 @@ test('地理院のベクトルタイルをテーマごとに重ねられる', as
     )
     .toBeGreaterThan(0);
   expect(asked.some((url) => url.includes('optimal_bvmap-v1.pmtiles'))).toBe(true);
-  expect(asked.some((url) => url.endsWith('/style/std.json'))).toBe(true);
+  // **配布元の描き方 (スタイル・フォント・記号) は読まない。** データだけで描く。
+  expect(asked.filter((url) => url.includes('gsi-cyberjapan.github.io'))).toEqual([]);
 
   // うちのデータより下に描く (いちばん下の人口メッシュより前に並ぶ)。
   const order = await page.evaluate((prefix) => {
@@ -3203,4 +3245,38 @@ test('一覧を語で絞り込める (出所をまたいで、中の層にも当
   await filter.press('Escape');
   await expect(rows).toHaveCount(all);
   await expect(page.locator('#layer-filter-empty')).toBeHidden();
+});
+
+/**
+ * **一覧は出所ごとに開け閉めできる。** 既定では、既定で出しているレイヤーのある
+ * 出所 (PLATEAU) だけが開いている。閉じていても、何件あって何件出しているかは
+ * 見出しで分かる。開け閉めは地図を動かしても (一覧を作り直しても) 保つ。
+ */
+test('一覧は出所ごとに開け閉めでき、既定では表示中の出所だけ開いている', async ({ page }) => {
+  test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
+  const heading = (group: string) => page.locator(`#layer-rows .layer-group[data-group="${group}"]`);
+  const plateau = heading('duck-geocoder-plateau');
+  const overture = heading('duck-geocoder-overture');
+
+  await expect(plateau.locator('.layer-group-toggle')).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator(`[data-layer="${LAYER.plateauBuildings}"]`)).toBeVisible();
+  await expect(plateau).toContainText('1件表示中');
+  await expect(overture.locator('.layer-group-toggle')).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator(`[data-layer="${LAYER.road}"]`)).toBeHidden();
+
+  // 開く。地図を動かして一覧が作り直されても開いたまま。
+  await overture.locator('.layer-group-toggle').click();
+  await expect(page.locator(`[data-layer="${LAYER.road}"]`)).toBeVisible();
+  await page.evaluate(() => {
+    (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7, 35.69], zoom: 11 });
+  });
+  await page.waitForTimeout(500);
+  await expect(page.locator(`[data-layer="${LAYER.road}"]`)).toBeVisible();
+
+  // 閉じる。
+  await overture.locator('.layer-group-toggle').click();
+  await expect(page.locator(`[data-layer="${LAYER.road}"]`)).toBeHidden();
+  // 絞り込み中は、閉じた出所でも当たったものを見せる。
+  await page.locator('#layer-filter').fill('道路');
+  await expect(page.locator(`[data-layer="${LAYER.road}"]`)).toBeVisible();
 });

@@ -214,21 +214,13 @@
              (出典は表示義務、こちらは「何を打てば当たるか」の案内)。
              検索欄の下に置いていたが、候補が1件2段になったぶん縦に伸びて
              左下のデータと重なるので、こちらへ移した。 -->
-        <details id="layer-support" hidden>
-          <summary>検索できるもの</summary>
-          <div id="layer-support-rows"></div>
-        </details>
-        <details id="help">
-          <summary>使い方</summary>
-          <ul>
-            <li>市区町村や地名を<b>検索</b>すると、その場所へ移動します</li>
-            <li><b>📍</b> を押してから地図を<b>クリック</b>すると、その地点の市区町村を判定します</li>
-            <li>建物に<b>カーソルを合わせる</b>と、名称と用途が出ます (拡大したとき)</li>
-            <li>判定した結果は、<b>×</b> か <b>Esc</b> で消せます</li>
-          </ul>
-        </details>
-        <!-- 出典と使っている技術は**ダイアログで開く。** このパネルの幅 (15rem) に
-             畳んで入れると、出典の長い文言や技術の説明が細切れに折り返して読めない。 -->
+        <!-- 4つとも**ダイアログで開く。** このパネルの幅 (15rem) に畳んで入れると、
+             長い文言が細切れに折り返して読めず、開くと地図を覆う。
+             「検索できるもの」は検索の裏方が揃ってから出す。 -->
+        <button type="button" class="info-open" data-dialog="help-dialog">使い方</button>
+        <button type="button" id="layer-support" class="info-open" data-dialog="search-dialog" hidden>
+          検索できるもの
+        </button>
         <button type="button" class="info-open" data-dialog="credits-dialog">出典</button>
         <button type="button" class="info-open" data-dialog="tech-dialog">使っている技術</button>
       </div>
@@ -256,6 +248,56 @@
     <!-- 出典は地図右下の ⓘ にも出るが、そちらは1行に詰まって読みにくい
          (MapLibreが出典の間を " | " のテキストで繋ぐため)。
          何のデータの出典かを読めるようにここにも出す。 -->
+    <!-- 使い方。**操作ごとに1行。** 公開して最初に触る人がここで止まるので、
+         画面のボタンと同じ記号で書く。 -->
+    <dialog id="help-dialog" class="info-dialog">
+      <div class="info-dialog-body">
+        <div class="info-dialog-head">
+          <strong>使い方</strong>
+          <button type="button" class="info-dialog-close" title="閉じる">×</button>
+        </div>
+        <div id="help">
+          <h3>場所を探す</h3>
+          <ul>
+            <li>市区町村・地名・駅名・路線名を<b>検索</b>すると、その場所へ移動します。路線は線を、市区町村は境界を強調します</li>
+            <li><b>📍</b> を押してから地図を<b>クリック</b>すると、その地点の市区町村を判定します</li>
+          </ul>
+          <h3>周りを調べる</h3>
+          <ul>
+            <li>
+              <b>◎</b> を押してから、地図上の<b>点・建物・線</b> (道路・鉄道・送電線・川) を<b>クリック</b>すると、
+              その周り (50〜500 m) にある建物・駅・送電線・川・人口を数えます。名前のある線は同じ名前の区間をまとめて起点にします
+            </li>
+            <li>検索で選んだもの (駅・路線・市区町村) も、◎ のパネルから起点にできます</li>
+            <li>地図に出していないデータも数えます</li>
+          </ul>
+          <h3>データを見る</h3>
+          <ul>
+            <li>左の一覧は<b>出所ごと</b>に開け閉めできます。チェックで地図に出します</li>
+            <li>上の欄に語を入れると、出所をまたいで<b>絞り込め</b>ます (例: 「送電」)</li>
+            <li><b>▸</b> で中の層を開き、層ごとに出し入れできます (国土地理院)。ズームを変えても設定は戻りません</li>
+            <li><b>⚙</b> でデータの中身 (カタログ・使う条件・版) を見て、<b>この範囲を取得</b>できます (GeoParquet・CityGML)</li>
+            <li><b>Catalog</b> / <b>Collection</b> を押すと、カタログ (STAC) をページの中で辿れます</li>
+            <li>地物に<b>カーソルを合わせる</b>と、名称・種別・時点が出ます</li>
+            <li>重いときは左下の<b>表示量</b>を下げます。背景地図もそこで切り替えます</li>
+          </ul>
+          <h3>消す</h3>
+          <ul>
+            <li>判定や周辺検索の結果は、<b>×</b> か <b>Esc</b> で消せます</li>
+          </ul>
+        </div>
+      </div>
+    </dialog>
+    <!-- 何で検索できるか。**出典とは別物** (出典は表示義務、こちらは「何を打てば当たるか」の案内)。 -->
+    <dialog id="search-dialog" class="info-dialog">
+      <div class="info-dialog-body">
+        <div class="info-dialog-head">
+          <strong>検索できるもの</strong>
+          <button type="button" class="info-dialog-close" title="閉じる">×</button>
+        </div>
+        <div id="layer-support-rows"></div>
+      </div>
+    </dialog>
     <dialog id="credits-dialog" class="info-dialog">
       <div class="info-dialog-body">
         <div class="info-dialog-head">
