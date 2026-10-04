@@ -40,7 +40,7 @@
 //! アセットも同じディレクトリにあるのでファイル名だけになる。
 
 use crate::catalog::{ColumnEntry, DatasetEntry, DatasetKind};
-use crate::external::ExternalTileset;
+use crate::external::{ExternalRaster, ExternalTileset, RasterRole, TileLink};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -166,7 +166,12 @@ const SUB_CATALOGS: &[SubCatalog] = &[
     SubCatalog {
         dir: "gsi",
         title: "国土地理院",
-        description: "国土地理院が公開している配信物。うちでは複製せず、公開元を直接指す。",
+        description: "国土地理院が公開している地図タイルとベクトルタイル。うちでは複製せず、公開元を直接指す。",
+    },
+    SubCatalog {
+        dir: "mapterhorn",
+        title: "Mapterhorn",
+        description: "世界の標高タイル。うちでは複製せず、公開元を直接指す。",
     },
 ];
 
@@ -480,8 +485,8 @@ fn external_collection(tileset: &ExternalTileset, dir: &str) -> Result<Value> {
     let mut body = json!({
         "type": "Collection",
         "stac_version": STAC_VERSION,
-        // アセットの `file:size` の出どころ。
-        "stac_extensions": [FILE_EXTENSION],
+        // アセットの `file:size` と、`rel: "pmtiles"` のリンクの出どころ。
+        "stac_extensions": [FILE_EXTENSION, WEB_MAP_LINKS_EXTENSION],
         "id": tileset.id,
         "title": tileset.title,
         "description": tileset.description,
@@ -517,6 +522,19 @@ fn external_collection(tileset: &ExternalTileset, dir: &str) -> Result<Value> {
             { "rel": "parent", "href": CATALOG_FILE, "type": JSON_MEDIA_TYPE },
             { "rel": "self", "href": collection_file(tileset.id), "type": JSON_MEDIA_TYPE },
             via_link(tileset.via),
+            // 地図に重ねる道具 (QGIS・stac-browser など) が読める形でも指す (web-map-links)。
+            {
+                "rel": "pmtiles",
+                "href": snapshot.url,
+                "type": PMTILES_MEDIA_TYPE,
+                "title": tileset.title,
+                "pmtiles:layers": snapshot
+                    .metadata
+                    .vector_layers
+                    .iter()
+                    .map(|layer| layer.id.as_str())
+                    .collect::<Vec<_>>(),
+            },
         ],
     });
     // **どう作ったか。** 簡略化の度合い (tippecanoe の `-S`) がここで分かるので、
@@ -527,11 +545,69 @@ fn external_collection(tileset: &ExternalTileset, dir: &str) -> Result<Value> {
     Ok(body)
 }
 
+/// 地図タイルへのリンク (`rel: "xyz"` / `"tilejson"` / `"pmtiles"`) の出どころ。
+const WEB_MAP_LINKS_EXTENSION: &str =
+    "https://stac-extensions.github.io/web-map-links/v1.3.0/schema.json";
+
+/// **外部のラスタタイル** (背景地図・標高) の Collection。Item もアセットも無く、
+/// web-map-links 拡張のリンクでタイルを指す (タイルは1ファイルではないので、アセットにならない)。
+fn raster_collection(raster: &ExternalRaster, dir: &str) -> Value {
+    let tiles = match &raster.link {
+        TileLink::Xyz {
+            template,
+            media_type,
+        } => json!({ "rel": "xyz", "href": template, "type": media_type, "title": raster.title }),
+        TileLink::TileJson { url } => {
+            json!({ "rel": "tilejson", "href": url, "type": JSON_MEDIA_TYPE, "title": raster.title })
+        }
+    };
+    json!({
+        "type": "Collection",
+        "stac_version": STAC_VERSION,
+        "stac_extensions": [WEB_MAP_LINKS_EXTENSION],
+        "id": raster.id,
+        "title": raster.title,
+        "description": raster.description,
+        "license": raster.attribution.license,
+        "duck:terms": raster.attribution.terms,
+        "duck:attribution": raster.attribution.text,
+        "duck:attribution_url": raster.attribution.url,
+        // UI が重ね方を決める: 背景地図はいちばん下に敷き、標高は地図を立体にする。
+        "duck:kind": match raster.role {
+            RasterRole::Basemap => "raster_tiles",
+            RasterRole::Terrain => "terrain",
+        },
+        // **タイルが実際にあるズーム。** 無いズームを要求すると 404 を撃ち続ける。
+        "duck:zoom": [raster.minzoom, raster.maxzoom],
+        "duck:tile_size": raster.tile_size,
+        "providers": [{
+            "name": raster.attribution.provider,
+            "roles": ["producer", "licensor", "host"],
+            "url": raster.via,
+        }],
+        "extent": {
+            "spatial": { "bbox": [raster.bounds] },
+            "temporal": { "interval": [[null, null]] },
+        },
+        "links": [
+            { "rel": "root", "href": root_href(dir), "type": JSON_MEDIA_TYPE },
+            { "rel": "parent", "href": CATALOG_FILE, "type": JSON_MEDIA_TYPE },
+            { "rel": "self", "href": collection_file(raster.id), "type": JSON_MEDIA_TYPE },
+            via_link(raster.via),
+            tiles,
+        ],
+    })
+}
+
 /// カタログをSTACの文書一式にする。
 ///
 /// 返るのは「配信の起点からの相対パス」と中身の組。書き出しは呼び出し側の仕事。
-/// `externals` は外部で公開されている配信物 ([`crate::external`])。
-pub fn build(datasets: &[DatasetEntry], externals: &[ExternalTileset]) -> Result<Vec<Document>> {
+/// `externals` と `rasters` は外部で公開されている配信物 ([`crate::external`])。
+pub fn build(
+    datasets: &[DatasetEntry],
+    externals: &[ExternalTileset],
+    rasters: &[ExternalRaster],
+) -> Result<Vec<Document>> {
     // BTreeMapなので、Collectionの並びはIDの順で安定する
     // (作り直すたびに差分が出ないように)。
     let mut grouped: BTreeMap<&str, Vec<&DatasetEntry>> = BTreeMap::new();
@@ -580,6 +656,22 @@ pub fn build(datasets: &[DatasetEntry], externals: &[ExternalTileset]) -> Result
         });
     }
 
+    // 背景地図を先に並べる (一覧でも、国土地理院の見出しの下で地図が先に来る)。
+    for raster in rasters {
+        by_dir
+            .entry(raster.dir.to_string())
+            .or_default()
+            .push(json!({
+                "rel": "child",
+                "href": collection_file(raster.id),
+                "type": JSON_MEDIA_TYPE,
+                "title": raster.title,
+            }));
+        documents.push(Document {
+            path: in_dir(raster.dir, &collection_file(raster.id)),
+            body: raster_collection(raster, raster.dir),
+        });
+    }
     for tileset in externals {
         by_dir
             .entry(tileset.dir.to_string())
@@ -665,14 +757,68 @@ mod tests {
 
     /// 外部のタイルセット無しで組み立てる。ほとんどのテストは GeoParquet 側だけを見る。
     fn build(datasets: &[DatasetEntry]) -> Result<Vec<Document>> {
-        super::build(datasets, &[])
+        super::build(datasets, &[], &[])
     }
 
     /// **外部のタイルセットは公開元を直接指す。** Item は無く、層はテーマに束ねて載る。
     #[test]
+    fn external_rasters_link_their_tiles() {
+        use crate::external::EXTERNAL_RASTERS;
+        let datasets = vec![entry("mesh_pop_13", "estat/mesh_pop_13.parquet", None)];
+        let documents = super::build(&datasets, &[GSI_OPTIMAL_BVMAP], EXTERNAL_RASTERS).unwrap();
+
+        // 背景地図は XYZ のリンクで指す。範囲 (ズーム) を書く — 白地図は5〜14しか無い。
+        let blank = find(&documents, "gsi/gsi-blank.json");
+        assert_eq!(blank["duck:kind"], "raster_tiles");
+        assert_eq!(blank["duck:zoom"], json!([5, 14]));
+        let xyz = blank["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|link| link["rel"] == "xyz")
+            .unwrap();
+        assert!(
+            xyz["href"]
+                .as_str()
+                .unwrap()
+                .contains("/xyz/blank/{z}/{x}/{y}.png")
+        );
+        assert!(blank.get("assets").is_none());
+
+        // 標高は TileJSON で指す。別の出所 (Mapterhorn) のサブカタログに入る。
+        let terrain = find(&documents, "mapterhorn/mapterhorn-terrain.json");
+        assert_eq!(terrain["duck:kind"], "terrain");
+        assert!(
+            terrain["links"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|link| link["rel"] == "tilejson")
+        );
+        assert!(
+            terrain["duck:attribution"]
+                .as_str()
+                .unwrap()
+                .contains("国土地理院長承認")
+        );
+
+        // 国土地理院の見出しの下では、背景地図がベクトルタイルより先に並ぶ。
+        let gsi = find(&documents, "gsi/catalog.json");
+        let children: Vec<&str> = gsi["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|link| link["rel"] == "child")
+            .map(|link| link["href"].as_str().unwrap())
+            .collect();
+        assert_eq!(children.first(), Some(&"gsi-pale.json"));
+        assert_eq!(children.last(), Some(&"gsi-optimal-bvmap.json"));
+    }
+
+    #[test]
     fn external_tilesets_point_at_the_publisher() {
         let datasets = vec![entry("mesh_pop_13", "estat/mesh_pop_13.parquet", None)];
-        let documents = super::build(&datasets, &[GSI_OPTIMAL_BVMAP]).unwrap();
+        let documents = super::build(&datasets, &[GSI_OPTIMAL_BVMAP], &[]).unwrap();
 
         let root = find(&documents, "catalog.json");
         let children: Vec<&str> = root["links"]

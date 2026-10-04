@@ -66,7 +66,11 @@ type DatasetKind =
   | 'power_line'
   | 'waterway'
   // **外部のベクトルタイル** (地理院の最適化ベクトルタイル)。SQLでは引けず、重ねて見るだけ。
-  | 'vector_tiles';
+  | 'vector_tiles'
+  // **外部の地図タイル** (背景地図)。いちばん下に敷く。
+  | 'raster_tiles'
+  // **外部の標高タイル** (地形)。地図を立体にする。
+  | 'terrain';
 
 /** ベクトルタイルの層1つ (`duck:themes[].layers[]`)。PMTiles のメタデータから来る。 */
 interface VectorLayerInfo {
@@ -179,6 +183,10 @@ interface StacCollection {
   'duck:themes'?: VectorTheme[];
   /** **どう作ったか** (tippecanoe の引数など)。簡略化の度合いが分かる。 */
   'duck:generator_options'?: string;
+  /** 地図タイルが実際にあるズーム [最小, 最大]。外部の地図タイル・標高だけが持つ。 */
+  'duck:zoom'?: [number, number];
+  /** 地図タイルの大きさ (px)。 */
+  'duck:tile_size'?: number;
   links: StacLink[];
 }
 
@@ -307,6 +315,14 @@ interface Collection {
   /** 外部のベクトルタイルのテーマ。それ以外は undefined。 */
   themes: VectorTheme[] | undefined;
   generatorOptions: string | undefined;
+  /**
+   * 地図タイルへのリンク (web-map-links 拡張の `rel: "xyz"` / `"tilejson"`)。
+   * 外部の地図タイル・標高だけが持つ。タイルは1ファイルではないのでアセットにならない。
+   */
+  tileLink: StacLink | undefined;
+  /** 地図タイルが実際にあるズーム [最小, 最大]。 */
+  zoom: [number, number] | undefined;
+  tileSize: number | undefined;
   /** Itemを読む。**Collectionごとに1回だけ**通信する。 */
   items: () => Promise<LocatedItem[]>;
 }
@@ -621,6 +637,9 @@ function toCollection(
     ),
     themes: document['duck:themes'],
     generatorOptions: document['duck:generator_options'],
+    tileLink: document.links.find((link) => link.rel === 'xyz' || link.rel === 'tilejson'),
+    zoom: document['duck:zoom'],
+    tileSize: document['duck:tile_size'],
     bbox,
     summaries: document.summaries ?? {},
     columns: new Set(
@@ -2298,9 +2317,9 @@ async function fetchNearbyNames(
   frame: NearbyFrame,
   nameExpression: string,
   limit = 30,
-): Promise<{ names: string[]; total: number }> {
+): Promise<{ names: string[]; total: number; features: GeoJSON.Feature[] }> {
   const files = filesInView(source, frame.bounds);
-  if (files.length === 0) return { names: [], total: 0 };
+  if (files.length === 0) return { names: [], total: 0, features: [] };
   const list = files.map((file) => `'${file}'`).join(', ');
   // 粗い段を持つファイルは原寸だけで判定する (粗い段は簡略化して位置がずれている)。
   const lod = source.coarseLodToleranceM !== undefined ? lodFilter(EXACT_LOD) : '';
@@ -2312,7 +2331,25 @@ async function fetchNearbyNames(
   `);
   const names = result.toArray().map((row) => String((row.toJSON() as { name: unknown }).name));
   names.sort((a, b) => a.localeCompare(b, 'ja'));
-  return { names: names.slice(0, limit), total: names.length };
+  // **当たった区間の形も返す** (地図で、結果だけを目立たせて描く)。名前の無いものも描く。
+  // **範囲で切り取る** — 区間ごと描くと、鉄道や川は範囲の外まで長く伸びて、どこが
+  // 当たったのかが読めない。範囲は起点付近のメートルで作って度へ戻す (検索と同じ)。
+  const zone = fromMeters(frame, `ST_Buffer(${frame.origin}, ${frame.distance})`);
+  const shapes = await conn.query(`
+    SELECT ST_AsGeoJSON(ST_Intersection(geometry, ${zone})) AS g, ${nameExpression} AS name
+    FROM read_parquet([${list}])
+    WHERE ${lod} ${nearbyCondition(frame)}
+    LIMIT ${NEARBY_DRAW_LIMIT};
+  `);
+  const features = shapes.toArray().map((row) => {
+    const { g, name } = row.toJSON() as { g: string; name: string | null };
+    return {
+      type: 'Feature' as const,
+      properties: { name },
+      geometry: JSON.parse(g) as GeoJSON.Geometry,
+    };
+  });
+  return { names: names.slice(0, limit), total: names.length, features };
 }
 
 /**
@@ -2874,64 +2911,22 @@ function creditLink(url: string, label: string): string {
   return `<a href="${url}" target="_blank" rel="noreferrer">${label}</a>`;
 }
 
-// 国土地理院タイル。利用規約により出典表示 (attribution) が必須。
-const GSI_TERMS_URL = 'https://maps.gsi.go.jp/development/ichiran.html';
-
 /**
- * 選べる地図。**先頭が既定** (建物の出所と同じ流儀)。
+ * **背景地図と地形もカタログから来る。** 以前は URL をここに書いていて、どこの何を
+ * 使っているか (出所・使う条件) が画面から見えなかった。いまは国土地理院の
+ * 地図タイル (`raster_tiles`) と Mapterhorn の標高 (`terrain`) が Collection として
+ * 載っていて、タイルは web-map-links 拡張のリンク (`rel: "xyz"` / `"tilejson"`) で指される。
+ * 範囲 (`duck:zoom`) も地図ごとにカタログが持つ (白地図はズーム5〜14しか無い)。
  *
- * 出典はどれも「国土地理院」で同じなので、切り替えても出典表示は変えなくてよい。
- * 淡色・標準・写真は z18 までタイルがあることを実測で確かめてある (港区・高尾山)。
- * **範囲 (minzoom / maxzoom) は地図ごとに持つ。** 無いズームを要求すると404を撃ち続ける。
- * 地形を入れたときは航空写真の方が起伏が分かる。
+ * 地形 (Mapterhorn) の日本のソースは基盤地図情報 (数値標高モデル)。測量法の使用承認は
+ * Mapterhorn 側が取得していて、番号はカタログの出典に書いてある。
+ * PLATEAUのCityGMLにも地形モデル (TINRelief) が同梱されているが、5mグリッドを
+ * 三角形に割っただけで、表示のためにラスタへ焼く意味が無いので使わない (data-sources.md)。
  */
-const BASEMAPS: readonly { id: string; label: string; url: string; minzoom: number; maxzoom: number }[] = [
-  {
-    id: 'pale',
-    label: '淡色地図',
-    url: 'https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png',
-    minzoom: 0,
-    maxzoom: 18,
-  },
-  {
-    id: 'std',
-    label: '標準地図',
-    url: 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png',
-    minzoom: 0,
-    maxzoom: 18,
-  },
-  {
-    id: 'photo',
-    label: '航空写真',
-    url: 'https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg',
-    minzoom: 0,
-    maxzoom: 18,
-  },
-  // **白地図はズーム5〜14しか無い** (4と15は404。実測)。文字が無いので、重ねたデータや
-  // 地理院の注記が読みやすい。範囲が他と違うので、切り替えるときはソースを作り直す。
-  {
-    id: 'blank',
-    label: '白地図',
-    url: 'https://cyberjapandata.gsi.go.jp/xyz/blank/{z}/{x}/{y}.png',
-    minzoom: 5,
-    maxzoom: 14,
-  },
-];
-
-/**
- * 地形の標高タイル。
- *
- * Mapterhornの日本のソースは基盤地図情報 (数値標高モデル) で、1m・5m・10m版を持つ。
- * 測量法に基づく国土地理院長承認 (使用) はMapterhorn側が取得済み (R 7JHs 542) で、
- * こちらは配信されているタイルを実行時に読むだけなので、地理院タイルを
- * ベースマップに使っているのと同じ立場になる (出典表示のみ)。
- *
- * PLATEAUのCityGMLにも地形モデル (TINRelief) が同梱されているが、実測すると
- * 三角形の辺が5.00mと7.08m (=5×√2) しか無く、**5mグリッドを三角形に割っただけ**
- * だった。情報量は5mラスタと同じで、港区の4メッシュだけで展開後960MBある。
- * 表示のためにこれをラスタタイルへ焼く工程を持つ意味がないので使わない。
- */
-const TERRAIN_TILEJSON_URL = 'https://tiles.mapterhorn.com/tilejson.json';
+/** 背景地図の地図上の ID (ソースと層で同じ)。 */
+const basemapLayerId = (collection: Collection) => `basemap/${collection.id}`;
+/** 地形のソース ID。TerrainControl もこれを見る。 */
+const TERRAIN_SOURCE = 'terrain';
 
 /** `pmtiles://` を MapLibre に教える。**1回だけ** (2回登録すると後のものが勝つだけだが無駄)。 */
 let pmtilesRegistered = false;
@@ -3116,45 +3111,56 @@ function createVectorOverlay(map: MapLibreMap, collection: Collection, beforeId:
 }
 
 /**
- * 背景地図のソース。範囲は地図ごとに違う (白地図は5〜14) ので、切り替えるときは
- * URLだけでなくソースごと作り直す ([`BASEMAPS`])。
+ * 背景地図のソース。**範囲 (ズーム) はカタログの `duck:zoom`** — 無いズームを要求すると
+ * 404を撃ち続ける (白地図は5〜14)。出典はカタログ由来の出典表示が出すので、ここでは付けない。
  */
-function basemapSource(basemap: (typeof BASEMAPS)[number]): RasterSourceSpecification {
+function basemapSource(collection: Collection): RasterSourceSpecification {
   return {
     type: 'raster',
-    tiles: [basemap.url],
-    tileSize: 256,
-    minzoom: basemap.minzoom,
-    maxzoom: basemap.maxzoom,
-    attribution: creditLink(GSI_TERMS_URL, '国土地理院'),
+    tiles: [collection.tileLink!.href],
+    tileSize: collection.tileSize ?? 256,
+    minzoom: collection.zoom?.[0] ?? 0,
+    maxzoom: collection.zoom?.[1] ?? 18,
   };
 }
 
-const GSI_STYLE: StyleSpecification = {
-  version: 8,
-  sources: {
-    gsi: basemapSource(BASEMAPS[0]),
-    terrain: {
+/**
+ * 地図の土台。**背景地図と地形のソースはカタログから組む。**
+ *
+ * 背景地図はすべて層まで作っておき、**先頭のもの (淡色地図) だけを出す**
+ * (出していない層はタイルを読まない)。重ね順は「後から入れたものが上」([`raiseBasemap`])。
+ */
+function baseStyle(collections: Collection[]): StyleSpecification {
+  const basemaps = collections.filter((c) => c.kind === 'raster_tiles' && c.tileLink);
+  const terrain = collections.find((c) => c.kind === 'terrain' && c.tileLink);
+  const sources: StyleSpecification['sources'] = {};
+  for (const collection of basemaps) sources[basemapLayerId(collection)] = basemapSource(collection);
+  if (terrain) {
+    sources[TERRAIN_SOURCE] = {
       type: 'raster-dem',
-      // tiles / encoding (terrarium) / tileSize / attribution は tilejson から読ませる。
+      // tiles / encoding (terrarium) / tileSize は tilejson から読ませる。
       // 個別に書き写すと、向こうが変えたときに黙ってずれる。
-      url: TERRAIN_TILEJSON_URL,
-      // tilejson が maxzoom を宣言していないのに、実際は z16 までしか無い
-      // (z17以降は404)。明示しないと建物を見るズームで404を撃ち続ける。
-      maxzoom: 16,
-    },
-  },
-  layers: [
-    {
-      id: 'gsi-basemap',
-      type: 'raster',
-      source: 'gsi',
-    },
-  ],
-  // ここに terrain を書かないこと。スタイルに書くと地形タイルの取得が
-  // map の 'load' の条件に入り、**Mapterhornが落ちていると起動できなくなる**
-  // (読み込み中の表示から進まない)。読み込み後に setTerrain で有効にする。
-};
+      url: terrain.tileLink!.href,
+      // tilejson が maxzoom を宣言していないのに、実際は z16 までしか無い。
+      // カタログに書いた範囲で止める (止めないと建物を見るズームで404を撃ち続ける)。
+      maxzoom: terrain.zoom?.[1] ?? 16,
+    };
+  }
+  return {
+    version: 8,
+    sources,
+    // **下から上の順。** 先頭 (淡色地図) をいちばん上に置き、それだけを出す。
+    layers: [...basemaps].reverse().map((collection) => ({
+      id: basemapLayerId(collection),
+      type: 'raster' as const,
+      source: basemapLayerId(collection),
+      layout: { visibility: collection === basemaps[0] ? ('visible' as const) : ('none' as const) },
+    })),
+    // ここに terrain を書かないこと。スタイルに書くと地形タイルの取得が
+    // map の 'load' の条件に入り、**Mapterhornが落ちていると起動できなくなる**
+    // (読み込み中の表示から進まない)。読み込み後に setTerrain で有効にする。
+  };
+}
 
 /**
  * 建物の塗り (既定)。**高さで塗り分ける。** 傾けずに見るときも高さが分かるようにするため。
@@ -3629,7 +3635,7 @@ function renderTechCredits(container: HTMLElement): void {
 function initMap(collections: Collection[]): Promise<MapLibreMap> {
   const map = new MapLibreMap({
     container: 'map',
-    style: GSI_STYLE,
+    style: baseStyle(collections),
     center: [139.767, 35.681],
     zoom: 9,
     // 既定の出典表示を止め、カタログ由来の出典を足したものに差し替える。
@@ -3649,8 +3655,10 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
   // 左上は検索欄、右下は出典表示があるので右上に置く。
   map.addControl(new NavigationControl({ visualizePitch: true }), 'top-right');
   // 地形を切る手段。平野部では起伏が無く、タイルを読むだけになる場面もある。
-  // MapLibreに標準で付いてくるので、自前のトグルは作らない。
-  map.addControl(new TerrainControl({ source: 'terrain' }), 'top-right');
+  // 一覧の「標高 (地形)」の行と同じもの (どちらで切っても、もう一方が追随する)。
+  // 地図の上ですぐ切れるので残す。地形がカタログに無ければ出さない。
+  const hasTerrain = collections.some((c) => c.kind === 'terrain' && c.tileLink);
+  if (hasTerrain) map.addControl(new TerrainControl({ source: TERRAIN_SOURCE }), 'top-right');
 
   map.on('error', (e) => console.error('[map] error', e.error ?? e));
 
@@ -3844,13 +3852,15 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
         id: 'nearby-zone-fill',
         type: 'fill',
         source: 'nearby-zone',
-        paint: { 'fill-color': '#ff6600', 'fill-opacity': 0.08 },
+        // 範囲は**はっきり見える**ように。結果を目立たせるときは周りを薄くするので、
+        // 範囲の縁が「どこまで調べたか」の唯一の手がかりになる。
+        paint: { 'fill-color': '#ff6600', 'fill-opacity': 0.12 },
       });
       map.addLayer({
         id: 'nearby-zone-line',
         type: 'line',
         source: 'nearby-zone',
-        paint: { 'line-color': '#ff6600', 'line-width': 1.5, 'line-dasharray': [2, 1] },
+        paint: { 'line-color': '#ff6600', 'line-width': 3, 'line-dasharray': [4, 1] },
       });
       map.addSource('nearby-hits', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
       map.addLayer({
@@ -3862,6 +3872,65 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
           'fill-color': ['match', ['get', 'tierRank'], 0, '#c0392b', 1, '#e09a3e', 2, '#8a94a0', '#ff6600'],
           'fill-opacity': 0.75,
           'fill-outline-color': '#ffffff',
+        },
+      });
+      // 範囲に入った線 (駅・鉄道・道路・送電線・川)。種類ごとの色は一覧の線と揃える。
+      map.addSource('nearby-hit-lines', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
+      map.addLayer({
+        id: 'nearby-hit-lines',
+        type: 'line',
+        source: 'nearby-hit-lines',
+        paint: {
+          'line-color': [
+            'match',
+            ['get', 'kind'],
+            '駅',
+            '#8e1b1b',
+            '鉄道',
+            '#444444',
+            '道路',
+            '#d9822b',
+            '送電線',
+            '#d19a00',
+            '川',
+            '#2f6fd1',
+            '#ff6600',
+          ],
+          'line-width': ['match', ['get', 'kind'], '駅', 6, 3],
+          'line-opacity': 0.9,
+        },
+      });
+      // **起点** (押したもの)。結果より上に、太く縁取って描く。何を起点にしたかが一目で分かるように。
+      map.addSource('nearby-origin', { type: 'geojson', data: EMPTY_FEATURE_COLLECTION });
+      map.addLayer({
+        id: 'nearby-origin-fill',
+        type: 'fill',
+        source: 'nearby-origin',
+        filter: ['==', ['geometry-type'], 'Polygon'],
+        paint: { 'fill-color': '#1f3a93', 'fill-opacity': 0.35 },
+      });
+      map.addLayer({
+        id: 'nearby-origin-casing',
+        type: 'line',
+        source: 'nearby-origin',
+        paint: { 'line-color': '#ffffff', 'line-width': 7, 'line-opacity': 0.9 },
+      });
+      map.addLayer({
+        id: 'nearby-origin-line',
+        type: 'line',
+        source: 'nearby-origin',
+        paint: { 'line-color': '#1f3a93', 'line-width': 4 },
+      });
+      map.addLayer({
+        id: 'nearby-origin-point',
+        type: 'circle',
+        source: 'nearby-origin',
+        filter: ['==', ['geometry-type'], 'Point'],
+        paint: {
+          'circle-radius': 8,
+          'circle-color': '#1f3a93',
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': 3,
         },
       });
 
@@ -3918,7 +3987,7 @@ function initMap(collections: Collection[]): Promise<MapLibreMap> {
       });
       // 地形は最後に有効にする。ここまで来ていれば、以降タイルが取れなくても
       // 起伏が出ないだけで地図は使える。起動を外部サービスに握らせない。
-      map.setTerrain({ source: 'terrain', exaggeration: 1 });
+      if (hasTerrain) map.setTerrain({ source: TERRAIN_SOURCE, exaggeration: 1 });
       resolve(map);
     });
   });
@@ -3939,7 +4008,6 @@ async function main() {
   const loadingMessageEl = document.querySelector<HTMLParagraphElement>('#loading-message')!;
   const busyEl = document.querySelector<HTMLDivElement>('#busy')!;
   const busyLabelEl = document.querySelector<HTMLSpanElement>('#busy-label')!;
-  const basemapSelect = document.querySelector<HTMLSelectElement>('#basemap')!;
   const buildingsSection = document.querySelector<HTMLDivElement>('#buildings-section')!;
   const filtersEl = document.querySelector<HTMLDivElement>('#building-filters')!;
   const heightField = document.querySelector<HTMLDivElement>('#height-field')!;
@@ -4071,35 +4139,6 @@ async function main() {
   pickButton.disabled = false;
   nearbyButton.disabled = false;
   input.focus();
-
-  // 地図の切り替え。出典も maxzoom も tileSize も3種で同じなので、
-  // ソースを作り直さずURLだけ差し替える。
-  //
-  // 地形の入切とは連動させない。自分で選んだものが別の操作で勝手に変わるのは、
-  // 逆ジオコーディングを📍ボタンにしたときに取り除いた感覚と同じになる。
-  for (const basemap of BASEMAPS) {
-    const option = document.createElement('option');
-    option.value = basemap.id;
-    option.textContent = basemap.label;
-    basemapSelect.append(option);
-  }
-  basemapSelect.value = BASEMAPS[0].id;
-  basemapSelect.addEventListener('change', () => {
-    const basemap = BASEMAPS.find((b) => b.id === basemapSelect.value);
-    if (!basemap) return;
-    // **ソースごと作り直す。** 範囲 (白地図は5〜14) が地図ごとに違い、setTiles では
-    // 変えられない。層はいちばん下に置き直す (その上にデータが重なっている)。
-    const styleLayers = map.getStyle().layers;
-    const index = styleLayers.findIndex((l) => l.id === 'gsi-basemap');
-    if (index < 0) return;
-    const layer = styleLayers[index];
-    // 元の位置に戻す (すぐ上にあった層の下へ)。
-    const below = styleLayers[index + 1]?.id;
-    map.removeLayer('gsi-basemap');
-    map.removeSource('gsi');
-    map.addSource('gsi', basemapSource(basemap));
-    map.addLayer(layer, below);
-  });
 
   // 初期化のオーバーレイ (#loading) は上で消えるが、その後も数秒かかる操作がある。
   // 操作を先に触れる作りにしている以上、「触れる」と「終わっている」を
@@ -5204,6 +5243,11 @@ async function main() {
      * 入り切りの状態は `overlay.visible` が持つ (**ズームでは変えない**)。
      */
     parts?: { overlay: VectorOverlay; layers: VectorLayerInfo[] };
+    /**
+     * 背景 (地図タイル・地形)。**出所の見出しを既定で開く理由にしない** —
+     * 既定で淡色地図と地形が出ているので、数えると国土地理院とMapterhornが常に開く。
+     */
+    background?: boolean;
   }
 
   /** 中の層を開いている行。**描き直しても開いたまま**にする (一覧は moveend ごとに作り直す)。 */
@@ -5218,6 +5262,59 @@ async function main() {
 
   /** 外部のベクトルタイル。ホバーで引き当てるために持っておく。 */
   const vectorOverlays: VectorOverlay[] = [];
+
+  // ---- 背景地図と地形 (一覧の行) ----------------------------------------------
+  //
+  // **QGISと同じく、背景地図も重ねられるレイヤーの1つ。** 以前は select で1つ選ぶだけで、
+  // どこの何を使っているか (出所・使う条件) が画面から見えなかった。
+
+  const basemapIds = new Set(
+    collections.filter((c) => c.kind === 'raster_tiles').map((c) => basemapLayerId(c)),
+  );
+
+  /**
+   * **入れた背景地図を、背景地図の中でいちばん上にする。** 不透明な地図同士なので、
+   * カタログの並び順で重ねると、入れたのに下に隠れて「切り替わらない」ように見える。
+   */
+  const raiseBasemap = (id: string) => {
+    const above = map.getStyle().layers.find((l) => !basemapIds.has(l.id));
+    map.moveLayer(id, above?.id);
+  };
+
+  /** 範囲つきのスライダー1つ (不透明度・起伏の強調)。地図を見ながら動かすので行の下に開く。 */
+  const sliderSettings = (
+    label: string,
+    min: number,
+    max: number,
+    step: number,
+    value: number,
+    format: (value: number) => string,
+    onInput: (value: number) => void,
+  ): HTMLElement => {
+    const wrap = document.createElement('label');
+    wrap.className = 'layer-slider';
+    const text = document.createElement('span');
+    text.textContent = `${label} ${format(value)}`;
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = String(min);
+    input.max = String(max);
+    input.step = String(step);
+    input.value = String(value);
+    input.addEventListener('input', () => {
+      text.textContent = `${label} ${format(Number(input.value))}`;
+      onInput(Number(input.value));
+    });
+    wrap.append(text, input);
+    const settings = document.createElement('div');
+    settings.append(wrap);
+    return settings;
+  };
+
+  /** 地形の起伏の強調。行の ⚙ で変え、切って入れ直しても保つ。 */
+  let terrainExaggeration = 1;
+  /** 地形の行。TerrainControl (地図右上のボタン) で切られたときに、行を追随させる。 */
+  let terrainLayer: Layer | undefined;
   /** 外部のベクトルタイルは、うちのデータでいちばん下の層 (人口メッシュ) のさらに下に敷く。 */
   const VECTOR_OVERLAY_BEFORE = 'population-mesh-fill';
 
@@ -5292,6 +5389,51 @@ async function main() {
         // 絞り込みが無いので、設定の中身は空 (⚙ ではCollectionの中身だけが出る)。
         const settings = document.createElement('div');
         layers.push({ ...base, settings, refresh: requestLineRefresh(source) });
+        break;
+      }
+      case 'raster_tiles': {
+        if (!collection.tileLink) break;
+        const id = basemapLayerId(collection);
+        const first = collections.find((c) => c.kind === 'raster_tiles' && c.tileLink);
+        layers.push({
+          ...base,
+          // **先頭の背景地図 (淡色地図) だけ既定で出す** (スタイルを組むときと同じ規則)。
+          visible: collection === first,
+          // 何のソースかを行で言う (データの行が版を添えるのと同じ場所)。
+          vintage: `地図タイル (XYZ) · ズーム${collection.zoom?.join('〜') ?? ''}`,
+          background: true,
+          settings: sliderSettings('不透明度', 0, 100, 5, 100, (v) => `${v}%`, (v) =>
+            map.setPaintProperty(id, 'raster-opacity', v / 100),
+          ),
+          refresh: () => {
+            const visible = isLayerVisible(collection.id);
+            map.setLayoutProperty(id, 'visibility', visible ? 'visible' : 'none');
+            if (visible) raiseBasemap(id);
+          },
+        });
+        break;
+      }
+      case 'terrain': {
+        if (!collection.tileLink) break;
+        const apply = () =>
+          map.setTerrain(
+            isLayerVisible(collection.id)
+              ? { source: TERRAIN_SOURCE, exaggeration: terrainExaggeration }
+              : null,
+          );
+        terrainLayer = {
+          ...base,
+          // 起動時に有効にしている (initMap)。
+          visible: map.getTerrain() !== null,
+          vintage: `標高タイル (TileJSON) · ズーム${collection.zoom?.join('〜') ?? ''}`,
+          background: true,
+          settings: sliderSettings('起伏の強調', 1, 3, 0.5, 1, (v) => `×${v}`, (v) => {
+            terrainExaggeration = v;
+            if (map.getTerrain()) apply();
+          }),
+          refresh: apply,
+        };
+        layers.push(terrainLayer);
         break;
       }
       case 'vector_tiles': {
@@ -5660,6 +5802,32 @@ async function main() {
     return nodes;
   };
 
+  /**
+   * 外部の地図タイル・標高のカード。**ファイルも列も無い** (タイルは1ファイルではない)。
+   * どこから読んでいるか (タイルのURL・TileJSON) と、タイルがあるズームを出す。
+   */
+  const tileFacts = (
+    collection: Collection,
+    fact: (term: string, ...value: (string | Node)[]) => HTMLElement,
+  ) => {
+    const link = collection.tileLink;
+    if (link) {
+      const tileJson = link.rel === 'tilejson';
+      // XYZ のテンプレートはそのままでは開けないので、文字で見せる (TileJSON はリンク)。
+      const where = tileJson ? externalLink(link.href, 'TileJSON') : document.createElement('code');
+      if (!tileJson) where.textContent = link.href;
+      fact('形式', tileJson ? '標高タイル (TileJSON) ' : '地図タイル (XYZ) ', where);
+    }
+    if (collection.zoom) {
+      fact('ズーム', `${collection.zoom[0]}〜${collection.zoom[1]} (それより寄ると拡大して描く)`);
+    }
+    fact(
+      '引き方',
+      collection.kind === 'terrain' ? '地図を立体にするだけ。SQL では引けない' : '下に敷いて見るだけ。SQL では引けない',
+    );
+    if (collection.bbox) fact('範囲', formatBbox(collection.bbox));
+  };
+
   const collectionCard = (collection: Collection): HTMLElement => {
     const card = document.createElement('div');
     card.className = 'collection-card';
@@ -5702,6 +5870,11 @@ async function main() {
     if (collection.vintage) fact('版', collection.vintage);
     if (collection.kind === 'vector_tiles') {
       card.append(head, description, facts, ...vectorTilesFacts(collection, fact));
+      return card;
+    }
+    if (collection.kind === 'raster_tiles' || collection.kind === 'terrain') {
+      tileFacts(collection, fact);
+      card.append(head, description, facts);
       return card;
     }
     // **ファイル数はItemCollectionを読まないと分からない。** 起動時には読まない
@@ -5946,8 +6119,19 @@ async function main() {
    * 描き直しても (moveend ごと) 保つ。絞り込み中は当たったものを全部見せる。
    */
   const openGroups = new Set(
-    layers.filter((layer) => layer.visible && layer.group).map((layer) => layer.group!.id),
+    layers
+      .filter((layer) => layer.visible && layer.group && !layer.background)
+      .map((layer) => layer.group!.id),
   );
+
+  // 地図右上の地形ボタンで切られたら、一覧の行を追随させる (逆は行の refresh が切る)。
+  map.on('terrain', () => {
+    if (!terrainLayer) return;
+    const on = map.getTerrain() !== null;
+    if (terrainLayer.visible === on) return;
+    terrainLayer.visible = on;
+    renderLayerList();
+  });
 
   const groupHeading = (group: CatalogGroup, rows: Layer[], open: boolean): HTMLElement => {
     const heading = document.createElement('div');
@@ -6431,14 +6615,71 @@ async function main() {
     void originAt(e.point, e.lngLat).then(runNearby);
   });
 
+  // **結果だけを目立たせる。** 周辺検索の結果を出しているあいだ、うちのデータの層を
+  // 薄くする (消しはしない — 薄く残すと、結果がどこに当たっているかの手がかりになる)。
+  // 背景地図と周辺検索の層 (起点・範囲・結果) はそのまま。
+  const NEARBY_KEEP = /^(basemap\/|nearby-|highlight|selected-point)/;
+  type PaintProperty = Parameters<MapLibreMap['getPaintProperty']>[1];
+  const DIM_PROPERTIES: Record<string, PaintProperty[]> = {
+    fill: ['fill-opacity'],
+    line: ['line-opacity'],
+    'fill-extrusion': ['fill-extrusion-opacity'],
+    circle: ['circle-opacity', 'circle-stroke-opacity'],
+    symbol: ['text-opacity', 'icon-opacity'],
+  };
+  const NEARBY_DIM = 0.12;
+  /** 周辺検索の層。**下から上の順** (範囲 → 当たったもの → 起点)。 */
+  const NEARBY_LAYERS = [
+    'nearby-zone-fill',
+    'nearby-zone-line',
+    'nearby-hits',
+    'nearby-hit-lines',
+    'nearby-origin-fill',
+    'nearby-origin-casing',
+    'nearby-origin-line',
+    'nearby-origin-point',
+  ];
+  /** 薄くした層と、元の値 (戻すため)。元が既定値なら undefined で、戻すと既定に戻る。 */
+  type PaintValue = Parameters<MapLibreMap['setPaintProperty']>[2];
+  const dimmed = new Map<string, [PaintProperty, PaintValue][]>();
+  const nearbyFocusInput = document.querySelector<HTMLInputElement>('#nearby-focus')!;
+
+  const setNearbyFocus = (on: boolean) => {
+    if (!on) {
+      for (const [id, properties] of dimmed) {
+        if (!map.getLayer(id)) continue;
+        for (const [property, value] of properties) map.setPaintProperty(id, property, value);
+      }
+      dimmed.clear();
+      return;
+    }
+    for (const layer of map.getStyle().layers) {
+      if (NEARBY_KEEP.test(layer.id) || dimmed.has(layer.id)) continue;
+      const properties = DIM_PROPERTIES[layer.type];
+      if (!properties) continue;
+      dimmed.set(
+        layer.id,
+        properties.map((property) => [property, map.getPaintProperty(layer.id, property)]),
+      );
+      for (const property of properties) map.setPaintProperty(layer.id, property, NEARBY_DIM);
+    }
+  };
+
+  nearbyFocusInput.addEventListener('change', () => {
+    setNearbyFocus(nearbyFocusInput.checked && currentOrigin !== null);
+  });
+
   const clearNearby = () => {
     if (nearbyMode) setNearbyMode(false);
     nearbyToken++;
     currentOrigin = null;
     nearbyPanel.hidden = true;
-    Promise.all([setSourceData('nearby-zone', null), setSourceData('nearby-hits', null)]).catch(
-      (e: unknown) => console.error('[nearby] clear failed', e),
-    );
+    setNearbyFocus(false);
+    Promise.all(
+      ['nearby-zone', 'nearby-hits', 'nearby-hit-lines', 'nearby-origin'].map((id) =>
+        setSourceData(id, null),
+      ),
+    ).catch((e: unknown) => console.error('[nearby] clear failed', e));
   };
 
   /** 周辺を調べて、パネルと地図に出す。 */
@@ -6451,6 +6692,11 @@ async function main() {
     nearbyResultsEl.textContent = '調べています…';
     const token = ++nearbyToken;
     const frame = nearbyFrame(origin, distance, currentBounds());
+    // **押したものをすぐ強調する** (結果を待たずに、何を起点にしたかが分かるように)。
+    void setSourceData('nearby-origin', origin.geometry);
+    // 周辺検索の層を**いちばん上へ**。地図を作るときは早く足すので、あとから足した
+    // 建物 (立体)・鉄道・地理院の層の下に隠れていた。下から 範囲 → 結果 → 起点 の順。
+    for (const id of NEARBY_LAYERS) if (map.getLayer(id)) map.moveLayer(id);
 
     try {
       const result = await busy('周辺を調べています…', async () => {
@@ -6468,7 +6714,7 @@ async function main() {
           const found = await fetchNearbyBuildings(conn, source, frame);
           if (found) buildings.push(found);
         }
-        const names: [string, { names: string[]; total: number }][] = [];
+        const names: [string, { names: string[]; total: number; features: GeoJSON.Feature[] }][] = [];
         for (const source of railwaySources) {
           await source.ensure();
           const expression =
@@ -6518,6 +6764,15 @@ async function main() {
         type: 'FeatureCollection',
         features: result.buildings.flatMap((b) => b.features),
       });
+      // 線は種類 (駅・鉄道・道路・送電線・川) で塗り分ける。
+      const lineHits = map.getSource('nearby-hit-lines') as GeoJSONSource | undefined;
+      await lineHits?.setData({
+        type: 'FeatureCollection',
+        features: result.names.flatMap(([kind, found]) =>
+          found.features.map((feature) => ({ ...feature, properties: { ...feature.properties, kind } })),
+        ),
+      });
+      setNearbyFocus(nearbyFocusInput.checked);
       renderNearby(result, frame);
     } catch (e) {
       console.error('[nearby] failed', e);

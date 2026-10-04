@@ -262,6 +262,178 @@ pub const GSI_OPTIMAL_BVMAP: ExternalTileset = ExternalTileset {
 /// カタログに載せる外部のタイルセット。
 pub const EXTERNAL_TILESETS: &[ExternalTileset] = &[GSI_OPTIMAL_BVMAP];
 
+// ---- 外部のラスタタイル (背景地図・標高) -----------------------------------------
+//
+// **背景地図も、どこから来ているかをデータと同じように見せる。** 以前は UI のコードに
+// URL が書いてあるだけで、出所も使う条件もカタログに無かった。地図タイルは1ファイルでは
+// ないので、アセットではなく STAC の web-map-links 拡張のリンク (`rel: "xyz"` /
+// `"tilejson"`) で指す。
+
+/// タイルの在りか。
+pub enum TileLink {
+    /// `{z}/{x}/{y}` のテンプレート。
+    Xyz {
+        template: &'static str,
+        media_type: &'static str,
+    },
+    /// TileJSON。中身 (タイルのURL・エンコード) は読む側が TileJSON から取る。
+    TileJson { url: &'static str },
+}
+
+/// ラスタタイルの役割。UI がどう重ねるかを決める。
+#[derive(Clone, Copy)]
+pub enum RasterRole {
+    /// 背景地図。いちばん下に敷き、不透明度を変えて重ねられる。
+    Basemap,
+    /// 標高 (地形)。地図を立体にする。
+    Terrain,
+}
+
+/// 外部のラスタタイル1つ。STAC の Collection 1つになる (Item もアセットも無い)。
+pub struct ExternalRaster {
+    pub id: &'static str,
+    /// 置き場所 (サブカタログ)。`stac::SUB_CATALOGS` にあること。
+    pub dir: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    pub attribution: Attribution,
+    /// 配布元 (説明のページ)。
+    pub via: &'static str,
+    pub role: RasterRole,
+    pub link: TileLink,
+    /// **タイルが実際にあるズーム。** 無いズームを要求すると 404 を撃ち続ける
+    /// (白地図は5〜14、標高は TileJSON が宣言していないが16まで。いずれも実測)。
+    pub minzoom: u8,
+    pub maxzoom: u8,
+    pub tile_size: u16,
+    /// 収録範囲 [西, 南, 東, 北]。
+    pub bounds: [f64; 4],
+}
+
+/// 地理院タイル。利用規約により出典表示が必須。
+const GSI_TILES: Attribution = Attribution {
+    text: "国土地理院",
+    url: "https://maps.gsi.go.jp/development/ichiran.html",
+    license: "other",
+    provider: "国土地理院",
+    terms: GSI_TERMS,
+};
+const GSI_TILES_VIA: &str = "https://maps.gsi.go.jp/development/ichiran.html";
+/// 地理院タイルの範囲。日本とその周り (世界の低ズームもあるが、使うのは日本)。
+const JAPAN_BOUNDS: [f64; 4] = [122.0, 20.0, 154.0, 46.0];
+
+/// Mapterhorn の標高タイル。**日本は基盤地図情報 (数値標高モデル)**。
+///
+/// 測量法の使用承認は Mapterhorn 側が取得している (attribution.json の日本のソースの
+/// ライセンス欄、2026-10-04 に確かめた番号)。こちらは配信されているタイルを実行時に
+/// 読むだけ。番号は向こうが取り直すと変わる (以前は R 7JHs 542 だった) ので、
+/// 取り直すときに <https://download.mapterhorn.com/attribution.json> を見ること。
+/// 商用の扱いはソースごとに違い、まとめた規約は無いので「制限の記載なし」にする。
+const MAPTERHORN: Attribution = Attribution {
+    text: "© Mapterhorn / 基盤地図情報（数値標高モデル）国土地理院 \
+           (測量法に基づく国土地理院長承認（使用）R 8JHs 131)",
+    url: "https://mapterhorn.com/attribution",
+    license: "other",
+    provider: "Mapterhorn",
+    terms: Terms {
+        name: "Mapterhorn の出典 (ソースごとのライセンス。日本は国土地理院コンテンツ利用規約)",
+        url: "https://mapterhorn.com/attribution",
+        commercial: Commercial::NotRestricted,
+        attribution_required: true,
+        note_modification: false,
+        share_alike: false,
+    },
+};
+
+/// 背景地図と標高。**並びは一覧の並び**で、背景地図は先頭が既定で出る。
+pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
+    ExternalRaster {
+        id: "gsi-pale",
+        dir: "gsi",
+        title: "淡色地図",
+        description: "地理院タイルの淡色地図。色を抑えてあり、重ねたデータが読みやすい。",
+        attribution: GSI_TILES,
+        via: GSI_TILES_VIA,
+        role: RasterRole::Basemap,
+        link: TileLink::Xyz {
+            template: "https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png",
+            media_type: "image/png",
+        },
+        minzoom: 0,
+        maxzoom: 18,
+        tile_size: 256,
+        bounds: JAPAN_BOUNDS,
+    },
+    ExternalRaster {
+        id: "gsi-std",
+        dir: "gsi",
+        title: "標準地図",
+        description: "地理院タイルの標準地図。",
+        attribution: GSI_TILES,
+        via: GSI_TILES_VIA,
+        role: RasterRole::Basemap,
+        link: TileLink::Xyz {
+            template: "https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png",
+            media_type: "image/png",
+        },
+        minzoom: 0,
+        maxzoom: 18,
+        tile_size: 256,
+        bounds: JAPAN_BOUNDS,
+    },
+    ExternalRaster {
+        id: "gsi-photo",
+        dir: "gsi",
+        title: "航空写真",
+        description: "地理院タイルの全国最新写真 (シームレス)。地形を入れたときに起伏が分かる。",
+        attribution: GSI_TILES,
+        via: GSI_TILES_VIA,
+        role: RasterRole::Basemap,
+        link: TileLink::Xyz {
+            template: "https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg",
+            media_type: "image/jpeg",
+        },
+        minzoom: 0,
+        maxzoom: 18,
+        tile_size: 256,
+        bounds: JAPAN_BOUNDS,
+    },
+    ExternalRaster {
+        id: "gsi-blank",
+        dir: "gsi",
+        title: "白地図",
+        description: "地理院タイルの白地図。文字が無いので、重ねたデータや注記が読みやすい。ズーム5〜14。",
+        attribution: GSI_TILES,
+        via: GSI_TILES_VIA,
+        role: RasterRole::Basemap,
+        link: TileLink::Xyz {
+            template: "https://cyberjapandata.gsi.go.jp/xyz/blank/{z}/{x}/{y}.png",
+            media_type: "image/png",
+        },
+        minzoom: 5,
+        maxzoom: 14,
+        tile_size: 256,
+        bounds: JAPAN_BOUNDS,
+    },
+    ExternalRaster {
+        id: "mapterhorn-terrain",
+        dir: "mapterhorn",
+        title: "標高 (地形)",
+        description: "世界の標高タイル。日本は基盤地図情報 (数値標高モデル、1m・5m・10m)。\
+                      地図を立体にする。表示専用で SQL では引けない。",
+        attribution: MAPTERHORN,
+        via: "https://mapterhorn.com/",
+        role: RasterRole::Terrain,
+        link: TileLink::TileJson {
+            url: "https://tiles.mapterhorn.com/tilejson.json",
+        },
+        minzoom: 0,
+        maxzoom: 16,
+        tile_size: 512,
+        bounds: [-180.0, -85.051_128_7, 180.0, 85.051_128_7],
+    },
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -335,7 +335,8 @@ test('使い方に操作が一通り書かれている', async ({ page }) => {
   await expect(help).toContainText('クリック');
   await expect(help).toContainText('カーソルを合わせる');
   // 画面のボタンは、同じ記号で全部説明されていること。
-  for (const mark of ['📍', '◎', '⚙', '▸']) await expect(help).toContainText(mark);
+  for (const mark of ['📍', '◎', '⚙', 'ⓘ', '▸']) await expect(help).toContainText(mark);
+  await expect(help).toContainText('背景地図');
   await expect(help).toContainText('周り');
   await expect(help).toContainText('絞り込');
   await expect(help).toContainText('この範囲を取得');
@@ -724,8 +725,8 @@ test('できることは開かなくても分かる', async ({ page }) => {
   for (const group of ['PLATEAU', '国勢調査']) {
     await expect(panel.locator('.layer-group', { hasText: group }).first()).toBeVisible();
   }
-  // 背景地図もレイヤーの1つ。**たたまない** (selectが1つあるだけ)。
-  await expect(panel.locator('#basemap-section')).toContainText('背景地図');
+  // レイヤーをまたぐ設定 (表示量) は一覧の最後。背景地図はもう一覧の行。
+  await expect(panel.locator('#detail-section')).toContainText('表示量');
   // 使い方・検索できるもの・出典・使っている技術は右下 (MapLibreの ⓘ と同じ性格なので同じ側)。
   for (const heading of ['使い方', '検索できるもの', '出典', '使っている技術']) {
     await expect(page.locator('#info-panel .info-open', { hasText: heading })).toBeVisible();
@@ -892,33 +893,85 @@ test('逆ジオコーディング中は合図が出る', async ({ page }) => {
   await expect(page.locator('#busy')).toBeHidden();
 });
 
+/** 背景地図の行 (カタログの Collection ID)。 */
+const BASEMAP = {
+  pale: 'gsi-pale',
+  photo: 'gsi-photo',
+  blank: 'gsi-blank',
+  terrain: 'mapterhorn-terrain',
+} as const;
+
+/** 背景地図の地図上の層の並び (下から)。出しているものだけ。 */
+function visibleBasemaps(page: Page): Promise<string[]> {
+  return page.evaluate(() =>
+    (window as unknown as TestWindow)
+      .__map!.getStyle()
+      .layers.filter((l) => l.id.startsWith('basemap/') && l.layout?.visibility !== 'none')
+      .map((l) => l.id.slice('basemap/'.length)),
+  );
+}
+
 /**
- * 地図の切り替え。
- *
- * `<select>` の値が変わっただけで実際のタイルが切り替わっていない、を弾きたいので、
- * 選択後のリクエストURLを見る。
+ * **背景地図も一覧の行** (QGISと同じく、重ねられるレイヤーの1つ)。出所 (国土地理院) の
+ * 見出しの下にあり、既定では淡色地図だけが出ている。入れると実際にそのタイルを取りに行き、
+ * **後から入れたものが上**になる (不透明な地図同士なので、下に隠れると切り替わらないように見える)。
  */
-test('地図を航空写真に切り替えると写真のタイルを取りに行く', async ({ page }) => {
+test('背景地図は一覧の行で、入れると写真のタイルを取りに行き上に重なる', async ({ page }) => {
+  expect(await visibleBasemaps(page)).toEqual([BASEMAP.pale]);
   const requested: string[] = [];
   page.on('request', (request) => {
     if (request.url().includes('cyberjapandata.gsi.go.jp')) requested.push(request.url());
   });
 
-  await page.locator('#basemap').selectOption({ label: '航空写真' });
-
+  await showLayer(page, BASEMAP.photo);
   await expect.poll(() => requested.some((url) => url.includes('/seamlessphoto/'))).toBe(true);
+  // 淡色地図の上に写真。
+  expect(await visibleBasemaps(page)).toEqual([BASEMAP.pale, BASEMAP.photo]);
+
+  // 淡色地図を入れ直すと、今度はそちらが上。
+  await hideLayer(page, BASEMAP.pale);
+  await showLayer(page, BASEMAP.pale);
+  await expect.poll(() => visibleBasemaps(page)).toEqual([BASEMAP.photo, BASEMAP.pale]);
+
+  // 不透明度は行の ⚙ で変えられる (地図を見ながら動かすので、行の下に開く)。
+  await openLayerSettings(page, BASEMAP.pale);
+  await page.locator(`[data-layer="${BASEMAP.pale}"] .layer-settings-slot input[type="range"]`).fill('40');
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as unknown as TestWindow).__map!.getPaintProperty('basemap/gsi-pale', 'raster-opacity'),
+      ),
+    )
+    .toBe(0.4);
 });
 
 /**
- * **白地図はズーム5〜14しか無い。** 寄っても15以上を取りに行かず (404を撃たない)、
- * 14を拡大して描く。背景はいちばん下のまま (データの上に被らない)。
+ * **どこから来ているかが ⓘ で分かる。** 背景地図も地形もカタログの Collection で、
+ * タイルのURL (XYZ) や TileJSON、使う条件・出典 (地形は測量法の承認番号) が出る。
  */
-test('白地図に切り替えると、無いズームのタイルを取りに行かない', async ({ page }) => {
+test('背景地図と地形の出所が ⓘ で分かる', async ({ page }) => {
+  await openLayerDetails(page, BASEMAP.blank);
+  const blank = page.locator(`.collection-card[data-collection="${BASEMAP.blank}"]`);
+  await expect(blank).toContainText('/xyz/blank/{z}/{x}/{y}.png');
+  await expect(blank).toContainText('5〜14');
+  await expect(blank.locator('.terms-badge', { hasText: '商用可' })).toBeVisible();
+
+  await openLayerDetails(page, BASEMAP.terrain);
+  const terrain = page.locator(`.collection-card[data-collection="${BASEMAP.terrain}"]`);
+  await expect(page.locator('#layer-detail-title')).toContainText('Mapterhorn');
+  await expect(terrain.locator('a', { hasText: 'TileJSON' })).toHaveAttribute('href', /tilejson\.json$/);
+});
+
+/**
+ * **白地図はズーム5〜14しか無い** (カタログの `duck:zoom`)。寄っても15以上を取りに行かず
+ * (404を撃たない)、14を拡大して描く。背景はいちばん下のまま (データの上に被らない)。
+ */
+test('白地図を入れると、無いズームのタイルを取りに行かない', async ({ page }) => {
   const blank: string[] = [];
   page.on('request', (request) => {
     if (request.url().includes('/xyz/blank/')) blank.push(request.url());
   });
-  await page.locator('#basemap').selectOption({ label: '白地図' });
+  await showLayer(page, BASEMAP.blank);
   await page.evaluate(() => {
     (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7671, 35.6812], zoom: 16.5 });
   });
@@ -926,21 +979,33 @@ test('白地図に切り替えると、無いズームのタイルを取りに�
   await page.waitForTimeout(1000);
   const zooms = blank.map((url) => Number(url.match(/\/xyz\/blank\/(\d+)\//)![1]));
   expect(Math.max(...zooms)).toBeLessThanOrEqual(14);
-  // 背景はいちばん下。
-  const first = await page.evaluate(() => (window as unknown as TestWindow).__map!.getStyle().layers[0].id);
-  expect(first).toBe('gsi-basemap');
+  // 背景はいちばん下 (背景地図の層の上に、データの層が来る)。
+  const ids = await page.evaluate(() =>
+    (window as unknown as TestWindow).__map!.getStyle().layers.map((l) => l.id),
+  );
+  const lastBasemap = ids.findLastIndex((id) => id.startsWith('basemap/'));
+  expect(ids.slice(0, lastBasemap + 1).every((id) => id.startsWith('basemap/'))).toBe(true);
 });
 
 // 地図と地形は別々に選べる。片方の操作で、自分で選んだもう片方が勝手に変わらないこと。
-test('地形を切っても地図は変わらない', async ({ page }) => {
-  await page.locator('#basemap').selectOption({ label: '航空写真' });
+// 地図右上のボタンで切ると、一覧の地形の行も追随する (同じものを2か所で切れる)。
+test('地形を切っても地図は変わらず、一覧の行も追随する', async ({ page }) => {
+  await showLayer(page, BASEMAP.photo);
 
   await page.locator('button[class*="maplibregl-ctrl-terrain"]').click();
   await expect
     .poll(() => page.evaluate(() => (window as unknown as TestWindow).__map!.getTerrain()))
     .toBe(null);
 
-  await expect(page.locator('#basemap')).toHaveValue('photo');
+  expect(await visibleBasemaps(page)).toContain(BASEMAP.photo);
+  await revealLayer(page, BASEMAP.terrain);
+  await expect(page.locator(`#layer-toggle-${BASEMAP.terrain}`)).not.toBeChecked();
+
+  // 一覧から入れ直せる。
+  await showLayer(page, BASEMAP.terrain);
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as TestWindow).__map!.getTerrain() !== null))
+    .toBe(true);
 });
 
 test('地形が有効になっていて、コンパスの下のボタンで切れる', async ({ page }) => {
@@ -2239,13 +2304,19 @@ test('検索していないときは左上が地図を塞がない', async ({ pa
   expect(covered, '検索欄が地図の (200,200) を覆っている').toBe(false);
 });
 
-/** 背景地図はレイヤーの1つ。**たたまず**、データ一覧の中に置く。 */
-test('背景地図は開かずに切り替えられる', async ({ page }) => {
-  const basemap = page.locator('#data-panel #basemap-section');
-  await expect(basemap).toBeVisible();
-  await expect(basemap).toContainText('背景地図');
-  // <details> ではないので、開く操作なしで select に触れる。
-  await expect(page.locator('#basemap')).toBeVisible();
+/**
+ * 背景地図と地形は**出所の見出しの下の行**。既定で出ているが、それを理由に見出しは開かない
+ * (開くと国土地理院とMapterhornが常に開いて一覧が伸びる)。見出しの件数で出ていると分かる。
+ */
+test('背景地図と地形は出所の見出しの下にあり、既定では見出しを開かない', async ({ page }) => {
+  const gsi = page.locator('#layer-rows .layer-group[data-group="duck-geocoder-gsi"]');
+  const mapterhorn = page.locator('#layer-rows .layer-group[data-group="duck-geocoder-mapterhorn"]');
+  await expect(gsi.locator('.layer-group-toggle')).toHaveAttribute('aria-expanded', 'false');
+  await expect(gsi).toContainText('1件表示中');
+  await expect(mapterhorn).toContainText('1件表示中');
+  await revealLayer(page, BASEMAP.pale);
+  await expect(page.locator(`#layer-toggle-${BASEMAP.pale}`)).toBeChecked();
+  await expect(page.locator(`[data-layer="${BASEMAP.pale}"]`)).toContainText('地図タイル');
 });
 
 /**
@@ -2897,7 +2968,9 @@ test('周辺検索: 地図上の点から、建物と駅が出て、距離を広
   await page.evaluate(() => {
     (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7671, 35.6812], zoom: 16 });
   });
-  await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
+  await expect
+    .poll(() => sourceFeatureCount(page, 'buildings'), { timeout: 60_000 })
+    .toBeGreaterThan(0);
 
   // 東京駅の近くで、地物が描かれていない (= 点が起点になる) ところを押す。
   // 中心は駅舎の建物の上なので、押すと建物が起点になる。
@@ -2909,6 +2982,43 @@ test('周辺検索: 地図上の点から、建物と駅が出て、距離を広
   await expect(results).toContainText('東京駅');
   expect(await sourceFeatureCount(page, 'nearby-zone')).toBe(1);
   expect(await sourceFeatureCount(page, 'nearby-hits')).toBeGreaterThan(0);
+  // **押したもの (起点) を強調する。** 地図上の点なら点が1つ。
+  expect(await sourceFeatureCount(page, 'nearby-origin')).toBe(1);
+  // 当たった線 (駅・鉄道) も描く。**範囲で切り取る** (範囲の外まで伸ばさない)。
+  expect(await sourceFeatureCount(page, 'nearby-hit-lines')).toBeGreaterThan(0);
+  const outside = await page.evaluate(async () => {
+    const map = (window as unknown as TestWindow).__map!;
+    const zone = (await (map.getSource('nearby-zone') as GeoJSONSource).getData()) as GeoJSON.Feature;
+    const ring = (zone.geometry as GeoJSON.Polygon).coordinates[0];
+    const xs = ring.map((p) => p[0]);
+    const ys = ring.map((p) => p[1]);
+    const lines = (await (map.getSource('nearby-hit-lines') as GeoJSONSource).getData()) as GeoJSON.FeatureCollection;
+    const points = lines.features.flatMap((f) => {
+      const g = f.geometry;
+      if (g.type === 'LineString') return g.coordinates;
+      if (g.type === 'MultiLineString') return g.coordinates.flat();
+      return [];
+    });
+    // 範囲の外接矩形から少しでも外れた点の数 (切り取っていれば0)。
+    const eps = 1e-6;
+    return points.filter(
+      ([x, y]) =>
+        x < Math.min(...xs) - eps || x > Math.max(...xs) + eps || y < Math.min(...ys) - eps || y > Math.max(...ys) + eps,
+    ).length;
+  });
+  expect(outside).toBe(0);
+  // **結果だけを目立たせる** (既定で入っている)。ほかのデータ (建物の立体) を薄くする。
+  const extrusionOpacity = () =>
+    page.evaluate(() =>
+      (window as unknown as TestWindow).__map!.getPaintProperty('buildings-3d', 'fill-extrusion-opacity'),
+    );
+  await expect(page.locator('#nearby-focus')).toBeChecked();
+  expect(await extrusionOpacity()).toBeLessThan(0.2);
+  // 外せば元に戻る。
+  await page.locator('#nearby-focus').uncheck();
+  const restored = await extrusionOpacity();
+  expect(restored === undefined || (restored as number) > 0.2).toBe(true);
+  await page.locator('#nearby-focus').check();
 
   const near = await nearbyBuildingTotal(page);
   expect(near).toBeGreaterThan(0);
@@ -2916,10 +3026,15 @@ test('周辺検索: 地図上の点から、建物と駅が出て、距離を広
   await expect(page.locator('#nearby-origin')).toContainText('300 m', { timeout: 60_000 });
   await expect.poll(() => nearbyBuildingTotal(page), { timeout: 60_000 }).toBeGreaterThanOrEqual(near);
 
-  // 閉じれば地図から消える。
+  // 閉じれば地図から消え、薄くしたデータも戻る。調べ終わってから閉じる
+  // (結果を描いている途中だとパネルの中身が動き、並列で流すと閉じるボタンを押し損ねた)。
+  await expect(page.locator('#busy')).toBeHidden({ timeout: 60_000 });
   await page.locator('#nearby-close').click();
   await expect(page.locator('#nearby-panel')).toBeHidden();
   await expect.poll(() => sourceFeatureCount(page, 'nearby-zone')).toBe(0);
+  expect(await sourceFeatureCount(page, 'nearby-origin')).toBe(0);
+  const after = await extrusionOpacity();
+  expect(after === undefined || (after as number) > 0.2).toBe(true);
 });
 
 /** **建物を起点にできる。** 建物の上をクリックすると、その建物が起点になる。 */

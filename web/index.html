@@ -89,17 +89,10 @@
               <p class="layer-heading">この範囲には無い</p>
               <div id="layer-absent-rows"></div>
             </div>
-            <!-- 背景地図もレイヤーの1つ (QGISもそう扱う)。**地図に重なるものが
-                 1か所に集まる。** selectが1つあるだけなので、たたまず常時出す。
-                 将来サムネイルで選ばせる余地はここに残す (地理院地図がそうしている)。 -->
-            <!-- 背景地図と表示量はどちらもレイヤーをまたぐselect1つなので、
-                 **横に並べる。** 縦に積むと、一覧をカタログの階層にして伸びたぶんと
-                 合わせて地図の左側を覆いすぎた。 -->
+            <!-- 背景地図と地形は**一覧の行** (QGISと同じく、重ねられるレイヤーの1つ)。
+                 出所 (国土地理院・Mapterhorn) の見出しの下に、データと同じ形で並ぶ。
+                 ここに残るのはレイヤーをまたぐ設定 (表示量) だけ。 -->
             <div id="view-settings">
-              <div id="basemap-section">
-                <p class="layer-heading">背景地図</p>
-                <select id="basemap"></select>
-              </div>
               <!-- 表示量もレイヤーをまたぐ設定なので、個別の⚙ではなくここに置く。 -->
               <div id="detail-section">
                 <p class="layer-heading">表示量</p>
@@ -232,6 +225,8 @@
           </select>
           <button type="button" id="nearby-close" title="閉じる">×</button>
         </div>
+        <!-- 結果を出しているあいだ、ほかのデータを薄くする (消しはしない。当たった場所の手がかりに残す)。 -->
+        <label class="nearby-focus"><input type="checkbox" id="nearby-focus" checked /> 結果だけを目立たせる</label>
         <p id="nearby-origin"></p>
         <button type="button" id="nearby-from-search" hidden>検索で選んだものを起点にする</button>
         <div id="nearby-results"></div>
@@ -266,16 +261,19 @@
             </li>
             <li>検索で選んだもの (駅・路線・市区町村) も、◎ のパネルから起点にできます</li>
             <li>地図に出していないデータも数えます</li>
+            <li>起点は青で、当たったものは色を付けて描き、ほかのデータは薄くします (パネルで切り替えられます)</li>
           </ul>
           <h3>データを見る</h3>
           <ul>
             <li>左の一覧は<b>出所ごと</b>に開け閉めできます。チェックで地図に出します</li>
             <li>上の欄に語を入れると、出所をまたいで<b>絞り込め</b>ます (例: 「送電」)</li>
             <li><b>▸</b> で中の層を開き、層ごとに出し入れできます (国土地理院)。ズームを変えても設定は戻りません</li>
-            <li><b>⚙</b> でデータの中身 (カタログ・使う条件・版) を見て、<b>この範囲を取得</b>できます (GeoParquet・CityGML)</li>
+            <li><b>⚙</b> で絞り込み・色分け・不透明度を、その行の下に開きます (地図を見ながら動かせます)</li>
+            <li><b>ⓘ</b> でデータについて (カタログ・使う条件・版) を開き、<b>この範囲を取得</b>できます (GeoParquet・CityGML)</li>
+            <li><b>背景地図と地形</b>も一覧の行です (国土地理院・Mapterhorn の下)。後から入れた背景地図が上に重なります</li>
             <li><b>Catalog</b> / <b>Collection</b> を押すと、カタログ (STAC) をページの中で辿れます</li>
             <li>地物に<b>カーソルを合わせる</b>と、名称・種別・時点が出ます</li>
-            <li>重いときは左下の<b>表示量</b>を下げます。背景地図もそこで切り替えます</li>
+            <li>重いときは左下の<b>表示量</b>を下げます</li>
           </ul>
           <h3>消す</h3>
           <ul>

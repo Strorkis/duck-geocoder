@@ -19,7 +19,11 @@ fn main() -> Result<()> {
     let datasets = catalog::build_catalog(&dir)?;
     // 外部の配信物 (地理院のベクトルタイルなど) はスナップショットから載せる。
     // **ここではネットワークに触らない** (`describe_pmtiles` で先に取っておく)。
-    let documents = stac::build(&datasets, external::EXTERNAL_TILESETS)?;
+    let documents = stac::build(
+        &datasets,
+        external::EXTERNAL_TILESETS,
+        external::EXTERNAL_RASTERS,
+    )?;
 
     // 作り直すたびに古いCollectionが残らないよう、一度消してから書く。
     // データセットを減らしたときに、消えたはずのCollectionが配信され続けるのを防ぐ。

@@ -120,6 +120,16 @@ body,
   color: #555;
 }
 
+.nearby-focus {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+  font-size: 0.8rem;
+  color: #555;
+  cursor: pointer;
+}
+
 #nearby-from-search {
   margin-bottom: 0.4rem;
   font-size: 0.75rem;
@@ -866,6 +876,17 @@ body,
   display: none;
 }
 
+/* 背景地図の不透明度・地形の起伏の強調。見出しの下にスライダーを幅いっぱいで。 */
+.layer-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.layer-slider input {
+  width: 100%;
+}
+
 /* 件数の要約は**行の2段目に同じものが出ている**ので、行の下に開いたときは重ねて出さない。 */
 .layer-settings-slot #building-count,
 .layer-settings-slot #mesh-summary,
@@ -1384,28 +1405,28 @@ body,
   font-size: 0.72rem;
 }
 
-/* 背景地図と表示量。データ一覧の最後に置く (QGISでも背景はレイヤーの1つ)。
-   どちらもレイヤーをまたぐselect1つなので、**横に並べて縦を1段減らす。** */
+/* 表示量。レイヤーをまたぐ設定なので一覧の最後に置く (背景地図はもう一覧の行)。
+   見出しと select を**1行に並べて**縦を詰める。 */
 #view-settings {
-  display: flex;
-  gap: 0.5rem;
   margin-top: 0.4rem;
   padding-top: 0.4rem;
   border-top: 1px solid #eee;
 }
 
-#basemap-section,
 #detail-section {
-  flex: 1;
-  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 #view-settings .layer-heading {
-  margin-top: 0;
+  flex: none;
+  margin: 0;
 }
 
-#basemap-section select,
 #detail-section select {
+  flex: 1;
+  min-width: 0;
   width: 100%;
   padding: 0.25rem;
   border: 1px solid #ccc;
