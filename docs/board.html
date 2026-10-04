@@ -331,7 +331,7 @@
       </div>
       <div class="card kpi">
         <div class="label">公開待ちのコミット</div>
-        <div class="value">18 <small>件</small></div>
+        <div class="value">20 <small>件</small></div>
         <span class="status you">R2へのアップロード → push 待ち</span>
       </div>
       <div class="card kpi">
@@ -454,42 +454,38 @@
               <td><a href="../pipeline/src/external.rs">external.rs</a> · <a href="../pipeline/src/pmtiles.rs">pmtiles.rs</a></td>
               <td>外部の PMTiles をスナップショット (追跡) からカタログへ。テーマが層をちょうど覆うことを検証</td>
             </tr>
-            <tr class="group"><th colspan="2">使い方 (web/src/main.ts)</th></tr>
+            <tr class="group"><th colspan="2">使い方 (web/src/lib/ と main.ts)</th></tr>
             <tr>
-              <td><code>walkCatalog</code> · <code>filesInView</code></td>
-              <td>カタログを歩いて Collection を作り、表示範囲に重なるファイルだけを DuckDB に渡す</td>
+              <td><a href="../web/src/lib/stac.ts">lib/stac.ts</a> の <code>walkCatalog</code></td>
+              <td>カタログを歩いて Collection を作る。相対リンクは<b>その文書からの相対</b>で解く</td>
             </tr>
             <tr>
-              <td><code>buildingDepth</code> · <code>fetchBuildingsInView</code></td>
-              <td>1ズーム引くごとに1段減らす間引き (<code>lod &lt;= 段</code>)。転送量の上限はここ</td>
+              <td><a href="../web/src/lib/sources.ts">lib/sources.ts</a> の <code>filesInView</code> · <code>lodForZoom</code></td>
+              <td>表示範囲に重なるファイルだけを DuckDB に渡し、ズームから粗い段か原寸かを決める</td>
             </tr>
             <tr>
-              <td><code>toMeters</code> · <code>nearbyCondition</code></td>
-              <td>周辺検索: <code>ST_Affine</code> で起点付近をメートルに直してから <code>ST_DWithin</code></td>
+              <td><a href="../web/src/lib/nearby.ts">lib/nearby.ts</a> の <code>toMeters</code> · <code>nearbyCondition</code></td>
+              <td>周辺検索: <code>ST_Affine</code> で起点付近をメートルに直してから <code>ST_DWithin</code>。当たった線は範囲で切り取る</td>
             </tr>
             <tr>
-              <td><code>exportParquet</code> (initDuckDb の中)</td>
-              <td>ブラウザの中で GeoParquet を書き、出典と規約を KV に入れる</td>
-            </tr>
-            <tr>
-              <td><code>vectorLayerSpecs</code> · <code>createVectorOverlay</code></td>
+              <td><a href="../web/src/lib/tiles.ts">lib/tiles.ts</a> の <code>vectorLayerSpecs</code> · <code>createVectorOverlay</code></td>
               <td>地理院のタイルを<b>データだけ</b>読み、形の種類から描く。入り切りはズームで戻さない</td>
             </tr>
             <tr>
-              <td><code>baseStyle</code> · <code>raiseBasemap</code></td>
-              <td>背景地図と地形を<b>カタログから組む</b>。後から入れた背景地図を上へ。地形は起動に握らせない (読み込み後に有効化)</td>
+              <td><a href="../web/src/lib/tiles.ts">lib/tiles.ts</a> の <code>baseStyle</code> · <code>gsiDemHeight</code></td>
+              <td>背景地図と地形を<b>カタログから組む</b>。地理院の標高 (独自形式) は読み込むときに Terrarium へ詰め直す</td>
             </tr>
             <tr>
-              <td><code>setNearbyFocus</code></td>
-              <td>周辺検索で、ほかの層の不透明度を元の値を覚えて下げ、閉じたら戻す</td>
+              <td>main.ts の <code>buildingDepth</code> · <code>fetchBuildingsInView</code></td>
+              <td>1ズーム引くごとに1段減らす間引き (<code>lod &lt;= 段</code>)。転送量の上限はここ</td>
             </tr>
             <tr>
-              <td><code>applyTileOrder</code></td>
-              <td>地図タイルの重ね順を一覧の並びから地図に写す (下から順に、データの直下へ動かす)</td>
+              <td>main.ts の <code>exportParquet</code> (initDuckDb の中)</td>
+              <td>ブラウザの中で GeoParquet を書き、出典と規約を KV に入れる</td>
             </tr>
             <tr>
-              <td><code>gsiDemHeight</code> · <code>registerGsiDem</code></td>
-              <td>地理院の標高タイル (独自形式) を、読み込むときに Terrarium へ詰め直す (値なし・負の値)</td>
+              <td>main.ts の <code>applyTileOrder</code> · <code>setNearbyFocus</code></td>
+              <td>地図タイルの重ね順を一覧から地図に写す / 周辺検索でほかの層を薄くして閉じたら戻す</td>
             </tr>
             <tr class="group"><th colspan="2">判断の記録 (docs)</th></tr>
             <tr>
@@ -515,8 +511,11 @@
         <h2>次にやること</h2>
         <ol class="tasks">
           <li>
-            <b>表示部分のライブラリ化</b>
-            <span class="sub">web/src/main.ts (約7,000行) を、カタログ・問い合わせ・地図・画面の部品に分ける (リファクタリング)</span>
+            <b>表示部分のライブラリ化 (続き)</b>
+            <span class="sub">
+              カタログ・地図タイル・データの出所・周辺検索は web/src/lib/ に分けた (main.ts 7,700→6,400行)。
+              残りは DuckDB の問い合わせ (建物・線・検索) と、画面 (一覧・周辺検索のパネル)
+            </span>
           </li>
           <li>
             <b>周辺検索の見直し (続き)</b>
