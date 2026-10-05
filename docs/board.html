@@ -313,7 +313,7 @@
   <body>
     <header>
       <h1>duck-geocoder ダッシュボード</h1>
-      <span class="meta">更新 2026-10-05 20:24 (日本時間)</span>
+      <span class="meta">更新 2026-10-05 21:16 (日本時間)</span>
       <span class="meta">
         <a href="https://strorkis.github.io/duck-geocoder/">公開サイト</a> ·
         <a href="roadmap.md">方針 (roadmap.md)</a> · STAC 配布形式の実験
@@ -332,7 +332,7 @@
       </div>
       <div class="card kpi">
         <div class="label">公開待ちのコミット</div>
-        <div class="value">34 <small>件</small></div>
+        <div class="value">37 <small>件</small></div>
         <span class="status you">R2へのアップロード → push 待ち</span>
       </div>
       <div class="card kpi">
@@ -342,9 +342,9 @@
       </div>
       <div class="card kpi">
         <div class="label">カタログ</div>
-        <div class="value">8 <small>出所 · 25 Collection</small></div>
+        <div class="value">9 <small>出所 · 26 Collection</small></div>
         <div class="sub">
-          GeoParquet 761 ファイル + 外部 10 (地図タイル4・ベクトルタイル1・標高3・3D Tiles 1・元データ1。複製しない)
+          GeoParquet 761 ファイル + 外部 11 (地図タイル4・ベクトルタイル1・標高3・3D Tiles 1・元データ2 (基盤地図情報・AW3D30)。複製しない)
         </div>
       </div>
     </section>
@@ -359,20 +359,21 @@
             間引き・周辺検索 (結果だけを目立たせる)・使う条件・Overture全国・取得・
             地理院 (データだけで描く)・一覧 (カタログから足す・ドラッグで並べ替え)・背景地図と地形をレイヤーに・
             ⓘ と ⚙ の分離・GeoArrow (WKB) で受け取る・STAC Browser を <code>/catalog/</code> に・
-            表示部分のライブラリ化 (main.ts 7,741→859行。ここで止める)
+            表示部分のライブラリ化 (main.ts 7,741→859行。ここで止める)・配っているライブラリのライセンス表示・
+            AW3D30 (JAXA) を参照だけで
           </span>
         </li>
         <li>
           <b>テスト</b><span class="status done">済み</span>
           <span class="sub">
-            E2E 112件 (本番ビルド。STAC Browser のリンクがある状態で。1件を直して流し直した)、単体 (WKB) 12件、パイプライン 189件、remote-zip 11件
+            E2E 114件 (本番ビルド。STAC Browser のリンクがある状態で)、単体 (WKB) 12件、パイプライン 190件、remote-zip 11件
           </span>
         </li>
         <li class="current">
           <b>R2へアップロード</b><span class="status you">あなたの番</span>
           <span class="sub">
             まとめて1回。手順は <a href="deploy.md">deploy.md</a> の「2026-10-03 の分」。
-            カタログの JSON は2つ直った (reearth-buildings・gsi-dem-source。JSON の手順で一緒に上がる)。
+            カタログの JSON は2つ直り、JAXA の2つが増えた (どれも JSON の手順で一緒に上がる)。
             STAC Browser (<code>/catalog/</code>) は R2 のカタログを読むので、上げたあとの姿がそのまま見える
           </span>
         </li>
@@ -416,6 +417,7 @@
             <tr><td>国土地理院</td><td class="num">0</td><td class="num">—</td><td>JSON 8つ (新規。タイルは地理院が配信)</td></tr>
             <tr><td>Mapterhorn</td><td class="num">0</td><td class="num">—</td><td>JSON 2つ (新規。標高は Mapterhorn が配信)</td></tr>
             <tr><td>Re:Earth</td><td class="num">0</td><td class="num">—</td><td>JSON 3つ (新規。標高と 3D Tiles は Re:Earth が配信)</td></tr>
+            <tr><td>JAXA</td><td class="num">0</td><td class="num">—</td><td>JSON 2つ (新規。AW3D30 は JAXA Earth API が配信)</td></tr>
           </tbody>
         </table>
         <p class="sub">
@@ -536,11 +538,15 @@
         <h2>次にやること</h2>
         <ol class="tasks">
           <li>
-            <b>NASA・JAXA の標高 — 進め方を決めてもらう</b>
+            <b>配らずに手元で変換する仕組み (構想)</b>
             <span class="sub">
-              調べた (roadmap)。どれも約30mの DSM。AW3D30 は JAXA Earth API から登録なしでブラウザから直接読める
-              (商用は JAXA へ事前連絡)。NASA の2つはログインかトークンが要る。案: まず参照だけの Collection を足す
+              PLATEAU GIS Converter のように、利用者が取ったデータをブラウザの中 (WASM) で変換する。
+              測量法のあるデータ (基盤地図情報) の扱いを地理院に確かめてから。3D Tiles のテクスチャもこの形で (roadmap)
             </span>
+          </li>
+          <li>
+            <b>AW3D30 を地図に出すか</b>
+            <span class="sub">参照だけ足した。出すなら COG を直接読む部品が要る (R2 は使わない)。NASA の2つはログインかトークンが要るので後回し</span>
           </li>
           <li>
             <b>Item に名前と時点を入れる</b>
@@ -551,7 +557,8 @@
           <li>
             <b>3D の別モード (後で)</b>
             <span class="sub">
-              Navara モード・Cesium モード。MapLibre ＋ Three.js (3DTilesRendererJS) で重ねる道も。Navara は試作で描けた
+              Navara モード・Cesium モード。MapLibre ＋ Three.js (3DTilesRendererJS) で重ねる道も。Navara は試作で描けた。
+              案: 変換 (WASM → 3D Tiles) を先に作り、Cesium で確かめてから重ね方を決める
             </span>
           </li>
           <li>
