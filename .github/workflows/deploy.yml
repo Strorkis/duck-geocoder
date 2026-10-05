@@ -63,6 +63,8 @@ jobs:
           key: duckdb-extensions-${{ hashFiles('web/pnpm-lock.yaml') }}
 
       - run: pnpm exec tsc --noEmit
+      # 画面も地図も要らない部品の単体テスト (WKB の読み取りなど)。Node が TypeScript をそのまま読む。
+      - run: pnpm test:unit
 
       # 未設定のままだとデータのURLが空でビルドされ、E2Eは「データが無い」と
       # 判断して全件スキップする。テストが素通りしたまま壊れたものが公開されるので、

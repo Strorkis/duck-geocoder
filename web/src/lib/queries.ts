@@ -7,9 +7,13 @@
  * 3. 上限があるものは**画面中心に近い順**に取る (上限で切っても帯状に欠けない)
  *
  * 返すのは描くための素の値。色や呼び名は描く側 (main) が決める。
+ *
+ * **ジオメトリは列をそのまま返す** (GeoArrow の WKB)。SQL で GeoJSON の文字列にしてから
+ * `JSON.parse` するより速い (lib/wkb.ts)。
  */
 import type * as duckdb from '@duckdb/duckdb-wasm';
 import { tierExpression } from './stac';
+import { geometryOf } from './wkb';
 import { meshBounds, meshCellCapacity } from './mesh';
 import {
   filesInView,
@@ -62,15 +66,15 @@ export async function fetchLinesInView(
   const files = filesInView(source, bounds);
   if (files.length === 0) return [];
   const result = await conn.query(`
-    SELECT ST_AsGeoJSON(geometry) AS geojson, name, class
+    SELECT geometry, name, class
     FROM read_parquet([${fileList(files)}])
     WHERE ${lodFilter(lod)} ${inView(bounds)}
     ORDER BY ${nearCenter(bounds)}
     LIMIT ${limit};
   `);
   return result.toArray().map((row) => {
-    const r = row.toJSON() as unknown as { geojson: string; name: string | null; class: string };
-    return { geojson: JSON.parse(r.geojson) as GeoJSON.Geometry, name: r.name, lineClass: r.class };
+    const r = row.toJSON() as unknown as { geometry: unknown; name: string | null; class: string };
+    return { geojson: geometryOf(r.geometry), name: r.name, lineClass: r.class };
   });
 }
 
@@ -111,7 +115,7 @@ export async function fetchRoadsInView(
   );
   if (files.length === 0) return [];
   const result = await conn.query(`
-    SELECT ST_AsGeoJSON(geometry) AS geojson, road_name, class, route_names
+    SELECT geometry, road_name, class, route_names
     FROM read_parquet([${fileList(files)}])
     WHERE ${lodFilter(lod)} ${inView(bounds)}
     ORDER BY ${nearCenter(bounds)}
@@ -119,13 +123,13 @@ export async function fetchRoadsInView(
   `);
   return result.toArray().map((row) => {
     const r = row.toJSON() as unknown as {
-      geojson: string;
+      geometry: unknown;
       road_name: string | null;
       class: string;
       route_names: unknown;
     };
     return {
-      geojson: JSON.parse(r.geojson) as GeoJSON.Geometry,
+      geojson: geometryOf(r.geometry),
       roadName: r.road_name,
       roadClass: r.class,
       // リスト列はArrowのVectorで返るので、素の配列に均す。
@@ -177,7 +181,7 @@ export async function fetchRailwayInView(
   const stationSelect = source.kind === 'railway_station' ? 'station_name' : 'NULL';
   const result = await conn.query(`
     SELECT
-      ST_AsGeoJSON(geometry) AS geojson,
+      geometry,
       line_name, operator, institution_type, railway_class,
       ${stationSelect} AS station_name
     FROM read_parquet([${fileList(files)}])
@@ -187,7 +191,7 @@ export async function fetchRailwayInView(
   `);
   return result.toArray().map((row) => {
     const r = row.toJSON() as unknown as {
-      geojson: string;
+      geometry: unknown;
       line_name: string;
       operator: string;
       institution_type: string;
@@ -195,7 +199,7 @@ export async function fetchRailwayInView(
       station_name: string | null;
     };
     return {
-      geojson: JSON.parse(r.geojson) as GeoJSON.Geometry,
+      geojson: geometryOf(r.geometry),
       lineName: r.line_name,
       operator: r.operator,
       institutionType: r.institution_type,
@@ -455,7 +459,7 @@ export async function fetchBuildingsInView(
   const categorySelect = source.categoryColumn ?? 'NULL';
 
   const result = await conn.query(`
-    SELECT ST_AsGeoJSON(geometry) AS geojson, name, ${categorySelect} AS category, height,
+    SELECT geometry, name, ${categorySelect} AS category, height,
       ${tierSelect} AS tier
     FROM read_parquet([${fileList(files)}])
     WHERE ${conditions.join('\n      AND ')}
@@ -464,14 +468,14 @@ export async function fetchBuildingsInView(
   `);
   return result.toArray().map((row) => {
     const r = row.toJSON() as unknown as {
-      geojson: string;
+      geometry: unknown;
       name: string | null;
       category: string | null;
       height: number | null;
       tier: string | null;
     };
     return {
-      geojson: JSON.parse(r.geojson) as GeoJSON.Geometry,
+      geojson: geometryOf(r.geometry),
       name: r.name,
       category: r.category,
       height: r.height,

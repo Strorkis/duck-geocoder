@@ -8,6 +8,7 @@
  */
 import type * as duckdb from '@duckdb/duckdb-wasm';
 import { tierExpression, type ItemFile } from './stac';
+import { geometryOf } from './wkb';
 import {
   EXACT_LOD,
   filesInView,
@@ -152,7 +153,7 @@ export async function fetchNearbyBuildings(
   const height = source.hasHeight ? 'height' : 'NULL';
   const category = source.categoryColumn ?? 'NULL';
   const drawn = await conn.query(`
-    SELECT ST_AsGeoJSON(geometry) AS geojson, name, ${tier} AS tier, ${height} AS height,
+    SELECT geometry, name, ${tier} AS tier, ${height} AS height,
       ${category} AS category
     FROM read_parquet([${list}])
     WHERE ${where}
@@ -160,7 +161,7 @@ export async function fetchNearbyBuildings(
   `);
   const features = drawn.toArray().map((row) => {
     const r = row.toJSON() as {
-      geojson: string;
+      geometry: unknown;
       name: string | null;
       tier: string;
       height: number | null;
@@ -178,7 +179,7 @@ export async function fetchNearbyBuildings(
         tier: order[rank]?.title ?? 'すべて',
         height: r.height,
       },
-      geometry: JSON.parse(r.geojson) as GeoJSON.Geometry,
+      geometry: geometryOf(r.geometry),
     };
   });
   return { source, counts, named, features };
@@ -213,17 +214,17 @@ export async function fetchNearbyNames(
   // 当たったのかが読めない。範囲は起点付近のメートルで作って度へ戻す (検索と同じ)。
   const zone = fromMeters(frame, `ST_Buffer(${frame.origin}, ${frame.distance})`);
   const shapes = await conn.query(`
-    SELECT ST_AsGeoJSON(ST_Intersection(geometry, ${zone})) AS g, ${nameExpression} AS name
+    SELECT ST_Intersection(geometry, ${zone}) AS geometry, ${nameExpression} AS name
     FROM read_parquet([${list}])
     WHERE ${lod} ${nearbyCondition(frame)}
     LIMIT ${NEARBY_DRAW_LIMIT};
   `);
   const features = shapes.toArray().map((row) => {
-    const { g, name } = row.toJSON() as { g: string; name: string | null };
+    const { geometry, name } = row.toJSON() as { geometry: unknown; name: string | null };
     return {
       type: 'Feature' as const,
       properties: { name },
-      geometry: JSON.parse(g) as GeoJSON.Geometry,
+      geometry: geometryOf(geometry),
     };
   });
   return { names: names.slice(0, limit), total: names.length, features };

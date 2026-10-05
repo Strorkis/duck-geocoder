@@ -7,6 +7,7 @@
  */
 import type * as duckdb from '@duckdb/duckdb-wasm';
 import type { Bbox } from './stac';
+import { geometryOf } from './wkb';
 
 /**
  * 検索結果。
@@ -243,10 +244,9 @@ export function toMultiLineString(parts: GeoJSON.Geometry[]): GeoJSON.Geometry |
   return coordinates.length > 0 ? { type: 'MultiLineString', coordinates } : null;
 }
 
+/** ジオメトリの列 (GeoArrow の WKB) だけを返した結果を GeoJSON の並びに。 */
 const geometries = (result: { toArray(): { toJSON(): unknown }[] }) =>
-  result
-    .toArray()
-    .map((row) => JSON.parse((row.toJSON() as { geojson: string }).geojson) as GeoJSON.Geometry);
+  result.toArray().map((row) => geometryOf((row.toJSON() as { geometry: unknown }).geometry));
 
 /**
  * 選んだ路線の道路を読む。**ハイライトのためだけに、そのときだけ読む。**
@@ -261,7 +261,7 @@ export async function fetchRouteGeometry(
 ): Promise<GeoJSON.Geometry[]> {
   return geometries(
     await conn.query(`
-      SELECT ST_AsGeoJSON(geometry) AS geojson
+      SELECT geometry
       FROM road
       WHERE list_contains(route_names, ${quote(routeName)})
         AND bbox.xmin <= ${east} AND bbox.xmax >= ${west}
@@ -285,7 +285,7 @@ export async function fetchLineGeometry(
 ): Promise<GeoJSON.Geometry[]> {
   return geometries(
     await conn.query(`
-      SELECT ST_AsGeoJSON(geometry) AS geojson
+      SELECT geometry
       FROM section
       WHERE line_name = ${quote(lineName)} AND operator = ${quote(operator)}
         AND bbox.xmin <= ${east} AND bbox.xmax >= ${west}
@@ -328,7 +328,7 @@ export async function fetchAdminPolygon(
   adminId: string,
 ): Promise<{ geojson: GeoJSON.Geometry; bbox: Bbox } | null> {
   const result = await conn.query(`
-    SELECT ST_AsGeoJSON(ST_Union_Agg(geometry)) AS geojson,
+    SELECT ST_Union_Agg(geometry) AS geometry,
            min(bbox.xmin) AS xmin, min(bbox.ymin) AS ymin,
            max(bbox.xmax) AS xmax, max(bbox.ymax) AS ymax
     FROM admin
@@ -337,15 +337,16 @@ export async function fetchAdminPolygon(
   const rows = result.toArray();
   if (rows.length === 0) return null;
   const row = rows[0].toJSON() as {
-    geojson: string | null;
+    geometry: unknown;
     xmin: number;
     ymin: number;
     xmax: number;
     ymax: number;
   };
-  if (!row.geojson) return null;
+  // 当たる行が無いと、集約の結果は NULL の1行になる。
+  if (row.geometry === null || row.geometry === undefined) return null;
   return {
-    geojson: JSON.parse(row.geojson) as GeoJSON.Geometry,
+    geojson: geometryOf(row.geometry),
     bbox: [row.xmin, row.ymin, row.xmax, row.ymax],
   };
 }

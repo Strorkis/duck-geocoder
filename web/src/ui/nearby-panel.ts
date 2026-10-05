@@ -9,6 +9,7 @@ import type * as duckdb from '@duckdb/duckdb-wasm';
 import type { ExpressionSpecification, GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl';
 import type { Collection } from '../lib/stac';
 import { MESH_SIZE_LABELS } from '../lib/mesh';
+import { geometryOf } from '../lib/wkb';
 import {
   bboxOverlaps,
   geometryBbox,
@@ -308,9 +309,9 @@ export function createNearbyPanel(options: NearbyPanelOptions): NearbyPanel {
   const query = async (frame: NearbyFrame, distance: number): Promise<NearbyResult> => {
     await ensureSpatial();
     const zone = await conn.query(
-      `SELECT ST_AsGeoJSON(${fromMeters(frame, `ST_Buffer(${frame.origin}, ${distance})`)}) AS g;`,
+      `SELECT ${fromMeters(frame, `ST_Buffer(${frame.origin}, ${distance})`)} AS geometry;`,
     );
-    const zoneGeometry = JSON.parse((zone.toArray()[0].toJSON() as { g: string }).g) as GeoJSON.Geometry;
+    const zoneGeometry = geometryOf((zone.toArray()[0].toJSON() as { geometry: unknown }).geometry);
 
     const buildings: NearbyBuildings[] = [];
     for (const source of sources.buildings) {
