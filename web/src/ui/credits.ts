@@ -149,7 +149,8 @@ export function renderTermsSummary(container: HTMLElement, collections: Collecti
   const note = document.createElement('p');
   note.className = 'terms-note';
   note.textContent =
-    '規約を読んだ結果の要約です。正本は各規約の本文です。「記載なし」は、規約が商用を認めるとも禁じるとも書いていないものです。';
+    'このサイトが独自に規約を読んでまとめた参考情報で、正確さは保証しません。使う前に、必ず各規約の本文を確かめてください。' +
+    '「記載なし」は、規約が商用を認めるとも禁じるとも書いていないものです。';
   container.replaceChildren(table, note);
 }
 

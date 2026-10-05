@@ -64,25 +64,41 @@ Overtureの区画は湾を跨いでいて、そのままでは海上の点に自
 
 このリポジトリの**コード**は [MIT License](LICENSE)。**データは配布元のライセンスに従う。**
 
+> **使う条件の要約は参考情報。** カタログの `duck:terms` (商用可か・出典表示・加工の明記・継承) と
+> 画面のバッジは、このリポジトリが独自に各規約を読んでまとめたもので、正確さは保証しない。
+> 正本は各配布元の規約の本文なので、使う前に必ず本文を確かめること。
+
 **ODbLの同一ライセンス条項が掛かるのはOverture由来のものだけ。**
-行政区域と建物 (`overture/*.parquet`) はOverture Mapsから切り出したもので、
+行政区域・建物・道路・送電線・川 (`overture/*.parquet`) はOverture Mapsから切り出したもので、
 **ODbL 1.0の派生データベースにあたる**。ODbLは派生データベースを公に利用する場合に
 同一ライセンスでの提供を求めるため、**これらはODbL 1.0で提供する**。
 出典表示だけでは要件を満たさない。
 
-PLATEAU・国勢調査・位置参照情報から作ったものには、この条項は掛からない。
+PLATEAU・国土数値情報・国勢調査・位置参照情報から作ったものには、この条項は掛からない。
 それぞれのライセンスと出典表示に従う。
+
+**配っているもの** (変換して R2 に置いている):
 
 | データ | 出典表示 |
 | --- | --- |
-| 行政区域・建物 (Overture) | Overture Maps / © OpenStreetMap contributors (ODbL 1.0) |
-| 建物 (PLATEAU) | 「3D都市モデル（Project PLATEAU）」（国土交通省）をもとに作成 |
+| 建物・整備範囲 (PLATEAU) | 「3D都市モデル（Project PLATEAU）」（国土交通省）をもとに作成 |
+| 建物 (Overture) | Overture Maps / © OpenStreetMap contributors (ODbL 1.0) · Microsoft Global ML Building Footprints (ODbL) · Esri Community Maps contributors, Google Open Buildings, East Asian building data by Qian Shi et al. (CC BY 4.0) |
+| 行政区域 (Overture) | Overture Maps / © OpenStreetMap contributors (ODbL 1.0) · geoBoundaries, Esri Community Maps contributors (CC BY 4.0) |
+| 道路 (Overture) | Overture Maps / © OpenStreetMap contributors (ODbL 1.0) · TomTom |
+| 送電線・川 (Overture) | Overture Maps / © OpenStreetMap contributors (ODbL 1.0) |
+| 鉄道路線・駅 | 「国土数値情報（鉄道データ）」（国土交通省）をもとに作成 |
 | 人口メッシュ | 「令和2年国勢調査 地域メッシュ統計」（総務省統計局）をもとに作成 |
-| 大字・町丁目、街区 | 「位置参照情報ダウンロードサービス」（国土交通省）をもとに作成 |
-| 地形 | © Mapterhorn |
-| 地図タイル | [国土地理院](https://maps.gsi.go.jp/development/ichiran.html) |
-| 国土数値情報 (使う場合) | 「国土数値情報（行政区域データ）」（国土交通省）をもとに作成 |
+| 大字・町丁目 / 街区 | 大字・町丁目位置参照情報　国土交通省 / 街区レベル位置参照情報　国土交通省 (座標系を変換して加工) |
 
-**この表はカタログから組み立てたものと一致している。** 地図に出る出典表示は
-`catalog.json` の `duck:attribution` から作られるので、配信するデータと必ず揃う
-([docs/pipeline.md](docs/pipeline.md) の「カタログは STAC 1.1.0」)。
+**公開元を指すだけのもの** (複製しない。地図タイル・標高・3D Tiles は公開元から直接読む。
+元データは配らずに出所と条件だけ載せる): 国土地理院の地図タイル・ベクトルタイル・標高タイル、
+Mapterhorn と Re:Earth の標高、Re:Earth Buildings と PLATEAU の 3D Tiles、
+基盤地図情報 (標高)・国土数値情報 N03 (どちらも複製に測量法の承認が要る)、
+AW3D30 (JAXA)・NASADEM・ASTER GDEM (NASA)。出典はカタログと画面の「出典」に出る。
+
+**この表はカタログ (`duck:attribution`) の文言と同じ。** 地図に出る出典表示はカタログから
+作られるので、配信するデータと必ず揃う ([docs/pipeline.md](docs/pipeline.md) の「カタログは STAC 1.1.0」)。
+出所を足したり文言を変えたりしたら、この表も直す (2026-10-05 にカタログから書き出して揃えた)。
+
+配っているライブラリのライセンスの全文は、公開サイトの `THIRD-PARTY-LICENSES.md`・
+`duckdb/LICENSES.md`・`catalog/THIRD-PARTY-LICENSES.md` にある ([docs/deploy.md](docs/deploy.md) の「公開前に権利を確かめる」)。

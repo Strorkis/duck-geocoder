@@ -817,7 +817,11 @@ pub fn build(
             "stac_version": STAC_VERSION,
             "id": CATALOG_ID,
             "title": "duck-geocoder のデータ",
-            "description": "日本のオープン地理空間データをGeoParquetにしたもの。ブラウザからDuckDB-WASMで直接読む。",
+            // 使う条件の要約 (`duck:terms`) は独自に規約を読んだもの。STAC Browser など、
+            // カタログだけを見る人にも届くように、ルートの説明に書く。
+            "description": "日本のオープン地理空間データをGeoParquetにしたもの。ブラウザからDuckDB-WASMで直接読む。\
+                            各 Collection の使う条件の要約 (duck:terms) は、このカタログが独自に規約を読んでまとめた参考情報で、\
+                            正確さは保証しない。使う前に、必ず各配布元の規約の本文を確かめること。",
             "links": links,
         }),
     });

@@ -738,6 +738,8 @@ test('使うときの条件が一覧表とバッジで出る', async ({ page }) 
   await openInfoDialog(page, 'credits-dialog');
   const table = page.locator('#terms-summary table');
   await expect(table).toBeVisible();
+  // **要約は独自に読んだ参考情報で、正本は規約の本文。** 表の下で断る。
+  await expect(page.locator('#terms-summary .terms-note')).toContainText('参考情報');
 
   // Overture は ODbL なので継承がある。PLATEAU は CC BY で継承は無い。
   const overture = table.locator('tbody tr', { hasText: 'Overture' }).first();
