@@ -1058,6 +1058,63 @@ body,
   color: #14508c;
 }
 
+/* タブ・絞り込み・目次は、下へ送っても上に残す。上の余白はダイアログの本体の padding ぶん詰める。 */
+.catalog-controls {
+  position: sticky;
+  top: -0.8rem;
+  z-index: 1;
+  margin: 0 -1.1rem;
+  padding: 0.4rem 1.1rem 0.3rem;
+  background: #fff;
+  border-bottom: 1px solid #e3e8ee;
+}
+
+/* 目次。出所 (と、1つの Collection が何行にもなるもの) へ飛ぶ。 */
+#catalog-index {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+#catalog-index[hidden] {
+  display: none;
+}
+
+.catalog-index-chip {
+  padding: 0.1rem 0.5rem;
+  border: 1px solid #ccd5df;
+  border-radius: 999px;
+  background: #f5f8fb;
+  font: inherit;
+  font-size: 0.75rem;
+  color: #14508c;
+  cursor: pointer;
+}
+
+.catalog-index-chip.sub {
+  border-style: dashed;
+  background: #fff;
+}
+
+.catalog-index-chip:hover {
+  background: #e6eef7;
+}
+
+/* 飛んだ先の見出しが、上に残した目次の下に隠れないように。 */
+.catalog-group,
+.catalog-subgroup {
+  scroll-margin-top: 8rem;
+}
+
+.catalog-subgroup {
+  margin-top: 0.5rem;
+  padding: 0.15rem 0 0.15rem 0.5rem;
+  border-left: 3px solid #c9d6e4;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #456;
+}
+
 /* 出所の説明。長いので2行で切る (全文はⓘとCatalogで読める)。 */
 .catalog-group-description {
   flex: 1 0 100%;

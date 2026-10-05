@@ -367,8 +367,9 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
     };
     if (use[collection.kind]) fact('引き方', use[collection.kind]!);
     if (collection.viewer) fact('ビューア', externalLink(collection.viewer, '公式のビューアで開く'));
+    // 公開元の STAC は**ページの中で開く** (置き場所によっては、ブラウザで開くとダウンロードになる)。
     if (collection.sourceStac) {
-      fact('公開元の STAC', externalLink(collection.sourceStac, 'Collection (COG)'));
+      fact('公開元の STAC', jsonLink(collection.sourceStac, 'Collection を見る'));
     }
     if (collection.bbox) fact('範囲', formatBbox(collection.bbox));
   };

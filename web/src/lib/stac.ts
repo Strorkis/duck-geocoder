@@ -388,18 +388,33 @@ export const CATALOG_PATH = 'catalog.json';
  */
 export function resolveHref(href: string, base: string): string {
   // 絶対URLはそのまま通す (配布元へのリンクなど、起点の外を指すものがある)。
-  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return href;
+  if (isAbsoluteUrl(href)) return href;
+  // 外の文書 (公開元の STAC) の中の相対リンクは、その文書の URL から解く。
+  if (isAbsoluteUrl(base)) return new URL(href, base).href;
   // URLの解決規則に任せる。起点は実在しなくてよいので固定の土台を置く。
   const root = 'https://duck.invalid/';
   return new URL(href, new URL(base, root)).href.slice(root.length);
 }
 
+/** `https:` などで始まる絶対URLか (カタログの外を指すもの)。 */
+export const isAbsoluteUrl = (href: string): boolean => /^[a-z][a-z0-9+.-]*:/i.test(href);
+
+/**
+ * STAC の文書を読む。`path` は配信の起点からのパスか、**外の文書の絶対URL**
+ * (公開元の STAC。AW3D30 なら JAXA Earth API)。
+ *
+ * 外の文書は**型を見ずに JSON として読む。** JAXA の置き場所は `binary/octet-stream` で返すので、
+ * ブラウザでリンクを開くとダウンロードになってしまう (ページの中で見せる理由)。
+ */
 export async function fetchStac<T>(path: string): Promise<T> {
-  const response = await fetch(dataUrl(path));
+  const external = isAbsoluteUrl(path);
+  const response = await fetch(external ? path : dataUrl(path));
   if (!response.ok) {
     throw new Error(
-      `${path} が読めません (${response.status})。` +
-        '`cargo run --bin build_catalog -- ../data/output` を実行してください。',
+      external
+        ? `${path} が読めません (${response.status})`
+        : `${path} が読めません (${response.status})。` +
+            '`cargo run --bin build_catalog -- ../data/output` を実行してください。',
     );
   }
   return (await response.json()) as T;

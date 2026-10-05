@@ -190,7 +190,7 @@ async function openCatalogFor(page: Page, layer: string) {
     await page.locator('.layer-add-button[data-section="data"]').click();
     await expect(dialog).toBeVisible();
   }
-  for (const section of ['data', 'tile']) {
+  for (const section of ['data', 'tile', 'view']) {
     await dialog.locator(`.catalog-tab[data-section="${section}"]`).click();
     if ((await dialog.locator(`[data-catalog-layer="${layer}"]`).count()) > 0) return;
   }
@@ -1191,11 +1191,29 @@ test('参照だけの元データは足せず、ⓘ から公開元の STAC と�
   await row.locator('.layer-detail-button').click();
   const card = page.locator('.collection-card[data-collection="jaxa-aw3d30"]');
   await expect(card).toContainText('DSM');
-  await expect(card.locator('a', { hasText: 'Collection (COG)' })).toHaveAttribute(
-    'href',
-    /AW3D30\.v4\.1_global\/collection\.json$/,
-  );
   await expect(card.locator('.terms-badge', { hasText: '商用は事前に連絡' })).toBeVisible();
+
+  // **公開元の STAC はページの中で開く。** 置き場所 (Wasabi) が binary/octet-stream で返すので、
+  // ブラウザで開くとダウンロードになる。外の配信は叩かず、同じ型で返す応答に差し替える。
+  await page.route(/AW3D30\.v4\.1_global\/collection\.json$/, (route) =>
+    route.fulfill({
+      contentType: 'binary/octet-stream',
+      headers: { 'access-control-allow-origin': '*' },
+      body: JSON.stringify({
+        type: 'Collection',
+        id: 'JAXA.EORC_ALOS.PRISM_AW3D30.v4.1_global',
+        title: 'ALOS World 3D - 30m (AW3D30)',
+        links: [{ rel: 'child', href: './2024-04/catalog.json', type: 'application/json' }],
+      }),
+    }),
+  );
+  await card.locator('button', { hasText: 'Collection を見る' }).click();
+  const viewer = page.locator('#stac-viewer');
+  await expect(viewer.locator('#stac-title')).toHaveText('ALOS World 3D - 30m (AW3D30)');
+  // 中の相対リンクは、その文書の URL から解く (うちの配信の起点からではない)。
+  await expect(viewer.locator('.stac-link').first()).toContainText(
+    'https://s3.ap-northeast-1.wasabisys.com/je-pds/cog/v1/JAXA.EORC_ALOS.PRISM_AW3D30.v4.1_global/2024-04/catalog.json',
+  );
 });
 
 test('地形が有効になっていて、コンパスの下のボタンで切れる', async ({ page }) => {
@@ -2203,7 +2221,7 @@ test('カタログのダイアログはカタログの階層で並ぶ', async ({
   // サブカタログ (位置参照情報は検索の裏方だけ) は見出しを出さない。
   await page.locator('.layer-add-button[data-section="data"]').click();
   const dialog = page.locator('#layer-catalog-dialog');
-  for (const section of ['data', 'tile']) {
+  for (const section of ['data', 'tile', 'view']) {
     await dialog.locator(`.catalog-tab[data-section="${section}"]`).click();
     const headings = await dialog.locator('.catalog-group-title').allTextContents();
     expect(headings.length, `${section} に見出しが無い`).toBeGreaterThan(0);
@@ -3706,6 +3724,37 @@ test('地理院のベクトルタイルは、ズームを変えても層ごと�
   // ズーム15では建物も道路縁以外も描かれるので、「ズーム…から」は出ない。
   await expect(page.locator(`[data-layer-status="${gsiRow('building')}"]`)).not.toContainText('ズーム');
   await expect(road.locator('[data-part="RdEdg"]')).toContainText('ズーム16から');
+});
+
+/**
+ * **カタログが長くなっても探せる。** 足せないもの (3D Tiles・配っていない元データ) は
+ * 「見るだけ・元データ」のタブに分け、足せるものの間に混ぜない。出所が複数あれば目次から飛べる。
+ */
+test('足せないものは別のタブに分け、目次から出所へ飛べる', async ({ page }) => {
+  await page.locator('.layer-add-button[data-section="tile"]').click();
+  const dialog = page.locator('#layer-catalog-dialog');
+  const tab = (section: string) => dialog.locator(`.catalog-tab[data-section="${section}"]`);
+  const adds = dialog.locator('[data-catalog-layer] .catalog-add');
+
+  // 足せるタブには「描けません」が無い。
+  for (const section of ['data', 'tile']) {
+    await tab(section).click();
+    await expect(adds.filter({ hasText: '描けません' })).toHaveCount(0);
+  }
+
+  // 見るだけのタブは、どれも足せない (3D Tiles も元データもここ)。
+  await tab('view').click();
+  for (const id of ['reearth-buildings', 'jaxa-aw3d30', 'gsi-dem-source']) {
+    await expect(dialog.locator(`[data-catalog-layer="${id}"] .catalog-add`)).toBeDisabled();
+  }
+  expect(await adds.count()).toBe(await adds.filter({ hasText: '描けません' }).count());
+
+  // 目次は出所の見出しと同じ数だけあり、押すとその見出しへ飛ぶ。
+  const groups = dialog.locator('.catalog-group');
+  const chips = dialog.locator('#catalog-index .catalog-index-chip:not(.sub)');
+  await expect(chips).toHaveCount(await groups.count());
+  await chips.last().click();
+  await expect(groups.last()).toBeInViewport();
 });
 
 /**

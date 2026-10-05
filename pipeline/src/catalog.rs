@@ -501,6 +501,32 @@ const OVERTURE: Attribution = Attribution {
     },
 };
 
+/// **Overture は主題ごとに、OSM 以外の出所にも出典を求めている** (上の URL、2026-10-05 に読んだ)。
+/// 取り出すときに `sources` 列を落としているので、日本に実際にどれが入っているかは数えていない。
+/// **挙げられている出所を書く** (無いものを書いても害は無い)。日本に無いと分かっているもの
+/// (スペインの BTN・米国の USGS・ニュージーランドの LINZ) は外す。
+const OVERTURE_BUILDINGS: Attribution = Attribution {
+    text: "Overture Maps / © OpenStreetMap contributors (ODbL 1.0) · Microsoft Global ML Building Footprints (ODbL) · \
+           Esri Community Maps contributors, Google Open Buildings, East Asian building data by Qian Shi et al. (CC BY 4.0)",
+    ..OVERTURE
+};
+
+/// 行政区域。OSM のほか geoBoundaries と Esri Community Maps (どちらも CC BY 4.0)。
+const OVERTURE_DIVISIONS: Attribution = Attribution {
+    text: "Overture Maps / © OpenStreetMap contributors (ODbL 1.0) · geoBoundaries, Esri Community Maps contributors (CC BY 4.0)",
+    ..OVERTURE
+};
+
+/// 道路。OSM のほか TomTom (出典表示はTomTom の条件に従う)。
+const OVERTURE_TRANSPORTATION: Attribution = Attribution {
+    text: "Overture Maps / © OpenStreetMap contributors (ODbL 1.0) · TomTom",
+    ..OVERTURE
+};
+
+/// 川と送電線 (base の water / infrastructure) は OSM 由来。base に挙がっている ESA WorldCover・
+/// ETOPO1・GLOBathy は土地被覆と水深の種類の出所で、うちは取っていない。
+const OVERTURE_BASE: Attribution = OVERTURE;
+
 /// PLATEAU (3D都市モデル) は政府標準利用規約に準じたPDL1.0。
 /// 加工した場合はその旨を示すことを求めているので、他の国土交通省コンテンツと
 /// 同じく「をもとに作成」の形にする。
@@ -638,7 +664,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             collection: "overture-admin-names",
             title: "行政区域の名称",
             description: "市区町村の名前の一覧。地名検索に使う。",
-            attribution: OVERTURE,
+            attribution: OVERTURE_DIVISIONS,
             summary_columns: &[],
             mesh_digits: None,
             // 出典表示のリンク先 (attribution.url) はガイドページなので、配布元とは別。
@@ -652,7 +678,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             collection: "overture-admin",
             title: "行政区域",
             description: "市区町村の境界。地図で指した場所の市区町村を調べるのに使う。",
-            attribution: OVERTURE,
+            attribution: OVERTURE_DIVISIONS,
             summary_columns: &[],
             mesh_digits: None,
             // 出典表示のリンク先 (attribution.url) はガイドページなので、配布元とは別。
@@ -666,7 +692,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             collection: "overture-buildings",
             title: "建物",
             description: "建物の形。高さや種別が入っていないものが多い。",
-            attribution: OVERTURE,
+            attribution: OVERTURE_BUILDINGS,
             // Overtureの建物種別。"residential" "commercial" など。
             summary_columns: &["class"],
             mesh_digits: None,
@@ -680,7 +706,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             collection: "overture-road-routes",
             title: "道路の路線",
             description: "道路の路線名 (「国道13号」など) の一覧。路線名での検索に使う。",
-            attribution: OVERTURE,
+            attribution: OVERTURE_TRANSPORTATION,
             summary_columns: &[],
             mesh_digits: None,
             via: "https://docs.overturemaps.org/guides/transportation/",
@@ -694,7 +720,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             title: "道路",
             // 1つの区間が複数の路線に属することがあるので、路線名と系統はリストで持つ。
             description: "高速道路・国道・都道府県道。路線名を持つ。",
-            attribution: OVERTURE,
+            attribution: OVERTURE_TRANSPORTATION,
             // Overtureの道路等級。"motorway"=高速、"trunk"≒国道、"primary"≒主要地方道・県道。
             summary_columns: &["class"],
             mesh_digits: None,
@@ -709,7 +735,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             title: "送電線",
             // power_line (送電線) と cable (地中・海底線)。配電線 (minor_line) は入れない。
             description: "送電線と地中・海底の電力線。線の名前を持つものがある。",
-            attribution: OVERTURE,
+            attribution: OVERTURE_BASE,
             // 種別は2つ (送電線・地中線) だけなので絞り込みは作らない。
             summary_columns: &[],
             mesh_digits: None,
@@ -724,7 +750,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             title: "川",
             // river と canal の線だけ。小川・用水路と、川幅を持つ面は入れない。
             description: "川と運河の流れの線。元はOpenStreetMapで、国のデータではない。",
-            attribution: OVERTURE,
+            attribution: OVERTURE_BASE,
             summary_columns: &[],
             mesh_digits: None,
             via: "https://docs.overturemaps.org/guides/base/",
@@ -1388,7 +1414,41 @@ mod tests {
     // Overtureは ODbL 1.0 で、OpenStreetMap由来を含むため両方の表示が要る。
     #[test]
     fn overture_attribution_credits_odbl_and_openstreetmap() {
-        assert!(OVERTURE.text.contains("ODbL"), "{}", OVERTURE.text);
-        assert!(OVERTURE.text.contains("OpenStreetMap"), "{}", OVERTURE.text);
+        for attribution in [
+            OVERTURE,
+            OVERTURE_BUILDINGS,
+            OVERTURE_DIVISIONS,
+            OVERTURE_TRANSPORTATION,
+            OVERTURE_BASE,
+        ] {
+            assert!(attribution.text.contains("ODbL"), "{}", attribution.text);
+            assert!(
+                attribution.text.contains("OpenStreetMap"),
+                "{}",
+                attribution.text
+            );
+            assert_eq!(attribution.license, "ODbL-1.0");
+        }
+    }
+
+    /// **Overture は主題ごとに OSM 以外の出所にも出典を求める。** 建物・行政区域・道路で、
+    /// それぞれの出所が抜けていないこと (<https://docs.overturemaps.org/attribution/>)。
+    #[test]
+    fn overture_credits_the_other_sources_of_each_theme() {
+        for source in ["Microsoft", "Esri", "Google Open Buildings", "Qian Shi"] {
+            assert!(OVERTURE_BUILDINGS.text.contains(source), "{source}");
+        }
+        assert!(OVERTURE_DIVISIONS.text.contains("geoBoundaries"));
+        assert!(OVERTURE_TRANSPORTATION.text.contains("TomTom"));
+        let theme_of = |collection: &str| {
+            DESCRIPTIONS
+                .iter()
+                .find(|(_, d)| d.collection == collection)
+                .map(|(_, d)| d.attribution.text)
+                .unwrap()
+        };
+        assert_eq!(theme_of("overture-buildings"), OVERTURE_BUILDINGS.text);
+        assert_eq!(theme_of("overture-admin"), OVERTURE_DIVISIONS.text);
+        assert_eq!(theme_of("overture-roads"), OVERTURE_TRANSPORTATION.text);
     }
 }

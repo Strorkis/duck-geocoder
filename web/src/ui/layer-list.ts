@@ -118,6 +118,14 @@ export function sliderSettings(
 
 const SECTION_TITLES: Record<Section, string> = { data: 'データ', tile: '地図タイル' };
 
+/**
+ * カタログのダイアログのタブ。一覧の区分に、**この地図では描けないもの** (3D Tiles・配っていない
+ * 元データ) を足す。足せないものが足せるものの間に混ざると、探すときの邪魔になる。
+ */
+type CatalogTab = Section | 'view';
+const CATALOG_TAB_TITLES: Record<CatalogTab, string> = { ...SECTION_TITLES, view: '見るだけ・元データ' };
+const tabOf = (layer: Layer): CatalogTab => (layer.viewOnly ? 'view' : layer.section);
+
 /** 「ズーム14から」。**行は消さない** — 消すと、寄れば出ることが分からない。 */
 const fromZoom = (minzoom: number) => `ズーム${minzoom}から`;
 
@@ -138,6 +146,7 @@ export function createLayerList(options: LayerListOptions): LayerList {
   const catalogRowsEl = document.querySelector<HTMLDivElement>('#catalog-rows')!;
   const filterEl = document.querySelector<HTMLInputElement>('#layer-filter')!;
   const filterEmptyEl = document.querySelector<HTMLElement>('#layer-filter-empty')!;
+  const indexEl = document.querySelector<HTMLElement>('#catalog-index')!;
   const tabs = [...dialog.querySelectorAll<HTMLButtonElement>('.catalog-tab')];
 
   /** 一覧に置いている行ID。区分ごとに**先頭がいちばん上**。 */
@@ -151,7 +160,7 @@ export function createLayerList(options: LayerListOptions): LayerList {
    * (路線と駅) は設定の要素を共有しているので、2行で同時に開けない。
    */
   let settingsRowId: string | null = null;
-  let catalogSection: Section = 'data';
+  let catalogSection: CatalogTab = 'data';
 
   // ---- 出し入れ ----------------------------------------------------------------
 
@@ -598,26 +607,64 @@ export function createLayerList(options: LayerListOptions): LayerList {
     return heading;
   };
 
+  /**
+   * 1つの Collection が何行にもなるもの (地理院のベクトルタイルはテーマごとに9行) の小見出し。
+   * 同じ出所の中で、1行ずつの地図タイルとの境目が分かるようにする。
+   */
+  const catalogSubheading = (collection: Collection, count: number): HTMLElement => {
+    const heading = document.createElement('div');
+    heading.className = 'catalog-subgroup';
+    heading.dataset.collection = collection.id;
+    heading.textContent = `${collection.title} · ${count}件`;
+    return heading;
+  };
+
+  /** 目次の項目1つ。押すとその見出しへ飛ぶ。 */
+  const indexChip = (label: string, count: number, target: HTMLElement, sub: boolean): HTMLElement => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = sub ? 'catalog-index-chip sub' : 'catalog-index-chip';
+    chip.textContent = `${label} ${count}`;
+    chip.addEventListener('click', () => target.scrollIntoView({ block: 'start', behavior: 'smooth' }));
+    return chip;
+  };
+
   const renderCatalog = () => {
     const matches = matcher();
     const hit = (layer: Layer) => !matches || matches(haystack(layer));
     for (const tab of tabs) {
-      const section = tab.dataset.section as Section;
+      const section = tab.dataset.section as CatalogTab;
       tab.setAttribute('aria-selected', String(section === catalogSection));
-      const count = layers.filter((layer) => layer.section === section && hit(layer)).length;
-      tab.textContent = `${SECTION_TITLES[section]} (${count})`;
+      const count = layers.filter((layer) => tabOf(layer) === section && hit(layer)).length;
+      tab.textContent = `${CATALOG_TAB_TITLES[section]} (${count})`;
     }
-    const rows = layers.filter((layer) => layer.section === catalogSection && hit(layer));
+    const rows = layers.filter((layer) => tabOf(layer) === catalogSection && hit(layer));
+    const rowsOf = (collection: Collection) => rows.filter((layer) => layer.collections[0] === collection).length;
     const nodes: HTMLElement[] = [];
-    let previous: string | undefined;
+    const chips: HTMLElement[] = [];
+    let previousGroup: string | undefined;
+    let previousCollection: Collection | undefined;
     for (const layer of rows) {
-      if (layer.group && layer.group.id !== previous) {
-        nodes.push(catalogHeading(layer.group));
-        previous = layer.group.id;
+      if (layer.group && layer.group.id !== previousGroup) {
+        const heading = catalogHeading(layer.group);
+        nodes.push(heading);
+        const groupId = layer.group.id;
+        chips.push(indexChip(layer.group.title, rows.filter((l) => l.group?.id === groupId).length, heading, false));
+        previousGroup = groupId;
       }
+      const collection = layer.collections[0];
+      if (collection && collection !== previousCollection && rowsOf(collection) > 1) {
+        const heading = catalogSubheading(collection, rowsOf(collection));
+        nodes.push(heading);
+        chips.push(indexChip(collection.title, rowsOf(collection), heading, true));
+      }
+      previousCollection = collection;
       nodes.push(catalogRow(layer, matches));
     }
     catalogRowsEl.replaceChildren(...nodes);
+    // **目次は見出しが2つ以上のときだけ** (1つなら飛ぶ先が無い)。
+    indexEl.replaceChildren(...chips);
+    indexEl.hidden = chips.length < 2;
     filterEmptyEl.hidden = rows.length > 0;
   };
 
@@ -632,8 +679,9 @@ export function createLayerList(options: LayerListOptions): LayerList {
   }
   for (const tab of tabs) {
     tab.addEventListener('click', () => {
-      catalogSection = tab.dataset.section as Section;
+      catalogSection = tab.dataset.section as CatalogTab;
       renderCatalog();
+      catalogRowsEl.closest('.info-dialog-body')?.scrollTo({ top: 0 });
     });
   }
   filterEl.addEventListener('input', renderCatalog);

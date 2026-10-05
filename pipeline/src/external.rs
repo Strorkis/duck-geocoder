@@ -463,6 +463,50 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         viewer: None,
         default: false,
     },
+    // 起伏を見る2つ。**重ねて使う** (不透明度を下げて淡色地図や写真の上に)。
+    // ズームは実測 (2026-10-05、東京付近のタイルを各ズームで取った)。
+    ExternalRaster {
+        id: "gsi-relief",
+        dir: "gsi",
+        title: "色別標高図",
+        description: "地理院タイルの色別標高図。標高を色の段で塗り分けたもの。低い土地や台地の広がりが一目で分かる。ズーム5〜15。",
+        attribution: GSI_TILES,
+        via: GSI_TILES_VIA,
+        role: RasterRole::Basemap,
+        link: TileLink::Xyz {
+            template: "https://cyberjapandata.gsi.go.jp/xyz/relief/{z}/{x}/{y}.png",
+            media_type: "image/png",
+        },
+        minzoom: 5,
+        maxzoom: 15,
+        tile_size: 256,
+        bounds: JAPAN_BOUNDS,
+        dem: None,
+        derived_from: &["gsi-dem-source"],
+        viewer: None,
+        default: false,
+    },
+    ExternalRaster {
+        id: "gsi-hillshade",
+        dir: "gsi",
+        title: "陰影起伏図",
+        description: "地理院タイルの陰影起伏図。光を当てたときの影で起伏を表したもの。ズーム2〜16。",
+        attribution: GSI_TILES,
+        via: GSI_TILES_VIA,
+        role: RasterRole::Basemap,
+        link: TileLink::Xyz {
+            template: "https://cyberjapandata.gsi.go.jp/xyz/hillshademap/{z}/{x}/{y}.png",
+            media_type: "image/png",
+        },
+        minzoom: 2,
+        maxzoom: 16,
+        tile_size: 256,
+        bounds: JAPAN_BOUNDS,
+        dem: None,
+        derived_from: &["gsi-dem-source"],
+        viewer: None,
+        default: false,
+    },
     // ---- 標高 (地形) — **1つだけ選んで使う** ----
     ExternalRaster {
         id: "mapterhorn-terrain",
@@ -594,6 +638,49 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         viewer: Some("https://buildings.reearth.land/"),
         default: false,
     },
+    ExternalRaster {
+        id: "plateau-3dtiles",
+        dir: "plateau",
+        title: "建物 (3D Tiles・公式配信)",
+        description: "PLATEAU 配信サービスが配っている建物の 3D Tiles。全国の都市を1つの tileset.json に束ねたもの \
+                      (都市ごとに LOD2 まで細かいものを採り、テクスチャがあればテクスチャ付き)。この地図 (MapLibre) では \
+                      描けないので、公式のビューア (PLATEAU VIEW) で見る。配信サービスは試験運用で、提供期間や品質の保証は無い。",
+        attribution: PLATEAU_TILES,
+        via: "https://docs.plateauview.mlit.go.jp/datasets/3d-tiles/",
+        role: RasterRole::ThreeDTiles,
+        link: TileLink::ThreeDTiles {
+            url: "https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/all-bldg-maxlod2-latest/tileset.json",
+        },
+        minzoom: 0,
+        maxzoom: 0,
+        tile_size: 0,
+        bounds: JAPAN_BOUNDS,
+        dem: None,
+        derived_from: &[],
+        viewer: Some("https://plateauview.mlit.go.jp/"),
+        default: false,
+    },
+    // ---- 配っていない元データ (承認が要るもの) ----
+    ExternalRaster {
+        id: "ksj-admin-source",
+        dir: "ksj",
+        title: "行政区域 N03 (元データ)",
+        description: "国土数値情報の行政区域。市区町村の境界の国のデータで、本来はこちらを使いたい。\
+                      **基本測量成果をもとにしているので、複製には測量法の承認が要る** (配布ページに記載)。\
+                      承認を取るまでは配らず、行政区域は Overture のものを使っている。",
+        attribution: MLIT_KSJ_N03,
+        via: "https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N03-2026.html",
+        role: RasterRole::Reference,
+        link: TileLink::None,
+        minzoom: 0,
+        maxzoom: 0,
+        tile_size: 0,
+        bounds: JAPAN_BOUNDS,
+        dem: None,
+        derived_from: &[],
+        viewer: None,
+        default: false,
+    },
     // ---- 衛星の標高 (参照だけ。この地図ではまだ描かない) ----
     ExternalRaster {
         id: "jaxa-aw3d30",
@@ -619,7 +706,122 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         viewer: None,
         default: false,
     },
+    // NASA の2つ。AW3D30 と同じく約30mの DSM。条件はゆるい (パブリックドメイン・制限なし) が、
+    // 実体を取るには NASA Earthdata のログインか、Planetary Computer のトークンが要る。
+    ExternalRaster {
+        id: "nasa-nasadem",
+        dir: "nasa",
+        title: "NASADEM (全球の数値表層モデル)",
+        description: "2000年のスペースシャトルのレーダー観測 (SRTM) を作り直した DSM。約30m (1秒)、北緯60°〜南緯56°。\
+                      パブリックドメイン。実体 (COG) は Microsoft Planetary Computer の STAC から取れるが、\
+                      読むには匿名で取れる期限付きのトークンが要る。このカタログからは配っていない。",
+        attribution: NASADEM,
+        via: "https://www.earthdata.nasa.gov/data/catalog/lpcloud-nasadem-hgt-001",
+        role: RasterRole::Reference,
+        link: TileLink::Stac {
+            url: "https://planetarycomputer.microsoft.com/api/stac/v1/collections/nasadem",
+        },
+        minzoom: 0,
+        maxzoom: 0,
+        tile_size: 0,
+        bounds: [-180.0, -56.0, 180.0, 60.0],
+        dem: None,
+        derived_from: &[],
+        viewer: None,
+        default: false,
+    },
+    ExternalRaster {
+        id: "nasa-aster-gdem",
+        dir: "nasa",
+        title: "ASTER GDEM v3 (全球の数値表層モデル)",
+        description: "経済産業省と NASA の衛星センサ ASTER の光学ステレオから作った DSM (2019年)。約30m (1秒)、\
+                      北緯83°〜南緯83°。再利用・再配布に制限は無い。実体 (COG) は NASA Earthdata にあり、\
+                      取るにはログインが要る。このカタログからは配っていない。",
+        attribution: ASTER_GDEM,
+        via: "https://www.earthdata.nasa.gov/data/catalog/lpcloud-astgtm-003",
+        role: RasterRole::Reference,
+        link: TileLink::Stac {
+            url: "https://cmr.earthdata.nasa.gov/stac/LPCLOUD/collections/ASTGTM_003",
+        },
+        minzoom: 0,
+        maxzoom: 0,
+        tile_size: 0,
+        bounds: [-180.0, -83.0, 180.0, 83.0],
+        dem: None,
+        derived_from: &[],
+        viewer: None,
+        default: false,
+    },
 ];
+
+/// NASADEM。NASA のデータはパブリックドメイン (Planetary Computer の Collection の license も
+/// public domain)。出典は求められていないが、どこのものかは示す。
+const NASADEM: Attribution = Attribution {
+    text: "NASADEM (NASA / JPL / USGS)",
+    url: "https://www.earthdata.nasa.gov/data/catalog/lpcloud-nasadem-hgt-001",
+    license: "other",
+    provider: "NASA",
+    terms: Terms {
+        name: "パブリックドメイン (NASA のデータ利用方針)",
+        url: "https://www.earthdata.nasa.gov/engage/open-data-services-software-policies/data-use-guidance",
+        commercial: Commercial::Allowed,
+        attribution_required: false,
+        note_modification: false,
+        share_alike: false,
+    },
+};
+
+/// ASTER GDEM v3。LP DAAC は「再利用・販売・再配布に制限は無い」とし、引用をお願いしている
+/// (v2 の頃の再配布の制限と出典の文言の義務は v3 で無くなった)。
+const ASTER_GDEM: Attribution = Attribution {
+    text: "ASTER GDEM v3 (NASA/METI/AIST/Japan Spacesystems and U.S./Japan ASTER Science Team)",
+    url: "https://www.earthdata.nasa.gov/data/catalog/lpcloud-astgtm-003",
+    // NASA の STAC (CMR-STAC) の Collection が CC0-1.0 と書いている。
+    license: "CC0-1.0",
+    provider: "NASA",
+    terms: Terms {
+        name: "LP DAAC のデータ利用方針 (制限なし。引用のお願い)",
+        url: "https://lpdaac.usgs.gov/data/data-citation-and-policies/",
+        commercial: Commercial::Allowed,
+        attribution_required: false,
+        note_modification: false,
+        share_alike: false,
+    },
+};
+
+/// PLATEAU の公式配信の 3D Tiles。**加工せずに指すだけ**なので「もとに作成」と書かない。
+/// 条件は PLATEAU のサイトポリシー (PDL1.0 / CC BY 4.0)。配信 API は手続き不要・無償 (試験運用)。
+const PLATEAU_TILES: Attribution = Attribution {
+    text: "「3D都市モデル（Project PLATEAU）」（国土交通省）",
+    url: "https://www.mlit.go.jp/plateau/",
+    license: "CC-BY-4.0",
+    provider: "国土交通省",
+    terms: Terms {
+        name: "PLATEAU サイトポリシー (PDL1.0 / CC BY 4.0)",
+        url: "https://www.mlit.go.jp/plateau/site-policy/",
+        commercial: Commercial::Allowed,
+        attribution_required: true,
+        note_modification: true,
+        share_alike: false,
+    },
+};
+
+/// 国土数値情報 N03 (行政区域)。ライセンスは CC BY 4.0 だが、配布ページに
+/// 「本製品を複製する場合には、国土地理院の長の承認を得なければなりません」とある (docs/data-sources.md)。
+const MLIT_KSJ_N03: Attribution = Attribution {
+    text: "「国土数値情報（行政区域データ）」（国土交通省）",
+    url: "https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N03-2026.html",
+    license: "CC-BY-4.0",
+    provider: "国土交通省",
+    terms: Terms {
+        name: "CC BY 4.0 (複製には測量法に基づく承認が要る)",
+        url: "https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N03-2026.html",
+        commercial: Commercial::Allowed,
+        attribution_required: true,
+        note_modification: true,
+        share_alike: false,
+    },
+};
 
 /// AW3D30。JAXA 第一宇宙技術部門の「研究データ等の利用条件」(2026-10-05 に読んだ)。
 /// 改変・第三者への配布を含めて無償で使えるが、**出所表示 (JAXA とデータの名前) が要り**、

@@ -183,6 +183,11 @@ const SUB_CATALOGS: &[SubCatalog] = &[
         title: "JAXA",
         description: "宇宙航空研究開発機構 (JAXA) の衛星データ。うちでは複製せず、公開元 (JAXA Earth API) を直接指す。",
     },
+    SubCatalog {
+        dir: "nasa",
+        title: "NASA",
+        description: "米国航空宇宙局 (NASA) の衛星データ。うちでは複製せず、公開元を直接指す。",
+    },
 ];
 
 fn sub_catalog(dir: &str) -> Result<&'static SubCatalog> {
@@ -916,6 +921,25 @@ mod tests {
         );
         assert_eq!(aw3d30["duck:terms"]["commercial"], "allowed_with_notice");
         assert!(aw3d30["duck:tile_size"].is_null());
+        // NASA の2つも参照だけ。サブカタログは出所ごと。
+        assert_eq!(
+            find(&documents, "nasa/nasa-aster-gdem.json")["license"],
+            "CC0-1.0"
+        );
+        assert_eq!(
+            find(&documents, "nasa/nasa-nasadem.json")["duck:kind"],
+            "reference"
+        );
+        // PLATEAU の公式の 3D Tiles は、うちの PLATEAU のサブカタログに並べ、PLATEAU VIEW を添える。
+        let plateau_tiles = find(&documents, "plateau/plateau-3dtiles.json");
+        assert_eq!(plateau_tiles["duck:kind"], "3d_tiles");
+        assert!(
+            plateau_tiles["links"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|link| link["rel"] == "alternate" && link["type"] == "text/html")
+        );
 
         // 背景地図は XYZ のリンクで指す。範囲 (ズーム) を書く — 白地図は5〜14しか無い。
         let blank = find(&documents, "gsi/gsi-blank.json");

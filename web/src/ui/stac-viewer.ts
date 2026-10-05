@@ -7,7 +7,7 @@
  * リンクの解決はアプリ本体と同じ規則 (`resolveHref` — その文書からの相対)。
  * 実データ (parquet) は開かない。数十MBあり、開いても読めないため。
  */
-import { dataUrl, fetchStac, resolveHref, type StacLink } from '../lib/stac';
+import { dataUrl, fetchStac, isAbsoluteUrl, resolveHref, type StacLink } from '../lib/stac';
 import { externalLink } from './credits';
 
 /** STACの文書のうち、見せるのに要るところだけ。種類を問わず読む。 */
@@ -41,10 +41,13 @@ export function createStacViewer(dialog: HTMLDialogElement): (path: string) => v
   const trail: string[] = [];
 
   const linkTarget = (link: StacLink, base: string): Node => {
-    // 配布元など、カタログの外を指すもの。
-    if (/^[a-z][a-z0-9+.-]*:/i.test(link.href)) return externalLink(link.href, link.title ?? link.href);
     const path = resolveHref(link.href, base);
-    if (!path.endsWith('.json')) {
+    // カタログの外を指すもの。**JSON (公開元の STAC など) はここで開く** — 置き場所によっては
+    // ブラウザで開くとダウンロードになる。それ以外 (配布元のページなど) は別タブ。
+    if (isAbsoluteUrl(path)) {
+      const json = link.type?.includes('json') || new URL(path).pathname.endsWith('.json');
+      if (!json) return externalLink(path, link.title ?? path);
+    } else if (!path.endsWith('.json')) {
       const code = document.createElement('code');
       code.textContent = path;
       return code;
@@ -65,7 +68,7 @@ export function createStacViewer(dialog: HTMLDialogElement): (path: string) => v
     linksEl.replaceChildren();
     noteEl.hidden = true;
     jsonEl.textContent = '';
-    rawLink.href = dataUrl(path);
+    rawLink.href = isAbsoluteUrl(path) ? path : dataUrl(path);
 
     let document_: StacDocument;
     try {

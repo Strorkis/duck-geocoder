@@ -329,19 +329,25 @@
           <strong>カタログから追加</strong>
           <button type="button" class="info-dialog-close" title="閉じる">×</button>
         </div>
-        <div class="catalog-tabs" role="tablist">
-          <button type="button" class="catalog-tab" role="tab" data-section="data">データ</button>
-          <button type="button" class="catalog-tab" role="tab" data-section="tile">地図タイル</button>
+        <!-- タブ・絞り込み・目次は、下へ送っても上に残す (長くなっても見失わない)。 -->
+        <div class="catalog-controls">
+          <div class="catalog-tabs" role="tablist">
+            <button type="button" class="catalog-tab" role="tab" data-section="data">データ</button>
+            <button type="button" class="catalog-tab" role="tab" data-section="tile">地図タイル</button>
+            <!-- この地図では描けないもの (3D Tiles・配っていない元データ)。足せないので分ける。 -->
+            <button type="button" class="catalog-tab" role="tab" data-section="view">見るだけ・元データ</button>
+          </div>
+          <!-- 出所の並びのまま、同じ種類のものを横断して探す (「送電」で両方の送電線)。
+               中の層の名前でも当たり、当たった層だけを足せる (「水部」)。 -->
+          <input
+            id="layer-filter"
+            type="search"
+            placeholder="絞り込み (例: 送電、水部、写真、標高)"
+            aria-label="カタログを絞り込む"
+            autocomplete="off"
+          />
+          <nav id="catalog-index" aria-label="出所へ飛ぶ" hidden></nav>
         </div>
-        <!-- 出所の並びのまま、同じ種類のものを横断して探す (「送電」で両方の送電線)。
-             中の層の名前でも当たり、当たった層だけを足せる (「水部」)。 -->
-        <input
-          id="layer-filter"
-          type="search"
-          placeholder="絞り込み (例: 送電、水部、写真)"
-          aria-label="カタログを絞り込む"
-          autocomplete="off"
-        />
         <div id="catalog-rows"></div>
         <p id="layer-filter-empty" class="layer-empty" hidden>当てはまるものがありません</p>
       </div>
