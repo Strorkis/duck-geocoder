@@ -448,7 +448,9 @@ const MLIT_KSJ: Attribution = Attribution {
 /// 書いていない (「無償で利用できます」) ので、[`Commercial::NotRestricted`] にする。
 /// <https://nlftp.mlit.go.jp/isj/agreement.html>
 const ISJ_TERMS: Terms = Terms {
-    name: "位置参照情報ダウンロードサービス利用規約",
+    // 約款の第2条2項「公共測量等の高度な精度が要求される測量、各種証明等には使用することが
+    // できません」は、バッジでは表せないので名前に添える (2026-10-05 に読んだ)。
+    name: "位置参照情報ダウンロードサービス利用規約 (精度の要る測量・証明には使えない)",
     url: "https://nlftp.mlit.go.jp/isj/agreement.html",
     commercial: Commercial::NotRestricted,
     attribution_required: true,
