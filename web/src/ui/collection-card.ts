@@ -363,10 +363,13 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
       terrain: '地図を立体にするだけ。SQL では引けない',
       raster_tiles: '下に敷いて見るだけ。SQL では引けない',
       '3d_tiles': 'この地図 (MapLibre) では描けない。公式のビューアで見る',
-      reference: 'このカタログからは配っていない (作られた元として載せている)',
+      reference: 'このカタログからは配っていない (公開元を指すだけ)。この地図ではまだ描かない',
     };
     if (use[collection.kind]) fact('引き方', use[collection.kind]!);
     if (collection.viewer) fact('ビューア', externalLink(collection.viewer, '公式のビューアで開く'));
+    if (collection.sourceStac) {
+      fact('公開元の STAC', externalLink(collection.sourceStac, 'Collection (COG)'));
+    }
     if (collection.bbox) fact('範囲', formatBbox(collection.bbox));
   };
 

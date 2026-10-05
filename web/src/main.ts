@@ -495,6 +495,18 @@ async function main() {
           viewOnly: 'この地図では描けません (3D Tiles)。ⓘ から公式のビューアで見られます',
         });
         break;
+      case 'reference':
+        // **配っていない元データ** (公開元を指すだけ)。3D Tiles と同じく、カタログにあることは
+        // 見せて足せなくする。ⓘ から配布元 (と公開元の STAC) へ辿れる。
+        layers.push({
+          ...tileBase,
+          vintage: '元データ',
+          settings: document.createElement('div'),
+          refresh: () => {},
+          mapLayerIds: () => [],
+          viewOnly: 'このカタログからは配っていません。ⓘ から公開元へ辿れます',
+        });
+        break;
       case 'vector_tiles': {
         // **テーマごとに1行。** 層はテーマの中に入れ、行を開くと出てくる。
         // うちのデータより下 (地図タイルの目印の直下) に敷く。

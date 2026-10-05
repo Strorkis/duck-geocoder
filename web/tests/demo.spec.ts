@@ -1179,6 +1179,25 @@ test('3D Tiles は描けない理由を出し、ⓘ からビューアへ案内�
   await expect(card.locator('.derived-from', { hasText: '建物' })).toBeVisible();
 });
 
+/**
+ * **配っていない元データ (AW3D30) も、カタログにあることは見せる。** 足せないが、
+ * ⓘ から公開元の STAC (COG) と使う条件 (商用は事前に連絡) が分かる。
+ */
+test('参照だけの元データは足せず、ⓘ から公開元の STAC と使う条件が分かる', async ({ page }) => {
+  await openCatalogFor(page, 'jaxa-aw3d30');
+  const row = page.locator('[data-catalog-layer="jaxa-aw3d30"]');
+  await expect(row.locator('.catalog-add')).toBeDisabled();
+  await expect(row).toContainText('配っていません');
+  await row.locator('.layer-detail-button').click();
+  const card = page.locator('.collection-card[data-collection="jaxa-aw3d30"]');
+  await expect(card).toContainText('DSM');
+  await expect(card.locator('a', { hasText: 'Collection (COG)' })).toHaveAttribute(
+    'href',
+    /AW3D30\.v4\.1_global\/collection\.json$/,
+  );
+  await expect(card.locator('.terms-badge', { hasText: '商用は事前に連絡' })).toBeVisible();
+});
+
 test('地形が有効になっていて、コンパスの下のボタンで切れる', async ({ page }) => {
   const hasTerrain = () =>
     page.evaluate(() => (window as unknown as TestWindow).__map!.getTerrain() !== null);

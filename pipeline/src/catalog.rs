@@ -407,6 +407,8 @@ pub struct Terms {
 pub enum Commercial {
     /// 規約が商用利用を明示的に認めている。
     Allowed,
+    /// 商用利用を認めているが、**事前に連絡が要る** (JAXA の研究データ)。
+    AllowedWithNotice,
     /// **規約に制限の記載が無い** (認めるとも禁じるとも書いていない)。
     /// 「可」と言い切らないために分けてある。
     NotRestricted,

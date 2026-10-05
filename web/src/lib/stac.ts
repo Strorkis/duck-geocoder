@@ -111,7 +111,8 @@ export interface StacAsset {
 export interface Terms {
   name: string;
   url: string;
-  commercial: 'allowed' | 'not_restricted' | 'non_commercial';
+  /** `allowed_with_notice` は「可。ただし事前に連絡」(JAXA)。 */
+  commercial: 'allowed' | 'allowed_with_notice' | 'not_restricted' | 'non_commercial';
   attribution_required: boolean;
   note_modification: boolean;
   share_alike: boolean;
@@ -341,6 +342,8 @@ export interface Collection {
   derivedFrom: string[];
   /** 公式のビューア (この地図で描けないもの)。`rel: "alternate"` の HTML。 */
   viewer: string | undefined;
+  /** 公開元が同じデータを配っている STAC (`rel: "alternate"` の JSON)。参照だけのもの (AW3D30) が持つ。 */
+  sourceStac: string | undefined;
   /** 同じ役割 (背景地図・地形) の中で既定に使うもの (`duck:default`)。 */
   isDefault: boolean;
   /** 標高のエンコード (`dem.encoding` の近道)。 */
@@ -498,6 +501,8 @@ function toCollection(
       .filter((link) => link.rel === 'derived_from')
       .map((link) => resolveHref(link.href, path)),
     viewer: document.links.find((link) => link.rel === 'alternate' && link.type === 'text/html')?.href,
+    sourceStac: document.links.find((link) => link.rel === 'alternate' && link.type === 'application/json')
+      ?.href,
     isDefault: document['duck:default'] === true,
     zoom: document['duck:zoom'],
     tileSize: document['duck:tile_size'],

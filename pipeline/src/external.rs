@@ -282,6 +282,8 @@ pub enum TileLink {
     ThreeDTiles { url: &'static str },
     /// タイルを持たない (**元データの参照**だけ。派生物の `derived_from` の行き先になる)。
     None,
+    /// 公開元の STAC Collection (中身は COG)。**この地図ではまだ描かない**が、カタログから辿れる。
+    Stac { url: &'static str },
 }
 
 /// ラスタタイルの役割。UI がどう重ねるかを決める。
@@ -592,7 +594,50 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         viewer: Some("https://buildings.reearth.land/"),
         default: false,
     },
+    // ---- 衛星の標高 (参照だけ。この地図ではまだ描かない) ----
+    ExternalRaster {
+        id: "jaxa-aw3d30",
+        dir: "jaxa",
+        title: "AW3D30 (全球の数値表層モデル)",
+        description: "ALOS の光学ステレオ (PRISM) から作った全球の **DSM (数値表層モデル)**。約30m (1秒)、版は 4.1 (2024年4月)。\
+                      地面ではなく**建物や木の上の高さ**を測っているので、建物も森も無いところでは地面の高さの参考になる \
+                      (地理院の標高 (DTM) との差で、地面より上にあるものの高さも概算できる)。日本の外も覆う。\
+                      公開元の JAXA Earth API が 1°×1° の COG と STAC で配っていて、登録なしでブラウザから直接読める \
+                      (Range・CORS に対応)。このカタログからは配っていない。",
+        attribution: JAXA_AW3D30,
+        via: "https://www.eorc.jaxa.jp/ALOS/jp/dataset/aw3d30/aw3d30_j.htm",
+        role: RasterRole::Reference,
+        link: TileLink::Stac {
+            url: "https://s3.ap-northeast-1.wasabisys.com/je-pds/cog/v1/JAXA.EORC_ALOS.PRISM_AW3D30.v4.1_global/collection.json",
+        },
+        minzoom: 0,
+        maxzoom: 0,
+        tile_size: 0,
+        bounds: [-180.0, -90.0, 180.0, 90.0],
+        dem: None,
+        derived_from: &[],
+        viewer: None,
+        default: false,
+    },
 ];
+
+/// AW3D30。JAXA 第一宇宙技術部門の「研究データ等の利用条件」(2026-10-05 に読んだ)。
+/// 改変・第三者への配布を含めて無償で使えるが、**出所表示 (JAXA とデータの名前) が要り**、
+/// **商用は事前に JAXA へ連絡が要る**。出所表示は利用条件の例「提供：＊＊＊(JAXA)」に合わせる。
+const JAXA_AW3D30: Attribution = Attribution {
+    text: "提供：AW3D30 (JAXA)",
+    url: "https://www.eorc.jaxa.jp/ALOS/jp/dataset/aw3d30/aw3d30_j.htm",
+    license: "other",
+    provider: "宇宙航空研究開発機構 (JAXA)",
+    terms: Terms {
+        name: "JAXA 第一宇宙技術部門 研究データ等の利用条件",
+        url: "https://earth.jaxa.jp/ja/data/policy/",
+        commercial: Commercial::AllowedWithNotice,
+        attribution_required: true,
+        note_modification: false,
+        share_alike: false,
+    },
+};
 
 /// 世界 (Web メルカトルで描ける範囲)。
 const WORLD_BOUNDS: [f64; 4] = [-180.0, -85.051_128_7, 180.0, 85.051_128_7];

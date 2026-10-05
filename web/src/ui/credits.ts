@@ -88,7 +88,9 @@ export function termsBadges(terms: Terms): HTMLElement {
     box.append(el);
   };
   if (terms.commercial === 'allowed') badge('商用可', 'ok', '規約が商用利用を認めている');
-  else if (terms.commercial === 'not_restricted') {
+  else if (terms.commercial === 'allowed_with_notice') {
+    badge('商用は事前に連絡', 'note', '商用利用を認めているが、使う前に提供元へ連絡が要る');
+  } else if (terms.commercial === 'not_restricted') {
     badge('商用の制限の記載なし', 'note', '規約に商用を認めるとも禁じるとも書いていない。本文を確かめること');
   } else badge('非商用のみ', 'warn', '商用には使えない');
   if (terms.attribution_required) badge('出典表示が必要', 'note', '使うときは出典を表示する');
@@ -106,6 +108,14 @@ export function buildDataCredits(collections: Collection[]): string[] {
       `<span class="credit"><b>${titles.join('・')}</b> ${creditLink(url, attribution)}</span>`,
   );
 }
+
+/** 一覧表の「商用」の欄。 */
+const COMMERCIAL_LABELS: Record<Terms['commercial'], string> = {
+  allowed: '可',
+  allowed_with_notice: '可 (事前に連絡)',
+  not_restricted: '記載なし',
+  non_commercial: '不可',
+};
 
 /**
  * **使うときの条件の一覧表。** 出所ごとに1行で、商用可か・出典表示・加工の明記・継承を並べる。
@@ -130,8 +140,7 @@ export function renderTermsSummary(container: HTMLElement, collections: Collecti
   for (const { titles, group, terms } of rows) {
     const row = body.insertRow();
     row.insertCell().textContent = group ? `${group}: ${titles.join('・')}` : titles.join('・');
-    row.insertCell().textContent =
-      terms!.commercial === 'allowed' ? '可' : terms!.commercial === 'non_commercial' ? '不可' : '記載なし';
+    row.insertCell().textContent = COMMERCIAL_LABELS[terms!.commercial];
     row.insertCell().textContent = mark(terms!.attribution_required);
     row.insertCell().textContent = mark(terms!.note_modification);
     row.insertCell().textContent = terms!.share_alike ? 'あり' : '—';

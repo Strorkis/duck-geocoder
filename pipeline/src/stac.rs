@@ -178,6 +178,11 @@ const SUB_CATALOGS: &[SubCatalog] = &[
         title: "Re:Earth",
         description: "Re:Earth が公開している標高タイルと 3D の建物 (3D Tiles)。うちでは複製せず、公開元を直接指す。",
     },
+    SubCatalog {
+        dir: "jaxa",
+        title: "JAXA",
+        description: "宇宙航空研究開発機構 (JAXA) の衛星データ。うちでは複製せず、公開元 (JAXA Earth API) を直接指す。",
+    },
 ];
 
 fn sub_catalog(dir: &str) -> Result<&'static SubCatalog> {
@@ -574,6 +579,11 @@ fn raster_collection(
         TileLink::ThreeDTiles { url } => Some(
             json!({ "rel": "3d-tiles", "href": url, "type": JSON_MEDIA_TYPE, "title": raster.title }),
         ),
+        // 同じデータを公開元が STAC で配っている。この文書の別の姿なので `alternate`
+        // (ビューアの `alternate` とは型 (JSON か HTML か) で見分ける)。
+        TileLink::Stac { url } => Some(
+            json!({ "rel": "alternate", "href": url, "type": JSON_MEDIA_TYPE, "title": "公開元の STAC (COG)" }),
+        ),
         TileLink::None => None,
     };
     let mut links = vec![
@@ -886,6 +896,26 @@ mod tests {
         assert!(buildings["duck:zoom"].is_null());
         assert!(find(&documents, "gsi/gsi-dem-source.json")["duck:tile_size"].is_null());
         assert_eq!(mapterhorn["duck:tile_size"], 512);
+
+        // AW3D30 は参照だけ。公開元の STAC Collection を JSON の `alternate` で指す
+        // (ビューアの `alternate` は HTML)。商用は「事前に連絡」で、「可」と言い切らない。
+        let aw3d30 = find(&documents, "jaxa/jaxa-aw3d30.json");
+        assert_eq!(aw3d30["duck:kind"], "reference");
+        let stac = aw3d30["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|link| link["rel"] == "alternate")
+            .unwrap();
+        assert_eq!(stac["type"], "application/json");
+        assert!(
+            stac["href"]
+                .as_str()
+                .unwrap()
+                .ends_with("AW3D30.v4.1_global/collection.json")
+        );
+        assert_eq!(aw3d30["duck:terms"]["commercial"], "allowed_with_notice");
+        assert!(aw3d30["duck:tile_size"].is_null());
 
         // 背景地図は XYZ のリンクで指す。範囲 (ズーム) を書く — 白地図は5〜14しか無い。
         let blank = find(&documents, "gsi/gsi-blank.json");
