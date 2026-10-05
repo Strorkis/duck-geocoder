@@ -585,9 +585,42 @@ Re:Earth Terrain (Terrarium) ＋ 地理院の写真 ＋ Re:Earth Buildings (3D T
 - **MapLibre ＋ Three.js** で 3D Tiles を MapLibre の上に重ねる道も見る。利用者の意図は
   「Navara は MapLibre と Three.js を組み合わせる参考」。NASA-AMMOS の 3DTilesRendererJS
   (Three.js で 3D Tiles を読む) が候補
-- **NASA と JAXA の標高 (DTM)** をカタログに足す。候補は SRTM・ASTER GDEM (NASA)、
-  AW3D30 (JAXA)。入手方法 (公式の API や直接読める配信があるか。無ければ手で落とす) と
-  規約 (登録が要るか・商用) を先に確かめる
+- **NASA と JAXA の標高** をカタログに足す。調べた結果は下の「NASA と JAXA の標高」
+
+### NASA と JAXA の標高 (2026-10-05 に調べた)
+
+**どれも DTM (地面) ではなく DSM (地表。建物や木の上を測る) で、約30m。** 日本の中では、
+いま使っている地理院の標高 (1m・5m・10m の DTM。Mapterhorn 経由) の方が細かく、地面を測っている。
+足す意味は (1) 日本の外も覆う、(2) DSM − DTM で「地面より上にあるもの」(森・建物) の高さが概算できる、
+(3) 外の STAC を参照するカタログの例になる。
+
+| | AW3D30 (JAXA) | NASADEM (NASA) | ASTER GDEM v3 (NASA・経産省) |
+| --- | --- | --- | --- |
+| 中身 | ALOS の光学ステレオ。v4.1 (2024-04) | SRTM (2000年のレーダー) を作り直したもの | ASTER の光学ステレオ。2019 |
+| 範囲 | 全球 | 北緯60°〜南緯56° | 北緯83°〜南緯83° |
+| **入手** | **JAXA Earth API (STAC＋COG)。登録不要** | Earthdata (要ログイン)。Microsoft Planetary Computer (STAC＋COG。読むには匿名で取れる期限付きトークンが要る) | Earthdata (要ログイン)。COG あり |
+| ブラウザから直接 | **読める** (Range・CORS `*`) | トークンの署名が要る | ログインが要る |
+| 規約 | 改変・第三者への配布も可。**出所表示が要る** (例「提供：AW3D30 (JAXA)」)。**商用は事前に JAXA へ連絡が要る** | パブリックドメイン | 再利用・販売・再配布に制限なし。引用はお願い |
+
+- **AW3D30 は JAXA Earth API が一番使いやすい。** STAC のカタログ
+  (`https://data.earth.jaxa.jp/stac/cog/v1/catalog.json`) から
+  `JAXA.EORC_ALOS.PRISM_AW3D30.v4.1_global` を辿ると、1°×1° の COG (東京付近で約10.7MB) が
+  解像度の段 (0〜3) ごとに並ぶ。配信は Wasabi (S3互換) で、Range と CORS が開いている。
+  日本域は EORC の配布ページでは v3.1 のままと書かれている (API の v4.1 にも東京のタイルはある。中身の版は未確認)
+- 規約は JAXA 第一宇宙技術部門の「研究データ等の利用条件」(<https://earth.jaxa.jp/ja/data/policy/>)。
+  うちの `duck:terms` で言うと「商用: 可 (事前に連絡)・出典: 要・改変: 可・継承: なし」
+- NASA の2つは、手で落とす (Earthdata にログイン) か、Planetary Computer のトークンを使うことになる。
+  パブリックドメインで条件は一番ゆるいが、**入手の手間とログインが要る**ので後回しにする
+
+**進め方の案:**
+
+1. **参照だけの Collection を足す** (`gsi-dem-source` と同じ形。配らない・上げない)。
+   AW3D30 は JAXA の STAC Collection へのリンク (`via`) と規約を持たせる。
+   NASADEM・ASTER GDEM も同じく出所と規約だけ。STAC Browser からそのまま辿れる
+2. **AW3D30 を地図に出す** (必要なら)。COG を直接読むので R2 は使わない。MapLibre は COG を
+   そのまま読めないので、COG を読む部品 (geotiff.js か、MapLibre の COG プロトコル) を足すことになる。
+   陰影か、地理院の標高との差 (地面より上の高さ) を色で出す
+3. NASA の2つを地図に出すのは、ログインやトークンの扱いが決まってから
 
 ## 調べたこと (2026-10-04)
 
