@@ -313,7 +313,7 @@
   <body>
     <header>
       <h1>duck-geocoder ダッシュボード</h1>
-      <span class="meta">更新 2026-10-05 21:16 (日本時間)</span>
+      <span class="meta">更新 2026-10-06 08:33 (日本時間)</span>
       <span class="meta">
         <a href="https://strorkis.github.io/duck-geocoder/">公開サイト</a> ·
         <a href="roadmap.md">方針 (roadmap.md)</a> · STAC 配布形式の実験
@@ -332,7 +332,7 @@
       </div>
       <div class="card kpi">
         <div class="label">公開待ちのコミット</div>
-        <div class="value">37 <small>件</small></div>
+        <div class="value">42 <small>件</small></div>
         <span class="status you">R2へのアップロード → push 待ち</span>
       </div>
       <div class="card kpi">
@@ -342,9 +342,9 @@
       </div>
       <div class="card kpi">
         <div class="label">カタログ</div>
-        <div class="value">9 <small>出所 · 26 Collection</small></div>
+        <div class="value">10 <small>出所 · 32 Collection</small></div>
         <div class="sub">
-          GeoParquet 761 ファイル + 外部 11 (地図タイル4・ベクトルタイル1・標高3・3D Tiles 1・元データ2 (基盤地図情報・AW3D30)。複製しない)
+          GeoParquet 761 ファイル + 外部 17 (地図タイル6・ベクトルタイル1・標高3・3D Tiles 2・元データ5 (基盤地図情報・N03・AW3D30・NASA 2)。複製しない)
         </div>
       </div>
     </section>
@@ -360,20 +360,21 @@
             地理院 (データだけで描く)・一覧 (カタログから足す・ドラッグで並べ替え)・背景地図と地形をレイヤーに・
             ⓘ と ⚙ の分離・GeoArrow (WKB) で受け取る・STAC Browser を <code>/catalog/</code> に・
             表示部分のライブラリ化 (main.ts 7,741→859行。ここで止める)・配っているライブラリのライセンス表示・
-            AW3D30 (JAXA) を参照だけで
+            AW3D30 (JAXA) を参照だけで・カタログの追加 (色別標高図・陰影起伏図・PLATEAU の 3D Tiles・N03 と NASA は参照だけ)・
+            追加のダイアログを3タブと目次に・公開前の権利の確認 (deploy.md)
           </span>
         </li>
         <li>
           <b>テスト</b><span class="status done">済み</span>
           <span class="sub">
-            E2E 114件 (本番ビルド。STAC Browser のリンクがある状態で)、単体 (WKB) 12件、パイプライン 190件、remote-zip 11件
+            E2E 115件 (本番ビルド。STAC Browser のリンクがある状態で)、単体 (WKB) 12件、パイプライン 191件、remote-zip 11件
           </span>
         </li>
         <li class="current">
           <b>R2へアップロード</b><span class="status you">あなたの番</span>
           <span class="sub">
             まとめて1回。手順は <a href="deploy.md">deploy.md</a> の「2026-10-03 の分」。
-            カタログの JSON は2つ直り、JAXA の2つが増えた (どれも JSON の手順で一緒に上がる)。
+            カタログの JSON は直したものと増えたもの (jaxa/・nasa/ ほか) があるが、どれも JSON の手順で一緒に上がる (全部で58)。
             STAC Browser (<code>/catalog/</code>) は R2 のカタログを読むので、上げたあとの姿がそのまま見える
           </span>
         </li>
@@ -418,6 +419,7 @@
             <tr><td>Mapterhorn</td><td class="num">0</td><td class="num">—</td><td>JSON 2つ (新規。標高は Mapterhorn が配信)</td></tr>
             <tr><td>Re:Earth</td><td class="num">0</td><td class="num">—</td><td>JSON 3つ (新規。標高と 3D Tiles は Re:Earth が配信)</td></tr>
             <tr><td>JAXA</td><td class="num">0</td><td class="num">—</td><td>JSON 2つ (新規。AW3D30 は JAXA Earth API が配信)</td></tr>
+            <tr><td>NASA</td><td class="num">0</td><td class="num">—</td><td>JSON 3つ (新規。参照だけ)</td></tr>
           </tbody>
         </table>
         <p class="sub">
@@ -546,7 +548,17 @@
           </li>
           <li>
             <b>AW3D30 を地図に出すか</b>
-            <span class="sub">参照だけ足した。出すなら COG を直接読む部品が要る (R2 は使わない)。NASA の2つはログインかトークンが要るので後回し</span>
+            <span class="sub">
+              参照だけ足した。出すなら COG を直接読む部品が要る (R2 は使わない)。画像に「©JAXA」を出す。
+              NASA の2つはログインかトークンが要るので後回し
+            </span>
+          </li>
+          <li>
+            <b>Overture の出典を実際の出所に絞る</b>
+            <span class="sub">
+              取り出しで <code>sources</code> 列を落としていて、日本にどの出所が入っているか数えていない。
+              いまは挙げられている出所を全部書いている。次に取り直すときに残して数える
+            </span>
           </li>
           <li>
             <b>Item に名前と時点を入れる</b>
