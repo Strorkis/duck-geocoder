@@ -699,6 +699,35 @@ test('使っている技術は、ライブラリと借りた考え方を分け�
 });
 
 /**
+ * **配っているライブラリのライセンスの全文へ辿れる** (本番ビルドだけ。ビルドで書き出すため)。
+ *
+ * MIT や BSD は「複製に著作権表示と許諾文を含める」のが条件で、縮めた JS からは消える。
+ * DuckDB の本体と拡張は写して配っているので、別に置いた表示 (spatial が中に持つ GEOS の LGPL も) がある。
+ */
+test('本番ビルドでは、ライブラリのライセンスの全文へ辿れる', async ({ page }) => {
+  test.skip(process.env.PLAYWRIGHT_TARGET !== 'dist', 'ライセンスの一覧はビルドで書き出す');
+  await openInfoDialog(page, 'tech-dialog');
+  const links = page.locator('#tech-credits .tech-licenses a');
+  await expect(links).toHaveCount(2);
+
+  const [bundled, duckdb] = await Promise.all(
+    [0, 1].map(async (i) => {
+      const response = await page.request.get(new URL((await links.nth(i).getAttribute('href'))!, page.url()).href);
+      expect(response.status()).toBe(200);
+      return response.text();
+    }),
+  );
+  // 束ねた依存は著作権表示まで入っている。
+  expect(bundled).toContain('## maplibre-gl');
+  expect(bundled).toContain('MapLibre contributors');
+  // DuckDB は MIT の本文、spatial の GEOS は LGPL の本文へのリンクとソースの在りか。
+  expect(duckdb).toContain('Stichting DuckDB Foundation');
+  expect(duckdb).toContain('LGPL-2.1');
+  const lgpl = await page.request.get(new URL('LGPL-2.1.txt', new URL((await links.nth(1).getAttribute('href'))!, page.url())).href);
+  expect(await lgpl.text()).toContain('GNU LESSER GENERAL PUBLIC LICENSE');
+});
+
+/**
  * **使うときの条件 (商用可か・出典表示・継承) が一目で分かる。**
  *
  * ライセンスの識別子 (`other` を含む) だけでは、規約を読みに行かないと何ができるか

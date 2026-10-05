@@ -16,19 +16,25 @@
 # (URL を直接開いたときは起きない)。上流で直ったらパッチを外す。
 set -eu
 
-src=$(cd "$1" && pwd)
-out=$2
-here=$(cd "$(dirname "$0")" && pwd)
-
 : "${SB_catalogUrl:?カタログの URL (SB_catalogUrl) を指定してください}"
 : "${SB_pathPrefix:?配信するパス (SB_pathPrefix) を指定してください}"
+
+# 出力先は、ソースへ移る前に絶対パスにする (相対で渡されると移った先で解決してしまう)。
+src=$(cd "$1" && pwd)
+mkdir -p "$2"
+out=$(cd "$2" && pwd)
+here=$(cd "$(dirname "$0")" && pwd)
 
 cd "$src"
 git apply "$here/items-base.patch"
 npm ci --no-audit --no-fund
-SB_CONFIG="$here/config.mjs" npm run build
+# ライセンスの一覧も書き出す設定で包んでビルドする (vite.config.licenses.mjs)。
+cp "$here/vite.config.licenses.mjs" .
+SB_CONFIG="$here/config.mjs" npx vite build --config vite.config.licenses.mjs
 
-mkdir -p "$out"
 cp -R dist/. "$out/"
 # ソースマップは配信しない (51MB のうち 34MB を占める。直すのは上流なので、ここで読む人はいない)。
 find "$out" -name '*.map' -delete
+# **ライセンスの表示を一緒に置く** (ISC の条件)。束ねた依存の分は THIRD-PARTY-LICENSES.md。
+# 変えたところ (パッチ) はこのリポジトリの stac-browser/ にある。
+cp LICENSE "$out/LICENSE"

@@ -164,6 +164,11 @@ function copyDuckDbRuntime(): Plugin {
       for (const file of DUCKDB_FILES) {
         copyFileIfChanged(join(source, file), join(destination, file));
       }
+      // **写して配るので、ライセンスの表示も一緒に置く** (MIT の条件。spatial 拡張は
+      // GEOS (LGPL-2.1) を中に持つので、その本文とソースの在りかも)。中身は licenses/ に書いてある。
+      const licenses = fileURLToPath(new URL('./licenses/', import.meta.url));
+      copyFileIfChanged(join(licenses, 'duckdb.md'), join(destination, 'LICENSES.md'));
+      copyFileIfChanged(join(licenses, 'LGPL-2.1.txt'), join(destination, 'LGPL-2.1.txt'));
     },
   };
 }
@@ -186,6 +191,10 @@ export default defineConfig(async () => {
 
   return {
     base: BASE_PATH,
+    // 束ねた依存 (MapLibre・DuckDB-WASM の JS など) のライセンスを全文で書き出す。
+    // どれも「複製に著作権表示と許諾表示を含める」のが条件で、縮めた JS からは注記が消えるため。
+    // 隠しディレクトリ (既定の .vite/) にしない。開いて読めるところに置く。
+    build: { license: { fileName: 'THIRD-PARTY-LICENSES.md' } },
     plugins: [
       serveLikeObjectStorage('/data', '../data/output/'),
       // node_modules 由来のパスと衝突しないよう、拡張のキャッシュを先にマウントする。

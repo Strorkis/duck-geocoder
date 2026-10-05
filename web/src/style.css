@@ -362,6 +362,12 @@ body,
   color: #14508c;
 }
 
+.tech-licenses {
+  margin: 0.4rem 0 0;
+  font-size: 0.7rem;
+  color: #555;
+}
+
 .tech-list {
   margin: 0 0 0.3rem;
 }

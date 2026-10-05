@@ -280,6 +280,12 @@ const TECH_CREDITS: { heading: string; items: TechCredit[] }[] = [
         url: 'https://github.com/maplibre/maplibre-gl-js',
       },
       {
+        name: 'STAC Browser',
+        who: 'Radiant Earth Foundation · ISC',
+        use: 'カタログを地図ではなくページで辿る画面 (/catalog/)。項目一覧の不具合を直すパッチを1つ当ててビルドしている',
+        url: 'https://github.com/radiantearth/stac-browser',
+      },
+      {
         name: 'PMTiles (JavaScript)',
         who: 'Protomaps · BSD-3-Clause',
         use: '国土地理院のベクトルタイル (1つのPMTilesファイル) から、要るタイルだけを部分取得で読む',
@@ -398,5 +404,18 @@ export function renderTechCredits(container: HTMLElement): void {
       list.append(term, detail);
     }
     container.append(title, list);
+  }
+  // **ライセンスの全文へ辿れるようにする。** 上はライセンスの名前だけで、MIT や BSD が求める
+  // 著作権表示と許諾文はビルドで書き出したファイルにある (vite.config.ts)。開発中は無い。
+  if (import.meta.env.PROD) {
+    const note = document.createElement('p');
+    note.className = 'tech-licenses';
+    note.append(
+      'ライセンスの全文: ',
+      externalLink(`${import.meta.env.BASE_URL}THIRD-PARTY-LICENSES.md`, '画面のライブラリ'),
+      ' · ',
+      externalLink(`${import.meta.env.BASE_URL}duckdb/LICENSES.md`, 'DuckDB と拡張'),
+    );
+    container.append(note);
   }
 }
