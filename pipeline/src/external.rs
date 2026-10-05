@@ -390,7 +390,8 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
             template: "https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png",
             media_type: "image/png",
         },
-        minzoom: 0,
+        // ズーム0・1のタイルは無い (2026-10-05 に実測。404)。
+        minzoom: 2,
         maxzoom: 18,
         tile_size: 256,
         bounds: JAPAN_BOUNDS,
@@ -433,7 +434,8 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
             template: "https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg",
             media_type: "image/jpeg",
         },
-        minzoom: 0,
+        // ズーム0・1のタイルは無い (2026-10-05 に実測。404)。
+        minzoom: 2,
         maxzoom: 18,
         tile_size: 256,
         bounds: JAPAN_BOUNDS,

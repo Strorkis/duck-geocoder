@@ -28,6 +28,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 cd "$src"
 git apply "$here/items-base.patch"
 npm ci --no-audit --no-fund
+# 背景地図を地理院タイルにする (basemaps.config.js。既定は OSM の公式タイル)。
+cp "$here/basemaps.config.js" basemaps.config.js
 # ライセンスの一覧も書き出す設定で包んでビルドする (vite.config.licenses.mjs)。
 cp "$here/vite.config.licenses.mjs" .
 SB_CONFIG="$here/config.mjs" npx vite build --config vite.config.licenses.mjs
