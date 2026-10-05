@@ -1,16 +1,9 @@
 import './style.css';
 import type * as duckdb from '@duckdb/duckdb-wasm';
-import { MapLibreMap, GeoJSONSource, Popup, setWorkerUrl } from 'maplibre-gl';
+import { MapLibreMap, GeoJSONSource, setWorkerUrl } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 // 地図タイル (背景地図・地形・外部のベクタータイル) を載せる部品は lib/tiles.ts。
-import {
-  TERRAIN_SOURCE,
-  basemapLayerId,
-  createVectorOverlay,
-  defaultOf,
-  terrainSource,
-  type VectorOverlay,
-} from './lib/tiles';
+import { basemapLayerId, createVectorOverlay, defaultOf, type VectorOverlay } from './lib/tiles';
 // データの出所 (GeoParquet のファイル群) と、表示範囲から読むファイルを選ぶ部品は lib/sources.ts。
 import {
   unionBbox,
@@ -22,26 +15,12 @@ import {
   type ViewBounds,
 } from './lib/sources';
 // DuckDB-WASM の初期化とデータの出所の組み立ては lib/duckdb.ts、
-// 表示範囲の問い合わせは lib/queries.ts、検索は lib/search.ts。
+// 表示範囲の問い合わせは lib/queries.ts、検索は lib/search.ts (検索欄は ui/search-box.ts)。
 import { initDuckDb } from './lib/duckdb';
 import { coverageInView } from './lib/queries';
-import {
-  MAX_RESULTS,
-  ROUTE_SUGGESTIONS,
-  fetchAdminPolygon,
-  fetchLineGeometry,
-  fetchRouteGeometry,
-  reverseGeocode,
-  searchAddress,
-  searchLines,
-  searchRoutes,
-  searchStations,
-  toMultiLineString,
-  type SearchResult,
-} from './lib/search';
 import { DETAIL_LEVELS, loadDetailLevel, saveDetailLevel, type DetailLevel, type DetailSettings } from './lib/detail';
 // 画面の部品は ui/。地図の初期化と描き方は map.ts、左下の一覧とカタログのダイアログは layer-list.ts。
-import { EMPTY_FEATURE_COLLECTION, ROAD_STYLES, initMap } from './ui/map';
+import { EMPTY_FEATURE_COLLECTION, initMap } from './ui/map';
 // データの描き方 (建物・人口メッシュ・鉄道・道路・送電線と川) は ui/layers/。
 import type { DrawContext } from './ui/layers/context';
 import { createBuildingLayers } from './ui/layers/buildings';
@@ -49,13 +28,15 @@ import { createMeshLayer } from './ui/layers/mesh';
 import { createRailwayLayer } from './ui/layers/railway';
 import { createRoadLayer } from './ui/layers/roads';
 import { createLineLayers } from './ui/layers/lines';
-import { LAYER_ANCHORS, createLayerList, type Layer, type LayerList } from './ui/layer-list';
+import { LAYER_ANCHORS, createLayerList, sliderSettings, type Layer, type LayerList } from './ui/layer-list';
 import { renderCredits, renderTechCredits, renderTermsSummary } from './ui/credits';
 import { createStacViewer } from './ui/stac-viewer';
 import { createHover } from './ui/hover';
 // 周辺検索のパネルは ui/nearby-panel.ts (問い合わせは lib/nearby.ts)。
 import { createNearbyPanel } from './ui/nearby-panel';
 import { createCollectionCards } from './ui/collection-card';
+import { createSearchBox } from './ui/search-box';
+import { createTerrainRow } from './ui/terrain-row';
 // MapLibreは既定では new URL(`./${名前}`, import.meta.url) でワーカーを探すが、
 // 名前が変数なのでバンドラが静的に検出できず、ビルド成果物に出力されない。
 // 結果、本番だけGeoJSONソースが一切描画されなくなる (地図タイルもポップアップも
@@ -87,12 +68,8 @@ interface TestHooks {
 
 async function main() {
   const input = document.querySelector<HTMLInputElement>('#search-input')!;
-  const resultsEl = document.querySelector<HTMLUListElement>('#results')!;
-  const clearButton = document.querySelector<HTMLButtonElement>('#clear-button')!;
   const pickButton = document.querySelector<HTMLButtonElement>('#pick-location')!;
   const nearbyButton = document.querySelector<HTMLButtonElement>('#nearby-button')!;
-  /** 検索で選んだものを周辺検索の起点として覚える。周辺検索のパネルを作ったら差し替える。 */
-  let rememberSelection: (label: string, geometry: GeoJSON.Geometry) => void = () => {};
   const loadingEl = document.querySelector<HTMLDivElement>('#loading')!;
   const loadingMessageEl = document.querySelector<HTMLParagraphElement>('#loading-message')!;
   const busyEl = document.querySelector<HTMLDivElement>('#busy')!;
@@ -273,245 +250,6 @@ async function main() {
     );
   };
 
-  // 逆ジオコーディングの結果を出すポップアップ。1つを使い回す。
-  //
-  // closeOnClick を切ってあるのは、建物を見るつもりのクリックで結果が消えると、
-  // 📍ボタン化して消したはずの「勝手に変わる」感覚が戻ってくるため。
-  // 消すのは×かEscだけにする。
-  // **判定の結果はホバーと見分けられるようにする。** 2つとも吹き出しなので、
-  // クラスが無いと「どちらが押した場所のものか」が中身を読むまで分からない
-  // (テストからも区別できない)。
-  const popup = new Popup({ closeButton: true, closeOnClick: false, className: 'result-popup' });
-
-  // ハイライトとポップアップは1つの結果なので、片方を閉じたら両方消す。
-  const clearHighlight = () => {
-    Promise.all([setSourceData('highlight', null), setSourceData('selected-point', null)]).catch(
-      (e: unknown) => console.error('[clearHighlight] failed', e),
-    );
-  };
-  popup.on('close', clearHighlight);
-
-  const clearSearch = () => {
-    input.value = '';
-    resultsEl.innerHTML = '';
-    clearButton.hidden = true;
-    // 開いていれば close が飛んで clearHighlight も走るが、開いていないときの
-    // ために自分でも消す (どちらも繰り返して困らない)。
-    popup.remove();
-    clearHighlight();
-    input.focus();
-  };
-
-  /** 路線の端から端まで入るように寄せる。鉄道と道路で同じ。 */
-  const fitToBbox = ([west, south, east, north]: Bbox) => {
-    map.fitBounds(
-      [
-        [west, south],
-        [east, north],
-      ],
-      // パネルが左下と右下にあるので、下側を多めに空ける。
-      { padding: { top: 60, bottom: 120, left: 60, right: 60 }, duration: 1500 },
-    );
-  };
-
-  const showResult = async (result: SearchResult) => {
-    // 路線は点ではなく**範囲**。端から端まで入るように寄せる。
-    //
-    // **線そのものをハイライトする。** 範囲へ動かすだけだと、鉄道レイヤーを
-    // 出しているときに「どれが選んだ路線か」が分からない。
-    if (result.kind === 'line') {
-      await setSourceData('selected-point', null);
-      if (ensureSections) {
-        await busy('路線を読み込み中…', async () => {
-          await ensureSections();
-          const parts = await fetchLineGeometry(
-            conn,
-            result.lineName,
-            result.operator,
-            result.bbox,
-          );
-          const geometry = toMultiLineString(parts);
-          await setSourceData('highlight', geometry);
-          if (geometry) rememberSelection(result.label, geometry);
-        });
-      }
-      fitToBbox(result.bbox);
-      return;
-    }
-
-    // 道路の路線も同じ扱い。**出所は違うが見せ方は変わらない** ので、
-    // ハイライトも寄せ方も鉄道と揃える。
-    if (result.kind === 'route') {
-      await setSourceData('selected-point', null);
-      if (ensureRoutes) {
-        await busy('道路を読み込み中…', async () => {
-          await ensureRoutes();
-          const parts = await fetchRouteGeometry(conn, result.routeName, result.bbox);
-          const geometry = toMultiLineString(parts);
-          await setSourceData('highlight', geometry);
-          if (geometry) rememberSelection(result.label, geometry);
-        });
-      }
-      fitToBbox(result.bbox);
-      return;
-    }
-
-    // 地名(代表点しか無い)と駅はその地点へ飛ぶ。ポリゴンは消す。
-    if (result.kind === 'oaza' || result.kind === 'station') {
-      const point: GeoJSON.Point = { type: 'Point', coordinates: [result.lon, result.lat] };
-      await Promise.all([setSourceData('highlight', null), setSourceData('selected-point', point)]);
-      rememberSelection(result.label, point);
-      map.flyTo({ center: [result.lon, result.lat], zoom: 16, duration: 1500 });
-      return;
-    }
-
-    // 行政区域は面をハイライトして全体が入るように寄る。
-    // ポリゴン取得を待たずにカメラを動かすと、後から呼ぶ fitBounds が
-    // アニメーションを横取りしてしまうので、取得を終えてから1回だけ動かす。
-    //
-    // 逆ジオコーディングでは名前が先に出るので、ここが無言だと
-    // 「地名だけ出てポリゴンが出ない」ように見える。大きい自治体ほど重い
-    // (対馬市で70,848頂点) ので、待っていることを知らせる。
-    const polygon = await busy('範囲を読み込み中…', async () => {
-      await ensureSpatial();
-      return fetchAdminPolygon(conn, result.adminId);
-    });
-    if (!polygon) {
-      console.warn('admin polygon not found for admin_id', result.adminId);
-      showFailure('範囲を取得できませんでした');
-      return;
-    }
-
-    await Promise.all([
-      setSourceData('highlight', polygon.geojson),
-      setSourceData('selected-point', null),
-    ]);
-    rememberSelection(result.label, polygon.geojson);
-    map.fitBounds(
-      [
-        [polygon.bbox[0], polygon.bbox[1]],
-        [polygon.bbox[2], polygon.bbox[3]],
-      ],
-      { padding: 40, duration: 1500 },
-    );
-  };
-
-  const renderResults = (rows: SearchResult[]) => {
-    resultsEl.innerHTML = '';
-
-    // 何も出さないと一覧ごと消えて (#results:empty)、読み込み中と区別がつかない。
-    // 地名は収録した都道府県の分しか無いので、この状態には普通に到達する。
-    if (rows.length === 0) {
-      const li = document.createElement('li');
-      li.className = 'empty';
-      li.textContent = '該当する地名がありません';
-      resultsEl.appendChild(li);
-      return;
-    }
-
-    for (const row of rows) {
-      const li = document.createElement('li');
-      const badge = document.createElement('span');
-      badge.className = 'badge';
-      badge.textContent = {
-        admin: '行政区域',
-        oaza: '地名',
-        station: '駅',
-        line: '路線',
-        route: '道路',
-      }[
-        row.kind
-      ];
-      li.append(badge, row.label);
-      // **会社名と路線名は2段目に置く。**1行に詰めると
-      //「東京駅 (東日本旅客鉄道 東北新幹線)」のように長くなって読みにくい。
-      if ('detail' in row && row.detail) {
-        const detail = document.createElement('span');
-        detail.className = 'result-detail';
-        detail.textContent = row.detail;
-        li.append(detail);
-      }
-      li.addEventListener('click', () => {
-        resultsEl.innerHTML = '';
-        input.value = row.label;
-        showResult(row).catch((e: unknown) => console.error('[showResult] failed', e));
-      });
-      resultsEl.appendChild(li);
-    }
-  };
-
-  let debounceTimer: number | undefined;
-  const runSearch = (debounceMs: number) => {
-    window.clearTimeout(debounceTimer);
-    const keyword = input.value.trim();
-    clearButton.hidden = keyword.length === 0;
-    if (keyword.length === 0) {
-      resultsEl.innerHTML = '';
-      return;
-    }
-    debounceTimer = window.setTimeout(() => {
-      // 初回は ensureOaza の読み込みを待つので、ここだけ数秒かかることがある。
-      busy('検索中…', async () => {
-        // 駅は配信されていないこともある。無ければ地名と行政区域だけで引く。
-        await Promise.all([ensureOaza(), ensureStations?.(), ensureRoutes?.()]);
-        const [places, stations, lines, routes] = await Promise.all([
-          searchAddress(conn, keyword),
-          ensureStations ? searchStations(conn, keyword) : Promise.resolve([]),
-          ensureStations ? searchLines(conn, keyword) : Promise.resolve([]),
-          ensureRoutes
-            ? searchRoutes(conn, keyword, (cls) => ROAD_STYLES[cls]?.label ?? cls)
-            : Promise.resolve([]),
-        ]);
-        // **打った語がそのものを指しているものを先に出す。**
-        // 「山手線」で駅ばかり並ぶと、路線を見たい人の役に立たない。
-        // 「東京」なら東京駅が先に来てほしい。
-        const exactLines = lines.filter((l) => l.label.includes(keyword));
-        const exactStations = stations.filter((s) => s.label.startsWith(`${keyword}駅`));
-        const rest = stations.filter((s) => !exactStations.includes(s));
-        // **道路は数が多いので、打った語そのもの以外は後ろに回して上限を掛ける。**
-        // 「東京」には109路線が当たり、候補10件を道路が埋めて
-        // 東京駅も東京都も消えた。「国道13号」のように語そのものを指すものは先頭。
-        const exactRoutes = routes.filter((r) => r.label === keyword);
-        const otherRoutes = routes
-          .filter((r) => r.label !== keyword)
-          .slice(0, ROUTE_SUGGESTIONS);
-        return [
-          ...exactRoutes,
-          ...exactLines,
-          ...exactStations,
-          ...places,
-          ...otherRoutes,
-          ...rest,
-        ].slice(0, MAX_RESULTS);
-      })
-        .then(renderResults)
-        .catch((e: unknown) => {
-          console.error('[searchAddress] failed', e);
-          showFailure('検索に失敗しました');
-        });
-    }, debounceMs);
-  };
-
-  /**
-   * 「検索に使用」を出すかどうか。**打っている間だけ出す。**
-   *
-   * 常時出しておくと検索欄が200pxまで伸びて左上の地図を覆い、
-   * クリックが届かなくなる (実測156px)。かといってフォーカスだけを条件にすると、
-   * **起動時に検索欄へ自動でフォーカスが当たる**ので結局出っぱなしになる。
-   */
-  input.addEventListener('input', () => runSearch(200));
-  // 候補を選ぶと一覧を閉じるので、再びフォーカスしたときに候補を出し直す。
-  // (入力を変えないと候補が出ないのは分かりにくい)
-  input.addEventListener('focus', () => runSearch(0));
-  input.addEventListener('blur', () => {
-    resultsEl.innerHTML = '';
-  });
-  // 候補のクリックは blur より先に mousedown が走る。既定動作を止めて
-  // フォーカスを外させないと、click が発火する前に一覧が消えてしまう。
-  resultsEl.addEventListener('mousedown', (e) => e.preventDefault());
-
-  clearButton.addEventListener('click', clearSearch);
-
   // ---- 行の状態 --------------------------------------------------------------
   //
   // 件数や「ズーム15まで寄ると出ます」は**一覧の行に出す**。設定の中に置くと、
@@ -581,7 +319,6 @@ async function main() {
   const lineRequests = createLineLayers(drawContext, lineSources);
   const requestLineRefresh = (source: LineSource) => lineRequests.get(source.id) ?? (() => {});
 
-
   // ---- レイヤー一覧 -------------------------------------------------------
   //
   // **カタログの中身を行にする。** 一覧には使うものだけを置き、カタログ全体は
@@ -641,36 +378,6 @@ async function main() {
 
   /** 地形に使える標高 (Mapterhorn・Re:Earth・地理院…)。**1つだけ**選ぶ。 */
   const terrainCollections: Collection[] = [];
-
-  /** 範囲つきのスライダー1つ (不透明度・起伏の強調)。地図を見ながら動かすので行の下に開く。 */
-  const sliderSettings = (
-    label: string,
-    min: number,
-    max: number,
-    step: number,
-    value: number,
-    format: (value: number) => string,
-    onInput: (value: number) => void,
-  ): HTMLElement => {
-    const wrap = document.createElement('label');
-    wrap.className = 'layer-slider';
-    const text = document.createElement('span');
-    text.textContent = `${label} ${format(value)}`;
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = String(min);
-    input.max = String(max);
-    input.step = String(step);
-    input.value = String(value);
-    input.addEventListener('input', () => {
-      text.textContent = `${label} ${format(Number(input.value))}`;
-      onInput(Number(input.value));
-    });
-    wrap.append(text, input);
-    const settings = document.createElement('div');
-    settings.append(wrap);
-    return settings;
-  };
 
   // **カタログに書かれた順に並べる。** 並びはパイプライン側 (`SUB_CATALOGS`) が決める。
   const layers: Layer[] = [];
@@ -852,7 +559,6 @@ async function main() {
   const collectionCard = cards.card;
   const jsonLink = cards.jsonLink;
 
-
   /** 表示範囲と収録範囲が重なるか。**通信しない** (起動時に読んだbboxだけを見る)。 */
   const coversView = (bbox: Bbox | null): boolean => {
     if (!bbox) return true; // 分からないものは落とさない
@@ -875,71 +581,15 @@ async function main() {
     apply();
   };
 
-  // ---- 地形 ---------------------------------------------------------------------
-  //
-  // **1つだけ選ぶ。** 出すか (チェック) と、どの標高か (選択) を1行で。地図右上の
-  // 地形ボタン (TerrainControl) と同じものを切るので、どちらで切っても追随する。
-  const terrainRowEl = document.querySelector<HTMLDivElement>('#terrain-row')!;
-  const terrainToggle = document.querySelector<HTMLInputElement>('#terrain-toggle')!;
-  const terrainSelect = document.querySelector<HTMLSelectElement>('#terrain-source')!;
-  const terrainSettingsButton = document.querySelector<HTMLButtonElement>('#terrain-settings')!;
-  const terrainDetailButton = document.querySelector<HTMLButtonElement>('#terrain-detail')!;
-  const terrainSlotEl = document.querySelector<HTMLDivElement>('#terrain-slot')!;
-  let terrainExaggeration = 1;
-  let terrainChoice = defaultOf(terrainCollections, 'terrain');
-  /** 標高を差し替えている最中 (その間の「地形が外れた」通知は、チェックに写さない)。 */
-  let switchingTerrain = false;
-  terrainRowEl.hidden = terrainCollections.length === 0;
-  for (const collection of terrainCollections) {
-    const option = document.createElement('option');
-    option.value = collection.id;
-    option.textContent = `${collection.title} (${collection.group?.title ?? ''})`;
-    terrainSelect.append(option);
-  }
-  if (terrainChoice) terrainSelect.value = terrainChoice.id;
-  terrainToggle.checked = map.getTerrain() !== null;
-
-  const applyTerrain = () =>
-    map.setTerrain(
-      terrainToggle.checked && terrainChoice
-        ? { source: TERRAIN_SOURCE, exaggeration: terrainExaggeration }
-        : null,
-    );
-  terrainToggle.addEventListener('change', applyTerrain);
-  terrainSelect.addEventListener('change', () => {
-    const next = terrainCollections.find((c) => c.id === terrainSelect.value);
-    if (!next || next === terrainChoice) return;
-    terrainChoice = next;
-    // **ソースごと差し替える** (URL もエンコードも範囲も標高ごとに違う)。差し替えのために
-    // いったん外すが、その通知でチェックを外さない (外すと、付け直されずに地形が消えた)。
-    switchingTerrain = true;
-    map.setTerrain(null);
-    if (map.getSource(TERRAIN_SOURCE)) map.removeSource(TERRAIN_SOURCE);
-    map.addSource(TERRAIN_SOURCE, terrainSource(next));
-    switchingTerrain = false;
-    applyTerrain();
-  });
-  // 起伏の強調は ⚙ で行の下に開く (地図を見ながら動かすもの)。
-  terrainSlotEl.append(
-    sliderSettings('起伏の強調', 1, 3, 0.5, 1, (v) => `×${v}`, (v) => {
-      terrainExaggeration = v;
-      if (map.getTerrain()) applyTerrain();
-    }),
-  );
-  terrainSettingsButton.addEventListener('click', () => {
-    terrainSlotEl.hidden = !terrainSlotEl.hidden;
-    terrainSettingsButton.setAttribute('aria-expanded', String(!terrainSlotEl.hidden));
-  });
-  terrainDetailButton.addEventListener('click', () => {
-    if (!terrainChoice) return;
-    layerDetailTitleEl.textContent = `地形 › ${terrainChoice.group?.title ?? ''} › ${terrainChoice.title}`;
-    layerCatalogEl.replaceChildren(collectionCard(terrainChoice));
-    layerDetailDialog.showModal();
-  });
-  // 地図右上の地形ボタンで切られたら、一覧のチェックを追随させる。
-  map.on('terrain', () => {
-    if (switchingTerrain) return;
-    terrainToggle.checked = map.getTerrain() !== null;
+  // 地形の行 (ui/terrain-row.ts)。標高を1つ選び、地図右上の地形ボタンと追随する。
+  createTerrainRow({
+    map,
+    collections: terrainCollections,
+    openDetails: (collection) => {
+      layerDetailTitleEl.textContent = `地形 › ${collection.group?.title ?? ''} › ${collection.title}`;
+      layerCatalogEl.replaceChildren(collectionCard(collection));
+      layerDetailDialog.showModal();
+    },
   });
 
   /** 裏方 (検索・逆ジオコーディングが使うもの)。**切れてはいけない**ので出すだけ。 */
@@ -1136,7 +786,21 @@ async function main() {
       updateCursor();
     },
   });
-  rememberSelection = nearby.remember;
+
+  // 検索欄 (ui/search-box.ts)。選んだものは周辺検索の起点として覚える。
+  const search = createSearchBox({
+    map,
+    conn,
+    busy,
+    showFailure,
+    setSourceData,
+    ensureOaza,
+    ensureSpatial,
+    ensureStations,
+    ensureSections,
+    ensureRoutes,
+    onSelect: nearby.remember,
+  });
 
   // Escの出口を1本にまとめる。押している最中なら解除が先、そうでなければ
   // 出ている結果を消す。window で拾うのは、判定した直後はフォーカスが地図側にあり、
@@ -1158,7 +822,7 @@ async function main() {
       nearby.clear();
       return;
     }
-    clearSearch();
+    search.clear();
   });
 
   // 吹き出し (ホバーと、指で押したとき) は ui/hover.ts。**周辺検索の click より後に作る**
@@ -1178,39 +842,17 @@ async function main() {
     },
   });
 
-  // 逆ジオコーディング: クリックした地点がどの行政区域かを引き、
-  // その区域をハイライトしてポップアップで名前を出す (popup は上で用意している)。
+  // 📍のあとのクリック: その地点がどの行政区域かを引いて、検索の結果と同じく出す。
   map.on('click', (e) => {
     if (!picking) return;
     // 1クリックで解除する。押しっぱなしのモードにすると、今どちらの状態かを
     // 覚えていないと次のクリックの結果が読めなくなる。
     setPicking(false);
-
-    const { lng, lat } = e.lngLat;
     // **ホバーの吹き出しを先に片付ける。** 判定の結果も吹き出しで出すので、
     // 残っていると2つ並んでどちらが押した場所のものか分からない。
     // 整備範囲のメッシュは引いた表示で常に出ているぶん、ここに必ず当たる。
     hover.hide();
-    popup.setLngLat(e.lngLat).setText('判定中…').addTo(map);
-
-    busy('地点を判定中…', async () => {
-      await ensureSpatial();
-      return reverseGeocode(conn, lng, lat);
-    })
-      .then(async (hit) => {
-        if (!hit) {
-          popup.setText('該当する行政区域はありません (海上など)');
-          return;
-        }
-        popup.setText(hit.label);
-        input.value = hit.label;
-        clearButton.hidden = false;
-        await showResult({ kind: 'admin', label: hit.label, adminId: hit.adminId });
-      })
-      .catch((err: unknown) => {
-        console.error('[reverseGeocode] failed', err);
-        popup.setText('判定に失敗しました');
-      });
+    search.pickAt(e.lngLat);
   });
 }
 

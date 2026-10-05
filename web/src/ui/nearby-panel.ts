@@ -102,8 +102,9 @@ const NEARBY_LAYERS = [
   'nearby-origin-point',
 ];
 
-const TRUE: ExpressionSpecification = ['==', 1, 1];
-const FALSE: ExpressionSpecification = ['==', 1, 0];
+// `['==', 1, 1]` だと MapLibre が古い書き方の filter とも読めてしまい、式と混ぜたと警告する。
+const TRUE: ExpressionSpecification = ['boolean', true];
+const FALSE: ExpressionSpecification = ['boolean', false];
 
 /** 種類ごとの名前の結果 [種類, 結果, 出所のCollection ID]。出所は当たったものの吹き出しに使う。 */
 type NamedHits = [string, { names: string[]; total: number; features: GeoJSON.Feature[] }, string];

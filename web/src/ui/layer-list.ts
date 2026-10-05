@@ -86,6 +86,36 @@ export interface LayerList {
   applyOrder: () => void;
 }
 
+/** 範囲つきのスライダー1つ (不透明度・起伏の強調)。地図を見ながら動かすので行の下に開く。 */
+export function sliderSettings(
+  label: string,
+  min: number,
+  max: number,
+  step: number,
+  value: number,
+  format: (value: number) => string,
+  onInput: (value: number) => void,
+): HTMLElement {
+  const wrap = document.createElement('label');
+  wrap.className = 'layer-slider';
+  const text = document.createElement('span');
+  text.textContent = `${label} ${format(value)}`;
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.min = String(min);
+  input.max = String(max);
+  input.step = String(step);
+  input.value = String(value);
+  input.addEventListener('input', () => {
+    text.textContent = `${label} ${format(Number(input.value))}`;
+    onInput(Number(input.value));
+  });
+  wrap.append(text, input);
+  const settings = document.createElement('div');
+  settings.append(wrap);
+  return settings;
+}
+
 const SECTION_TITLES: Record<Section, string> = { data: 'データ', tile: '地図タイル' };
 
 /** 「ズーム14から」。**行は消さない** — 消すと、寄れば出ることが分からない。 */
