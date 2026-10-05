@@ -405,7 +405,7 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
     // 公開時だけ一緒に置くので、置き場所が渡されたときだけ出す (deploy.yml)。
     if (STAC_BROWSER_URL && collection.path) {
       const browse = externalLink(`${STAC_BROWSER_URL}#/${collection.path}`, 'STAC Browser');
-      browse.classList.add('json-link');
+      browse.className = 'browse-link';
       browse.title = 'STAC Browser で開く (別のタブ)';
       head.append(browse);
     }
