@@ -620,9 +620,6 @@ fn raster_collection(
             RasterRole::ThreeDTiles => "3d_tiles",
             RasterRole::Reference => "reference",
         },
-        // **タイルが実際にあるズーム。** 無いズームを要求すると 404 を撃ち続ける。
-        "duck:zoom": [raster.minzoom, raster.maxzoom],
-        "duck:tile_size": raster.tile_size,
         "providers": [{
             "name": raster.attribution.provider,
             "roles": ["producer", "licensor", "host"],
@@ -634,6 +631,13 @@ fn raster_collection(
         },
         "links": links,
     });
+    // **タイルが実際にあるズームと大きさ。** 無いズームを要求すると 404 を撃ち続ける。
+    // 地図タイル (背景地図・標高) だけが持つ。3D Tiles と参照だけの元データには書かない
+    // (以前は 0 を書いていて、STAC Browser に「Tile Size 0」と出た)。
+    if matches!(raster.role, RasterRole::Basemap | RasterRole::Terrain) {
+        body["duck:zoom"] = json!([raster.minzoom, raster.maxzoom]);
+        body["duck:tile_size"] = json!(raster.tile_size);
+    }
     // 同じ役割 (背景地図・地形) の中で既定に使うもの。
     if raster.default {
         body["duck:default"] = json!(true);
@@ -877,6 +881,11 @@ mod tests {
                 "reearth-terrain.json"
             ]
         );
+        // タイルの大きさとズームは地図タイルだけ。3D Tiles と参照には書かない (0 と書かない)。
+        assert!(buildings["duck:tile_size"].is_null());
+        assert!(buildings["duck:zoom"].is_null());
+        assert!(find(&documents, "gsi/gsi-dem-source.json")["duck:tile_size"].is_null());
+        assert_eq!(mapterhorn["duck:tile_size"], 512);
 
         // 背景地図は XYZ のリンクで指す。範囲 (ズーム) を書く — 白地図は5〜14しか無い。
         let blank = find(&documents, "gsi/gsi-blank.json");
