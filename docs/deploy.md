@@ -327,6 +327,10 @@ curl -sI -H 'Origin: https://<user>.github.io' "$URL" | grep -i access-control
 - **Settings → Secrets and variables → Actions → Variables**:
   `DATA_BASE_URL` にR2の公開URL (末尾スラッシュ無し)
 
+同じワークフローが **STAC Browser** (カタログをページで辿る画面) を `/catalog/` に置く
+([stac-browser/build.sh](../stac-browser/build.sh))。カタログは `DATA_BASE_URL` の `catalog.json`
+を読むので、R2 に上げたカタログがそのまま見える。アプリと同じオリジンなので CORS の追加は要らない。
+
 ## 3. 公開後に確かめる
 
 ```sh

@@ -625,7 +625,24 @@ GeoParquet のアセットは geoparquet.info で開く、PMTiles は Protomaps 
 **手元で見た (2026-10-05):** STAC Browser 5.1.0 を `/tmp` で動かし、開発サーバーのカタログを
 読ませた (`SB_catalogUrl`・`SB_historyMode=hash`)。サブカタログ8つ、Collection の説明・範囲の地図・
 Item の一覧 (PLATEAU 306件)・`duck:*` の項目 (使う条件など) がそのまま出た。
-置き場所 (`/browser/` という名前) と、デプロイに入れるかは利用者が見てから決める。
+
+**置いた (2026-10-05):** 利用者が見て、置くと決めた。名前は `/catalog/` にした
+(`/browser/` は何を見るものか分からない。カタログを見る画面なのでそのまま名乗る)。
+デプロイで版 (v5.1.0) を固定して取ってきて、[stac-browser/](../stac-browser/) の設定とパッチでビルドする。
+ⓘ のカードから、その Collection を開ける。
+
+- **STAC Browser の不具合にパッチを当てた:** カタログから辿って Collection を開くと、
+  項目一覧 (`rel: items` の相対パス) を Collection ではなくページの URL 基準で解決し、404 になる
+  (先に読んで控えてある Collection を使うときに、基準の URL がまだ空)。直接開くと起きない。
+  上流に報告できる形 (1か所・6行) にしてある。直ったらパッチを外す
+- 出る警告のうち `unload is not allowed`・vue-i18n の Legacy API は STAC Browser 自身のもの
+  (後者は開発サーバーだけで、本番ビルドでは出ない)
+- ソースマップを除いて約18MB (除かないと51MB)。ビルドは約40秒
+- **宿題: Item に名前と時点が無い。** 一覧が `plateau_bldg_01100` のような ID で並び、
+  「No time given」と出る。`datetime: null` に `start_datetime`/`end_datetime` が無いのは
+  STAC としても正しくない。都市名と年度は PLATEAU の配信カタログにあるので、
+  次に PLATEAU を書き換えるときに GeoParquet の KV に入れ、Item の `title` と期間にする
+  (今入れると306ファイルの上げ直しになる)
 
 - 見て分かったカタログの不具合: 3D Tiles と参照だけの元データに `duck:tile_size: 0` を書いていた
   (「Tile Size 0」と出た)。地図タイルだけが持つように直した

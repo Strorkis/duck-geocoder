@@ -91,6 +91,8 @@ jobs:
           VITE_BASE_PATH: /${{ github.event.repository.name }}/
           # データの置き場所。リポジトリの Variables で設定する。
           VITE_DATA_BASE_URL: ${{ vars.DATA_BASE_URL }}
+          # ⓘ のカードから開く STAC Browser の置き場所 (下で dist/catalog/ に入れる)。
+          VITE_STAC_BROWSER_URL: /${{ github.event.repository.name }}/catalog/
 
       # ヘッドレスでの失敗はログだけでは追いにくいので、トレースを残す。
       - uses: actions/upload-artifact@v7
@@ -99,6 +101,19 @@ jobs:
           name: playwright-trace
           path: web/test-results/
           retention-days: 7
+
+      # カタログを地図ではなくページで辿る閲覧画面 (STAC Browser) を /catalog/ に置く。
+      # 版を固定して取ってきて、うちの設定とパッチでビルドする (stac-browser/build.sh)。
+      # データは上と同じく公開中のオブジェクトストレージから読む (同じオリジンなので CORS は追加不要)。
+      - uses: actions/checkout@v7
+        with:
+          repository: radiantearth/stac-browser
+          ref: v5.1.0
+          path: .stac-browser-src
+      - run: ../stac-browser/build.sh ../.stac-browser-src dist/catalog
+        env:
+          SB_catalogUrl: ${{ vars.DATA_BASE_URL }}/catalog.json
+          SB_pathPrefix: /${{ github.event.repository.name }}/catalog/
 
       - uses: actions/upload-pages-artifact@v3
         with:

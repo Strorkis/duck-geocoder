@@ -42,6 +42,9 @@ const formatBbox = ([west, south, east, north]: Bbox) =>
 
 type Fact = (term: string, ...value: (string | Node)[]) => HTMLElement;
 
+/** STAC Browser の置き場所 (末尾は `/`)。開発中は置いていないので空。 */
+const STAC_BROWSER_URL: string = import.meta.env.VITE_STAC_BROWSER_URL ?? '';
+
 export function createCollectionCards(options: CollectionCardOptions): CollectionCards {
   const { collections, conn, ensureSpatial, registerFiles, exportParquet, currentBounds, openStac } = options;
 
@@ -398,6 +401,14 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
     const id = document.createElement('code');
     id.textContent = collection.id;
     head.append(id, jsonLink(collection.path, 'Collection'));
+    // 同じ Collection を STAC Browser (地図ではなくページで辿る閲覧画面) で開く。
+    // 公開時だけ一緒に置くので、置き場所が渡されたときだけ出す (deploy.yml)。
+    if (STAC_BROWSER_URL && collection.path) {
+      const browse = externalLink(`${STAC_BROWSER_URL}#/${collection.path}`, 'STAC Browser');
+      browse.classList.add('json-link');
+      browse.title = 'STAC Browser で開く (別のタブ)';
+      head.append(browse);
+    }
 
     const description = document.createElement('p');
     description.className = 'collection-description';

@@ -1,0 +1,17 @@
+diff --git a/src/store/index.js b/src/store/index.js
+index e949655..3779184 100644
+--- a/src/store/index.js
++++ b/src/store/index.js
+@@ -1119,6 +1119,12 @@ function getStore(config, router) {
+           if (baseUrl) {
+             baseUrl = URI(baseUrl);
+           }
++          // Static catalogs may use a relative href for rel=items. Resolve it against the
++          // collection; when the collection comes from the cache, state.url is not set yet
++          // and the href would otherwise resolve against the page.
++          if (link && stac instanceof STAC && baseUrl) {
++            link = Object.assign({}, link, { href: toAbsolute(link.href, baseUrl, false).toString() });
++          }
+ 
+           let sort = null;
+           if (cx.getters.supportsConformance(TYPES.Items.Sort, baseUrl)) {
