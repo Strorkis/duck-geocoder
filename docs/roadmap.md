@@ -478,7 +478,7 @@ Collection とは分けて扱う。いまは UI のコードに入っている (
 
 - **Range で zip の一部だけ取る道具を `crates/remote-zip` に切り出した。** duck-geocoder に
   依存しない単体のクレートで、`remote-zip ls/get` の CLI も持つ。別リポジトリへはまだ出さない
-- **表示部分のライブラリ化** (web/src/main.ts、7,741行 → 2,519行)。画面にも地図にも
+- **表示部分のライブラリ化** (web/src/main.ts、7,741行 → 1,217行)。画面にも地図にも
   依存しない部分を `web/src/lib/` に、画面の部品を `web/src/ui/` に分けた:
 
   | モジュール | 中身 |
@@ -493,7 +493,10 @@ Collection とは分けて扱う。いまは UI のコードに入っている (
   | `lib/plateau-api.ts` | PLATEAU配信サービス (CityGML のメッシュ単位のファイルと pack) |
   | `lib/tiles.ts` | 地図タイル: 背景地図・地形 (地理院の標高の変換)・外部のベクタータイル |
   | `lib/detail.ts` / `lib/igrc.ts` | 表示量の段 / SORA の地上リスクの表 |
+  | `lib/wkb.ts` | ジオメトリ (GeoArrow の WKB) を GeoJSON に読む。`tests-unit/` に単体テスト |
   | `ui/map.ts` | 地図の初期化と、データの描き方 (色・太さ・層の並び) |
+  | `ui/layers/` | データの種類ごとの描き方 (建物・人口メッシュ・鉄道・道路・送電線と川)。共通の道具は `DrawContext` |
+  | `ui/collection-card.ts` | ⓘ のカード (カタログの中身・この範囲を取得・CityGML) |
   | `ui/layer-list.ts` | 左下の一覧とカタログのダイアログ (重ね順・ドラッグ) |
   | `ui/nearby-panel.ts` | 周辺検索のパネルと、結果の描き方 (目立たせる・種類ごとの出し入れ) |
   | `ui/hover.ts` | 吹き出し (層ごとの表。ホバーと、指で押したとき) |
@@ -501,10 +504,10 @@ Collection とは分けて扱う。いまは UI のコードに入っている (
   | `ui/stac-viewer.ts` | STAC の文書をページの中で辿る |
   | `ui/download.ts` | ファイルの保存 |
 
-  **残り:** main.ts に残っているのは、各データの描き方 (refresh 関数と絞り込みのパネル)、
-  ⓘ のカード (取得の節を含む)、検索欄、地形の行。`main()` の中で状態 (表示量・
-  絞り込み・選んだもの) を共有しているので、次はデータの種類ごとに「描き方」を
-  1つのまとまり (状態・refresh・パネル) に切る
+  **残り:** main.ts に残っているのは、起動の順番、検索欄、一覧の行の組み立て
+  (カタログの種類 → 行)、地形の行、表示量の切り替え、📍 の判定。どれも他の部品を
+  つなぐ役なので、ここから先は分けても行き来が増えるだけになりやすい。検索欄と地形の行は
+  分けられる
 - **画面のフレームワークは入れない** (React など)。理由は利用者への回答 (2026-10-04) のとおり:
   画面の大半は MapLibre の層と DuckDB の問い合わせで、DOM は一覧とパネルだけ。
   減るのは DOM を組む数百行で、地図との同期 (層の順番・地図のイベント) は残る
@@ -573,6 +576,19 @@ Re:Earth Terrain (Terrarium) ＋ 地理院の写真 ＋ Re:Earth Buildings (3D T
   一覧と周辺検索はいまの地図のまま
 - まだ 0.1 で、露出 (`toneMappingExposure`) の調整など見た目は詰めていない
 
+**積んであること (2026-10-05、利用者の希望。後で):**
+
+- **Navara モードと Cesium モード。** 地図 (MapLibre) と切り替えて、3D Tiles と地形を描く。
+  切り替えは簡単ではない — いまのデータの描き方 (建物・鉄道…) は MapLibre の層なので、
+  別のエンジンでは描き方を作り直すことになる。まずは「同じ場所を別のエンジンで開く」
+  (位置と、地図タイル・地形・3D Tiles だけを渡す) から
+- **MapLibre ＋ Three.js** で 3D Tiles を MapLibre の上に重ねる道も見る。利用者の意図は
+  「Navara は MapLibre と Three.js を組み合わせる参考」。NASA-AMMOS の 3DTilesRendererJS
+  (Three.js で 3D Tiles を読む) が候補
+- **NASA と JAXA の標高 (DTM)** をカタログに足す。候補は SRTM・ASTER GDEM (NASA)、
+  AW3D30 (JAXA)。入手方法 (公式の API や直接読める配信があるか。無ければ手で落とす) と
+  規約 (登録が要るか・商用) を先に確かめる
+
 ## 調べたこと (2026-10-04)
 
 ### GeoArrow
@@ -589,7 +605,11 @@ DuckDB-WASM は、ジオメトリの列を**そのまま返すと既に GeoArrow
 GeoArrow にすると問い合わせ側で約 1/3 減るが、**大きいのはネットワークと MapLibre の `setData`**
 (GeoJSON を地図の Worker でタイルに切り直す)。`setData` を避けるには GeoJSON を経由しない描き方
 (deck.gl の GeoArrow 層など) が要る。geoarrow-js は WKB を読まない (読むのは geoarrow-rs の WASM) ので、
-入れるなら WKB を読む小さな関数を自前で書くのが軽い。**急がない** (描き方の作り直しのときに一緒に)。
+WKB を読む小さな関数を自前で書いた。
+
+**入れた (2026-10-05):** `lib/wkb.ts` で WKB を直接読む。同じ 2.8万棟で、JS 側は
+`JSON.parse` 約43ms → WKB 約6〜14ms (Node で測った)。問い合わせと合わせて約317ms → 約170ms。
+表示範囲の問い合わせ・周辺検索・ハイライト・行政区域の形を全部置き換えた。
 
 ### STAC Browser
 
@@ -601,6 +621,14 @@ GeoParquet のアセットは geoparquet.info で開く、PMTiles は Protomaps 
 | --- | --- | --- |
 | 公開されているもの (radiantearth.github.io/stac-browser) に URL を渡す | 無し | R2 の CORS にそのオリジンを足す |
 | ビルドして GitHub Pages の `/browser/` に置く | デプロイに1工程 | `catalogUrl`・`pathPrefix`・`historyMode: hash` を設定。同じオリジンなので CORS はそのまま |
+
+**手元で見た (2026-10-05):** STAC Browser 5.1.0 を `/tmp` で動かし、開発サーバーのカタログを
+読ませた (`SB_catalogUrl`・`SB_historyMode=hash`)。サブカタログ8つ、Collection の説明・範囲の地図・
+Item の一覧 (PLATEAU 306件)・`duck:*` の項目 (使う条件など) がそのまま出た。
+置き場所 (`/browser/` という名前) と、デプロイに入れるかは利用者が見てから決める。
+
+- 見て分かったカタログの不具合: 3D Tiles と参照だけの元データに `duck:tile_size: 0` を書いていた
+  (「Tile Size 0」と出た)。地図タイルだけが持つように直した
 
 ### テストの時間
 

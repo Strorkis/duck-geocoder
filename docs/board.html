@@ -8,6 +8,7 @@
   - 配信データの量: du -sb data/output/<出所>
   - 建物の数: */…-buildings-items.json の table:row_count の合計
   - 公開待ちのコミット: git rev-list --count origin/main..main
+  - 更新の日時: 日付だけでなく時刻まで (日本時間)。同じ日に何度も更新するので
   色はカテゴリの3色 (青・橙・緑) を検証済み (明・暗とも。緑は明るい面で3:1未満なので、
   バーには必ず数字のラベルと表を添える)。状態の色はアイコンと文字と一緒にだけ使う。
 -->
@@ -312,7 +313,7 @@
   <body>
     <header>
       <h1>duck-geocoder ダッシュボード</h1>
-      <span class="meta">更新 2026-10-04</span>
+      <span class="meta">更新 2026-10-05 19:22 (日本時間)</span>
       <span class="meta">
         <a href="https://strorkis.github.io/duck-geocoder/">公開サイト</a> ·
         <a href="roadmap.md">方針 (roadmap.md)</a> · STAC 配布形式の実験
@@ -331,7 +332,7 @@
       </div>
       <div class="card kpi">
         <div class="label">公開待ちのコミット</div>
-        <div class="value">25 <small>件</small></div>
+        <div class="value">29 <small>件</small></div>
         <span class="status you">R2へのアップロード → push 待ち</span>
       </div>
       <div class="card kpi">
@@ -356,16 +357,20 @@
           <b>実装</b><span class="status done">済み</span>
           <span class="sub">
             間引き・周辺検索 (結果だけを目立たせる)・使う条件・Overture全国・取得・
-            地理院 (データだけで描く)・一覧の開け閉め・背景地図と地形をレイヤーに・ⓘ と ⚙ の分離
+            地理院 (データだけで描く)・一覧 (カタログから足す・ドラッグで並べ替え)・背景地図と地形をレイヤーに・
+            ⓘ と ⚙ の分離・GeoArrow (WKB) で受け取る
           </span>
         </li>
         <li>
           <b>テスト</b><span class="status done">済み</span>
-          <span class="sub">E2E 112件 (開発サーバー・本番ビルドとも)、パイプライン 189件、remote-zip 11件</span>
+          <span class="sub">E2E 112件 (本番ビルド)、単体 (WKB) 12件、パイプライン 189件、remote-zip 11件</span>
         </li>
         <li class="current">
           <b>R2へアップロード</b><span class="status you">あなたの番</span>
-          <span class="sub">まとめて1回。手順は <a href="deploy.md">deploy.md</a> の「2026-10-03 の分」</span>
+          <span class="sub">
+            まとめて1回。手順は <a href="deploy.md">deploy.md</a> の「2026-10-03 の分」。
+            カタログの JSON は2つ直った (reearth-buildings・gsi-dem-source。JSON の手順で一緒に上がる)
+          </span>
         </li>
         <li>
           <b>push</b><span class="status todo">まだ</span>
@@ -476,8 +481,16 @@
               <td>背景地図と地形を<b>カタログから組む</b>。地理院の標高 (独自形式) は読み込むときに Terrarium へ詰め直す</td>
             </tr>
             <tr>
-              <td>main.ts の <code>buildingDepth</code> · <a href="../web/src/lib/queries.ts">lib/queries.ts</a> の <code>fetchBuildingsInView</code></td>
+              <td><a href="../web/src/ui/layers/buildings.ts">ui/layers/buildings.ts</a> の <code>buildingDepth</code> · <a href="../web/src/lib/queries.ts">lib/queries.ts</a> の <code>fetchBuildingsInView</code></td>
               <td>1ズーム引くごとに1段減らす間引き (<code>lod &lt;= 段</code>)。転送量の上限はここ</td>
+            </tr>
+            <tr>
+              <td><a href="../web/src/lib/wkb.ts">lib/wkb.ts</a> · <a href="../web/tests-unit/wkb.test.ts">tests-unit/wkb.test.ts</a></td>
+              <td>DuckDB が返す GeoArrow (WKB) を自前で読む (GeoJSON の文字列を作らない)。見本は DuckDB spatial で作った</td>
+            </tr>
+            <tr>
+              <td><a href="../web/src/ui/layers/context.ts">ui/layers/context.ts</a></td>
+              <td>データの描き方の共通の形 (世代を最初に進める・空なら setData しない)。各 refresh はこの形</td>
             </tr>
             <tr>
               <td><a href="../web/src/lib/duckdb.ts">lib/duckdb.ts</a> の <code>exportParquet</code></td>
@@ -515,10 +528,25 @@
         <h2>次にやること</h2>
         <ol class="tasks">
           <li>
-            <b>表示部分のライブラリ化 (続き)</b>
+            <b>STAC Browser を置くか (見てもらう)</b>
             <span class="sub">
-              問い合わせ・検索・初期化・地図・一覧・周辺検索・吹き出し・出典を web/src/lib/ と ui/ に分けた
-              (main.ts 7,741→2,519行)。残りはデータの種類ごとの描き方 (refresh と絞り込みのパネル) と ⓘ のカード
+              手元で動く (http://localhost:8090/)。GitHub Pages に置くなら名前 (<code>/browser/</code> など) とデプロイの工程を決める
+            </span>
+          </li>
+          <li>
+            <b>表示部分のライブラリ化 (残り)</b>
+            <span class="sub">
+              main.ts 7,741→1,217行。描き方 (ui/layers/)・ⓘ のカードまで分けた。残りは検索欄と地形の行
+            </span>
+          </li>
+          <li>
+            <b>NASA・JAXA の標高 (DTM)</b>
+            <span class="sub">SRTM・ASTER GDEM・AW3D30。入手方法 (API・直接読める配信) と規約を先に確かめる</span>
+          </li>
+          <li>
+            <b>3D の別モード (後で)</b>
+            <span class="sub">
+              Navara モード・Cesium モード。MapLibre ＋ Three.js (3DTilesRendererJS) で重ねる道も。Navara は試作で描けた
             </span>
           </li>
           <li>
