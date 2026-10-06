@@ -327,7 +327,7 @@ export function createLayerList(options: LayerListOptions): LayerList {
     handle.type = 'button';
     handle.className = 'layer-drag-handle';
     handle.textContent = '⋮⋮';
-    handle.title = '掴んで並べ替える (↑↓キーでも動かせる)';
+    handle.title = 'ドラッグして並べ替えます (↑↓キーでも動かせます)';
     handle.setAttribute('aria-label', `${layer.title}の重ね順を変える`);
     handle.addEventListener('pointerdown', (e) => startDrag(e, el, layer.section));
     handle.addEventListener('keydown', (e) => keyMove(e, layer));
@@ -410,7 +410,7 @@ export function createLayerList(options: LayerListOptions): LayerList {
     if (!present) {
       const absent = document.createElement('span');
       absent.className = 'layer-absent-note';
-      absent.textContent = 'この範囲には無い';
+      absent.textContent = 'この範囲にはありません';
       sub.append(absent);
     }
     sub.append(status);
@@ -552,7 +552,7 @@ export function createLayerList(options: LayerListOptions): LayerList {
     meta.className = 'catalog-meta';
     meta.textContent = [
       layer.vintage,
-      present ? null : 'この範囲には無い',
+      present ? null : 'この範囲にはありません',
       layer.minZoom !== undefined ? fromZoom(layer.minZoom) : null,
       layer.viewOnly ?? null,
     ]

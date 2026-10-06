@@ -683,7 +683,7 @@ test('使っている技術は、ライブラリと借りた考え方を分け�
 
   await expect(credits.locator('.tech-heading')).toHaveCount(3);
   await expect(credits).toContainText('ライブラリ');
-  await expect(credits).toContainText('ライブラリは使っていない');
+  await expect(credits).toContainText('ライブラリは使っていません');
 
   // 実際に使っているライブラリと、借りただけの考え方の両方がある。
   for (const name of ['DuckDB-WASM', 'MapLibre GL JS', 'PLATEAU GIS Converter', 'STR', 'Cloud Optimized GeoParquet']) {
@@ -2336,10 +2336,10 @@ test('設定を開いてもパネルは画面に収まる', async ({ page }) => 
  * (外すと検索が壊れる)。一覧には出すが、チェックボックスは付けない。
  */
 /**
- * 収録範囲の外へ行くと「この範囲には無い」へ移る。**隠さない** —
+ * 収録範囲の外へ行くと「この範囲にはありません」へ移る。**隠さない** —
  * 「無い」と分かるのも情報なので、薄く出したままにする。
  */
-test('収録範囲の外では「この範囲には無い」に移る', async ({ page }) => {
+test('収録範囲の外では「この範囲にはありません」に移る', async ({ page }) => {
   test.skip(!(await hasBuildings(page)), '建物データが無い');
 
   await page.evaluate(() => {
@@ -2357,10 +2357,10 @@ test('収録範囲の外では「この範囲には無い」に移る', async ({
   });
   // 一覧からは外さない (足したものは ✕ を押すまで残る)。薄くして「無い」と言う。
   await expect(row).toHaveClass(/absent/);
-  await expect(row).toContainText('この範囲には無い');
+  await expect(row).toContainText('この範囲にはありません');
   // カタログのダイアログでも同じ。
   await openCatalogFor(page, LAYER.overtureBuildings);
-  await expect(page.locator(`[data-catalog-layer="${LAYER.plateauBuildings}"]`)).toContainText('この範囲には無い');
+  await expect(page.locator(`[data-catalog-layer="${LAYER.plateauBuildings}"]`)).toContainText('この範囲にはありません');
 });
 
 /**
@@ -2373,7 +2373,7 @@ test('収録範囲の外では「この範囲には無い」に移る', async ({
  * ここは飛騨の山中 (白山の東)。**箱の内側だが、ズーム12の画面に整備範囲の
  * セルが1つも無い** (実測。北アルプスは山小屋や集落で460セルあって使えなかった)。
  */
-test('整備範囲の外では、収録範囲の箱の内側でも「この範囲には無い」に移る', async ({ page }) => {
+test('整備範囲の外では、収録範囲の箱の内側でも「この範囲にはありません」に移る', async ({ page }) => {
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
 
   const jump = (center: [number, number]) =>
@@ -2517,8 +2517,12 @@ test('何で検索できるかが読める', async ({ page }) => {
   await openInfoDialog(page, 'search-dialog');
   const support = page.locator('#search-dialog');
   // **打つ言葉で書く。**「位置参照情報」では何を打てばいいか分からない。
-  await expect(support).toContainText('市区町村名');
-  await expect(support).toContainText('駅名・路線名');
+  await expect(support).toContainText('市区町村');
+  await expect(support).toContainText('鉄道の路線');
+  // 何を打てばよいかの例を添える。
+  await expect(support.locator('.search-item-example').first()).toContainText('例:');
+  // 検索に使っていない街区は載せない。
+  await expect(support).not.toContainText('街区');
   // **切り替えさせない。** 外すと検索が壊れるので、チェックボックスは出さない。
   expect(await support.locator('input[type="checkbox"]').count()).toBe(0);
 });

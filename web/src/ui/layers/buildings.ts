@@ -139,7 +139,7 @@ export function createBuildingLayers(ctx: DrawContext, sources: BuildingSource[]
         source,
         `整備範囲 ${cells.length.toLocaleString()} メッシュ` +
           ` (${MESH_SIZE_LABELS[digits] ?? `${digits}桁`}) · ` +
-          `建物 ${buildings.toLocaleString()} 棟 · ズーム${firstVisibleZoom(source)}から建物そのもの`,
+          `建物 ${buildings.toLocaleString()} 棟 · ズーム${firstVisibleZoom(source)}から建物の形を表示`,
       ]);
     }
     await coverage?.setData({ type: 'FeatureCollection', features: coverageFeatures });

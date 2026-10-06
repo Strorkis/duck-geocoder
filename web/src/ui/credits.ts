@@ -87,16 +87,20 @@ export function termsBadges(terms: Terms): HTMLElement {
     el.title = title;
     box.append(el);
   };
-  if (terms.commercial === 'allowed') badge('商用可', 'ok', '規約が商用利用を認めている');
+  if (terms.commercial === 'allowed') badge('商用可', 'ok', '規約が商用利用を認めています');
   else if (terms.commercial === 'allowed_with_notice') {
-    badge('商用は事前に連絡', 'note', '商用利用を認めているが、使う前に提供元へ連絡が要る');
+    badge('商用は事前に連絡', 'note', '商用利用は認められていますが、使う前に提供元への連絡が必要です');
   } else if (terms.commercial === 'not_restricted') {
-    badge('商用の制限の記載なし', 'note', '規約に商用を認めるとも禁じるとも書いていない。本文を確かめること');
-  } else badge('非商用のみ', 'warn', '商用には使えない');
-  if (terms.attribution_required) badge('出典表示が必要', 'note', '使うときは出典を表示する');
-  if (terms.note_modification) badge('加工したら明記', 'note', '加工したデータを使うときは、加工した旨を書く');
+    badge('商用の制限の記載なし', 'note', '規約に、商用を認めるとも禁じるとも書かれていません。本文を確かめてください');
+  } else badge('非商用のみ', 'warn', '商用には使えません');
+  if (terms.attribution_required) badge('出典表示が必要', 'note', '使うときは出典を表示してください');
+  if (terms.note_modification) badge('加工したら明記', 'note', '加工したデータを使うときは、加工したことを書いてください');
   if (terms.share_alike) {
-    badge('継承あり', 'warn', '派生したデータを配るときは同じライセンスにする (別ファイルとして並べるだけなら及ばない)');
+    badge(
+      '継承あり',
+      'warn',
+      '派生したデータを配るときは、同じライセンスにする必要があります (別のファイルとして並べるだけなら及びません)',
+    );
   }
   return box;
 }
@@ -167,9 +171,10 @@ export function renderTermsSummary(container: HTMLElement, collections: Collecti
  */
 export function renderCredits(container: HTMLElement, collections: Collection[]): void {
   container.replaceChildren();
-  for (const { titles, attribution, url, via, vintages, terms } of groupCredits(collections)) {
+  for (const { titles, group, attribution, url, via, vintages, terms } of groupCredits(collections)) {
     const term = document.createElement('dt');
-    term.textContent = titles.join('・');
+    // 上の早見表と同じ書き方 (「出所: データ」) にして、表の行と突き合わせられるようにする。
+    term.textContent = group ? `${group}: ${titles.join('・')}` : titles.join('・');
     // **いつ時点のデータか。** 出所だけでは版が分からず、古いものを新しいと
     // 思って使う事故になる。分かっているものだけ添える。
     if (vintages.length > 0) {
@@ -274,31 +279,31 @@ const TECH_CREDITS: { heading: string; items: TechCredit[] }[] = [
       {
         name: 'DuckDB-WASM',
         who: 'DuckDB · MIT',
-        use: 'ブラウザの中でGeoParquetをSQLで読む。HTTPの部分取得で、要る行グループだけを取りに行く',
+        use: 'ブラウザの中で GeoParquet を SQL で読んでいます。HTTP の部分取得で、要る行グループだけを取りに行きます',
         url: 'https://github.com/duckdb/duckdb-wasm',
       },
       {
         name: 'DuckDB spatial',
         who: 'DuckDB · MIT',
-        use: '指した場所がどの市区町村かを調べる空間関数と、周辺検索の距離の判定',
+        use: '指した場所の市区町村を調べるところと、周辺検索の距離の判定に使っています',
         url: 'https://github.com/duckdb/duckdb-spatial',
       },
       {
         name: 'MapLibre GL JS',
         who: 'MapLibre · BSD-3-Clause',
-        use: '地図と建物の立体の描画',
+        use: '地図と建物の立体を描いています',
         url: 'https://github.com/maplibre/maplibre-gl-js',
       },
       {
         name: 'STAC Browser',
         who: 'Radiant Earth Foundation · ISC',
-        use: 'カタログを地図ではなくページで辿る画面 (/catalog/)。項目一覧の不具合を直すパッチを1つ当ててビルドしている',
+        use: 'カタログを地図ではなくページで辿る画面 (/catalog/) です。項目一覧の不具合を直すパッチを1つ当ててビルドしています',
         url: 'https://github.com/radiantearth/stac-browser',
       },
       {
         name: 'PMTiles (JavaScript)',
         who: 'Protomaps · BSD-3-Clause',
-        use: '国土地理院のベクトルタイル (1つのPMTilesファイル) から、要るタイルだけを部分取得で読む',
+        use: '国土地理院のベクトルタイル (1つの PMTiles ファイル) から、要るタイルだけを部分取得で読んでいます',
         url: 'https://github.com/protomaps/PMTiles',
       },
     ],
@@ -309,84 +314,87 @@ const TECH_CREDITS: { heading: string; items: TechCredit[] }[] = [
       {
         name: 'PLATEAU GIS Converter (nusamai)',
         who: 'MIERUNE · MIT',
-        use: 'PLATEAUのCityGMLを読む。用途などのコードを日本語に解決するところまで任せている',
+        use: 'PLATEAU の CityGML を読むところと、用途などのコードを日本語にするところを任せています',
         url: 'https://github.com/MIERUNE/plateau-gis-converter',
       },
       {
         name: 'DuckDB',
         who: 'DuckDB · MIT',
-        use: 'Overtureの取り出しと、道路・鉄道の簡略化 (粗い段) の作成',
+        use: 'Overture からの取り出しと、道路・鉄道の簡略化 (粗い段) に使っています',
         url: 'https://github.com/duckdb/duckdb',
       },
       {
         name: 'Apache Arrow / Parquet (arrow-rs)',
         who: 'Apache Software Foundation · Apache-2.0',
-        use: 'GeoParquetの書き出し',
+        use: 'GeoParquet の書き出しに使っています',
         url: 'https://github.com/apache/arrow-rs',
       },
       {
         name: 'PROJ',
         who: 'OSGeo · MIT',
-        use: '座標系の変換',
+        use: '座標系の変換に使っています',
         url: 'https://github.com/OSGeo/PROJ',
       },
       {
         name: 'GeoRust (geo-types / wkb / geojson)',
         who: 'GeoRust · MIT / Apache-2.0',
-        use: 'ジオメトリの扱いとWKBの書き出し',
+        use: 'ジオメトリの扱いと WKB の書き出しに使っています',
         url: 'https://github.com/georust',
       },
     ],
   },
   {
-    heading: '考え方・仕様を借りているもの (ライブラリは使っていない)',
+    heading: '考え方・仕様を借りているもの (ライブラリは使っていません)',
     items: [
       {
         name: 'STAC',
         who: '仕様',
-        use: 'データの目録の形 (Catalog → Collection → Item)。一覧の見出しと行はこの階層そのもの',
+        use: 'データの目録の形 (Catalog → Collection → Item) です。一覧の見出しと行は、この階層のとおりに並べています',
         url: 'https://github.com/radiantearth/stac-spec',
       },
       {
         name: 'GeoParquet',
         who: '仕様 (OGC)',
-        use: '配るファイルの形。bboxの列で、表示範囲の外の行グループを読み飛ばす',
+        use: '配っているファイルの形です。bbox の列を使って、表示範囲の外の行グループを読み飛ばしています',
         url: 'https://github.com/opengeospatial/geoparquet',
       },
       {
-        name: 'STR (Sort-Tile-Recursive)',
-        who: 'Leutenegger, Lopez, Edgington (ICDE 1997)',
-        use: '空間的に近い地物を同じ行グループに詰める並べ替え。論文を読んで自前で実装した',
-        url: 'https://doi.org/10.1109/ICDE.1997.582015',
+        // **参考にしたのは Kanahiro さんの発表資料** (2026-08-24 CNG Japan「Spatial sort for well-packed
+        // GeoParquet」。COGP の README の発表一覧にある)。論文は手法の元として添える。
+        // 論文を読んで一から実装したわけではない (利用者の指摘、2026-10-06)。
+        name: 'STR (Sort-Tile-Recursive) で並べる',
+        who: 'Kanahiro (CNG Japan 2026 の発表資料) · 手法の元は Leutenegger ら (ICDE 1997)',
+        use: '空間的に近い地物を同じ行グループに詰める並べ替えです。発表資料「Spatial sort for well-packed GeoParquet」を参考にしています',
+        url: 'https://drive.google.com/file/d/1ZkRvXv9Ryak_jiZZqL-QAxGl--TBw668/view?usp=sharing',
       },
       {
         name: 'Cloud Optimized GeoParquet (COGP)',
         who: 'Kanahiro',
-        use: '粗い段を行グループの先頭に置き、細かい段を後ろに続ける並び。将来乗り換えられるよう、配置を合わせてある',
+        use: '粗い段を行グループの先頭に置き、細かい段を後ろに続ける並びです。将来乗り換えられるよう、配置を合わせています',
         url: 'https://github.com/Kanahiro/cloud-optimized-geoparquet',
       },
       {
         name: 'PMTiles (考え方)',
         who: 'Protomaps',
-        use: '解像度ごとにファイルを分けず、1つのファイルに収める考え方。GeoParquetの粗い段を別ファイルにしなかったのはこれに倣った',
+        use: '解像度ごとにファイルを分けず、1つのファイルに収める考え方です。GeoParquet の粗い段を別のファイルにしなかったのは、これに倣っています',
         url: 'https://github.com/protomaps/PMTiles',
       },
       {
         name: 'Portolan',
         who: '仕様',
-        use: 'オブジェクトストレージにSTACとGeoParquetを置くだけで配る構成。項目名を借りている (準拠はまだ)',
+        use: 'オブジェクトストレージに STAC と GeoParquet を置くだけで配る構成です。項目名を借りています (準拠はまだです)',
         url: 'https://github.com/portolan-sdi/portolan-spec',
       },
       {
         name: '地域メッシュ (JIS X 0410)',
         who: '日本産業規格',
-        use: '整備範囲と人口メッシュのセル。緯度経度から計算で決まるので境界データが要らない',
+        use: '整備範囲と人口メッシュのセルです。緯度経度から計算で決まるので、境界のデータが要りません',
         url: 'https://www.stat.go.jp/data/mesh/m_tuite.html',
       },
       {
         name: 'SORA 2.5',
         who: 'JARUS',
-        use: '人口密度の凡例 (地上リスクの区分)',
+        use: '人口密度の凡例 (地上リスクの区分) に使っています',
         url: 'http://jarus-rpas.org/',
       },
     ],

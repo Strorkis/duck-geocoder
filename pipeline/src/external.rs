@@ -174,8 +174,8 @@ pub const GSI_OPTIMAL_BVMAP: ExternalTileset = ExternalTileset {
     id: "gsi-optimal-bvmap",
     dir: "gsi",
     title: "最適化ベクトルタイル",
-    description: "国土地理院の地図をベクトルタイルにしたもの (試験公開)。重ねて見るためのもので、\
-                  SQLでは引けない。形は表示のために簡略化されている。",
+    description: "国土地理院の地図をベクトルタイルにしたものです (試験公開)。重ねて見るためのもので、\
+                  検索や周辺検索には使いません。形は表示のために簡略化されています。",
     attribution: Attribution {
         text: "国土地理院最適化ベクトルタイル",
         url: "https://github.com/gsi-cyberjapan/optimal_bvmap",
@@ -382,7 +382,7 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         id: "gsi-pale",
         dir: "gsi",
         title: "淡色地図",
-        description: "地理院タイルの淡色地図。色を抑えてあり、重ねたデータが読みやすい。",
+        description: "地理院タイルの淡色地図です。色が抑えてあり、重ねたデータが読みやすくなります。",
         attribution: GSI_TILES,
         via: GSI_TILES_VIA,
         role: RasterRole::Basemap,
@@ -405,7 +405,7 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         id: "gsi-std",
         dir: "gsi",
         title: "標準地図",
-        description: "地理院タイルの標準地図。",
+        description: "地理院タイルの標準地図です。",
         attribution: GSI_TILES,
         via: GSI_TILES_VIA,
         role: RasterRole::Basemap,
@@ -426,7 +426,7 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         id: "gsi-photo",
         dir: "gsi",
         title: "航空写真",
-        description: "地理院タイルの全国最新写真 (シームレス)。地形を入れたときに起伏が分かる。",
+        description: "地理院タイルの全国最新写真 (シームレス) です。地形と合わせると起伏がよく分かります。",
         attribution: GSI_TILES,
         via: GSI_TILES_VIA,
         role: RasterRole::Basemap,
@@ -448,7 +448,7 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         id: "gsi-blank",
         dir: "gsi",
         title: "白地図",
-        description: "地理院タイルの白地図。文字が無いので、重ねたデータや注記が読みやすい。ズーム5〜14。",
+        description: "地理院タイルの白地図です。文字が無いので、重ねたデータや注記が読みやすくなります。ズーム5〜14です。",
         attribution: GSI_TILES,
         via: GSI_TILES_VIA,
         role: RasterRole::Basemap,
@@ -471,7 +471,7 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         id: "gsi-relief",
         dir: "gsi",
         title: "色別標高図",
-        description: "地理院タイルの色別標高図。標高を色の段で塗り分けたもの。低い土地や台地の広がりが一目で分かる。ズーム5〜15。",
+        description: "地理院タイルの色別標高図です。標高を色の段で塗り分けていて、低い土地や台地の広がりが一目で分かります。ズーム5〜15です。",
         attribution: GSI_TILES,
         via: GSI_TILES_VIA,
         role: RasterRole::Basemap,
@@ -492,7 +492,7 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         id: "gsi-hillshade",
         dir: "gsi",
         title: "陰影起伏図",
-        description: "地理院タイルの陰影起伏図。光を当てたときの影で起伏を表したもの。ズーム2〜16。",
+        description: "地理院タイルの陰影起伏図です。光を当てたときの影で起伏を表しています。ズーム2〜16です。",
         attribution: GSI_TILES,
         via: GSI_TILES_VIA,
         role: RasterRole::Basemap,
@@ -514,8 +514,8 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         id: "mapterhorn-terrain",
         dir: "mapterhorn",
         title: "Mapterhorn 標高",
-        description: "世界の標高タイル。日本は基盤地図情報 (数値標高モデル、1m・5m・10m) から作られている。\
-                      地図を立体にする。表示専用で SQL では引けない。",
+        description: "世界の標高タイルです。日本の部分は基盤地図情報 (数値標高モデル、1m・5m・10m) から作られています。\
+                      地図を立体にするためのもので、検索や周辺検索には使いません。",
         attribution: MAPTERHORN,
         via: "https://mapterhorn.com/",
         role: RasterRole::Terrain,
@@ -529,8 +529,8 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         dem: Some(DemSpec {
             encoding: "terrarium",
             vertical: "orthometric",
-            description: "Terrarium (高さ = R×256 + G + B/256 − 32768 m)。海面からの高さ。\
-                          ズーム16まで (TileJSON は最大ズームを書いていない)。",
+            description: "Terrarium (高さ = R×256 + G + B/256 − 32768 m) で、海面からの高さです。\
+                          ズーム16まであります (TileJSON には最大ズームが書かれていません)。",
         }),
         // 日本の部分の元データ。
         derived_from: &["gsi-dem-source"],
@@ -542,10 +542,10 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         id: "reearth-terrain",
         dir: "reearth",
         title: "Re:Earth Terrain 標高",
-        description: "Mapterhorn の標高を配り直したもの。海面からの高さ (elevation) と、\
-                      EGM2008 のジオイドを足した WGS84 楕円体からの高さ (ellipsoid) を選べる。\
-                      ここでは MapLibre に合う海面からの高さを使う。3D の地球儀 (Cesium) と\
-                      合わせるときは楕円体高の版を使う。",
+        description: "Mapterhorn の標高を配り直したものです。海面からの高さ (elevation) と、\
+                      EGM2008 のジオイドを足した WGS84 楕円体からの高さ (ellipsoid) を選べます。\
+                      ここでは MapLibre に合う海面からの高さを使っています。3D の地球儀 (Cesium) と\
+                      合わせるときは、楕円体高の版を使ってください。",
         attribution: REEARTH_TERRAIN,
         via: "https://terrain.reearth.land/",
         role: RasterRole::Terrain,
@@ -559,8 +559,8 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         dem: Some(DemSpec {
             encoding: "terrarium",
             vertical: "orthometric",
-            description: "Terrarium (高さ = R×256 + G + B/256 − 32768 m)。海面からの高さ。\
-                          同じ形で楕円体高 (/terrarium/ellipsoid/) と Terrain-RGB (/mapbox/) の版もある。ズーム14まで。",
+            description: "Terrarium (高さ = R×256 + G + B/256 − 32768 m) で、海面からの高さです。\
+                          同じ形で、楕円体高 (/terrarium/ellipsoid/) と Terrain-RGB (/mapbox/) の版もあります。ズーム14までです。",
         }),
         derived_from: &["mapterhorn-terrain"],
         viewer: Some("https://terrain.reearth.land/viewer"),
@@ -570,9 +570,9 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         id: "gsi-dem",
         dir: "gsi",
         title: "標高タイル",
-        description: "地理院タイルの標高タイル (基盤地図情報 数値標高モデルから作ったもの)。\
-                      **独自の形式**なので、地形に使うときはブラウザで Terrarium に詰め直す。\
-                      ズーム14まで (10mメッシュ)。より細かい 5m (ズーム15) と 1m (ズーム17) は別のタイル。",
+        description: "地理院タイルの標高タイルです (基盤地図情報 数値標高モデルから作られたもの)。\
+                      独自の形式なので、地形に使うときはブラウザで Terrarium に詰め直しています。\
+                      ズーム14 (10mメッシュ) までです。より細かい 5m (ズーム15) と 1m (ズーム17) は別のタイルです。",
         attribution: GSI_DEM_TILES,
         via: "https://maps.gsi.go.jp/development/demtile.html",
         role: RasterRole::Terrain,
@@ -587,9 +587,9 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         dem: Some(DemSpec {
             encoding: "gsi",
             vertical: "orthometric",
-            description: "x = R×2¹⁶ + G×2⁸ + B。x < 2²³ なら 高さ = x × 0.01 m、x = 2²³ (128,0,0) は値なし (海など)、\
-                          x > 2²³ なら 高さ = (x − 2²⁴) × 0.01 m (負の値)。線形の部分は Terrain-RGB と同じ形だが、\
-                          値なしと負の値はそのままでは読めない。z15 は dem5a_png (5m)、z17 は dem1a_png (1m)。",
+            description: "x = R×2¹⁶ + G×2⁸ + B として、x < 2²³ なら 高さ = x × 0.01 m、x = 2²³ (128,0,0) は値なし (海など)、\
+                          x > 2²³ なら 高さ = (x − 2²⁴) × 0.01 m (負の値) です。線形の部分は Terrain-RGB と同じ形ですが、\
+                          値なしと負の値はそのままでは読めません。z15 は dem5a_png (5m)、z17 は dem1a_png (1m) です。",
         }),
         derived_from: &["gsi-dem-source"],
         viewer: None,
@@ -600,9 +600,9 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         id: "gsi-dem-source",
         dir: "gsi",
         title: "基盤地図情報 数値標高モデル (元データ)",
-        description: "地理院の標高タイルと、Mapterhorn の日本の部分の元データ。1m・5m・10m のメッシュ。\
-                      **基本測量成果なので、複製・使用には測量法の承認が要る** (Mapterhorn は取得している)。\
-                      このカタログからは配っていない。",
+        description: "地理院の標高タイルと、Mapterhorn の日本の部分の元データです (1m・5m・10m のメッシュ)。\
+                      基本測量成果なので、複製・使用には測量法に基づく承認が必要です (Mapterhorn は取得しています)。\
+                      このカタログからは配っていません。",
         attribution: GSI_DEM_SOURCE,
         via: "https://service.gsi.go.jp/kiban/",
         role: RasterRole::Reference,
@@ -621,10 +621,10 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         id: "reearth-buildings",
         dir: "reearth",
         title: "Re:Earth Buildings (3D Tiles)",
-        description: "Overture の建物から作った 3D Tiles 1.1 (glTF)。Cesium 向けで、この地図 (MapLibre) では\
-                      描けないので、公式のビューアで見る。**高さは WGS84 楕円体から** (地盤の高さは\
-                      Re:Earth Terrain の楕円体高で焼き込み済み)。海面からの高さの地形と重ねると、\
-                      日本では40m前後浮く。",
+        description: "Overture の建物から作られた 3D Tiles 1.1 (glTF) です。Cesium 向けで、この地図 (MapLibre) では\
+                      描けないので、公式のビューアで見られます。高さは WGS84 楕円体からです (地盤の高さは\
+                      Re:Earth Terrain の楕円体高で焼き込まれています)。海面からの高さの地形と重ねると、\
+                      日本では40m前後浮きます。",
         attribution: REEARTH_BUILDINGS,
         via: "https://buildings.reearth.land/",
         role: RasterRole::ThreeDTiles,
@@ -644,9 +644,9 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         id: "plateau-3dtiles",
         dir: "plateau",
         title: "建物 (3D Tiles・公式配信)",
-        description: "PLATEAU 配信サービスが配っている建物の 3D Tiles。全国の都市を1つの tileset.json に束ねたもの \
-                      (都市ごとに LOD2 まで細かいものを採り、テクスチャがあればテクスチャ付き)。この地図 (MapLibre) では \
-                      描けないので、公式のビューア (PLATEAU VIEW) で見る。配信サービスは試験運用で、提供期間や品質の保証は無い。",
+        description: "PLATEAU 配信サービスが配っている建物の 3D Tiles です。全国の都市を1つの tileset.json に束ねたもので、\
+                      都市ごとに LOD2 までの細かいものを採り、テクスチャがあればテクスチャ付きになります。この地図 (MapLibre) では\
+                      描けないので、公式のビューア (PLATEAU VIEW) で見られます。配信サービスは試験運用で、提供期間や品質は保証されていません。",
         attribution: PLATEAU_TILES,
         via: "https://docs.plateauview.mlit.go.jp/datasets/3d-tiles/",
         role: RasterRole::ThreeDTiles,
@@ -667,9 +667,9 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         id: "ksj-admin-source",
         dir: "ksj",
         title: "行政区域 N03 (元データ)",
-        description: "国土数値情報の行政区域。市区町村の境界の国のデータで、本来はこちらを使いたい。\
-                      **基本測量成果をもとにしているので、複製には測量法の承認が要る** (配布ページに記載)。\
-                      承認を取るまでは配らず、行政区域は Overture のものを使っている。",
+        description: "国土数値情報の行政区域です。市区町村の境界の国のデータです。\
+                      基本測量成果をもとにしているので、複製には測量法に基づく承認が必要です (配布ページに記載があります)。\
+                      承認を得るまでは配らず、行政区域には Overture のものを使っています。",
         attribution: MLIT_KSJ_N03,
         via: "https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N03-2026.html",
         role: RasterRole::Reference,
@@ -688,11 +688,11 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         id: "jaxa-aw3d30",
         dir: "jaxa",
         title: "AW3D30 (全球の数値表層モデル)",
-        description: "ALOS の光学ステレオ (PRISM) から作った全球の **DSM (数値表層モデル)**。約30m (1秒)、版は 4.1 (2024年4月)。\
-                      地面ではなく**建物や木の上の高さ**を測っているので、建物も森も無いところでは地面の高さの参考になる \
-                      (地理院の標高 (DTM) との差で、地面より上にあるものの高さも概算できる)。日本の外も覆う。\
-                      公開元の JAXA Earth API が 1°×1° の COG と STAC で配っていて、登録なしでブラウザから直接読める \
-                      (Range・CORS に対応)。このカタログからは配っていない。",
+        description: "ALOS の光学ステレオ (PRISM) から作られた、全球の DSM (数値表層モデル) です。約30m (1秒)、版は 4.1 (2024年4月) です。\
+                      地面ではなく建物や木の上の高さを測っているので、建物も森も無いところでは地面の高さの参考になります\
+                      (地理院の標高 (DTM) との差で、地面より上にあるものの高さも概算できます)。日本の外も覆っています。\
+                      公開元の JAXA Earth API が 1°×1° の COG と STAC で配っていて、登録なしでブラウザから直接読めます\
+                      (Range・CORS に対応)。このカタログからは配っていません。",
         attribution: JAXA_AW3D30,
         via: "https://www.eorc.jaxa.jp/ALOS/jp/dataset/aw3d30/aw3d30_j.htm",
         role: RasterRole::Reference,
@@ -714,9 +714,9 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         id: "nasa-nasadem",
         dir: "nasa",
         title: "NASADEM (全球の数値表層モデル)",
-        description: "2000年のスペースシャトルのレーダー観測 (SRTM) を作り直した DSM。約30m (1秒)、北緯60°〜南緯56°。\
-                      パブリックドメイン。実体 (COG) は Microsoft Planetary Computer の STAC から取れるが、\
-                      読むには匿名で取れる期限付きのトークンが要る。このカタログからは配っていない。",
+        description: "2000年のスペースシャトルのレーダー観測 (SRTM) を作り直した DSM です。約30m (1秒)、北緯60°〜南緯56°で、\
+                      パブリックドメインです。実体 (COG) は Microsoft Planetary Computer の STAC から取れますが、\
+                      読むには匿名で取れる期限付きのトークンが必要です。このカタログからは配っていません。",
         attribution: NASADEM,
         via: "https://www.earthdata.nasa.gov/data/catalog/lpcloud-nasadem-hgt-001",
         role: RasterRole::Reference,
@@ -736,9 +736,9 @@ pub const EXTERNAL_RASTERS: &[ExternalRaster] = &[
         id: "nasa-aster-gdem",
         dir: "nasa",
         title: "ASTER GDEM v3 (全球の数値表層モデル)",
-        description: "経済産業省と NASA の衛星センサ ASTER の光学ステレオから作った DSM (2019年)。約30m (1秒)、\
-                      北緯83°〜南緯83°。再利用・再配布に制限は無い。実体 (COG) は NASA Earthdata にあり、\
-                      取るにはログインが要る。このカタログからは配っていない。",
+        description: "経済産業省と NASA の衛星センサ ASTER の光学ステレオから作られた DSM (2019年) です。約30m (1秒)、\
+                      北緯83°〜南緯83°で、再利用・再配布に制限はありません。実体 (COG) は NASA Earthdata にあり、\
+                      取るにはログインが必要です。このカタログからは配っていません。",
         attribution: ASTER_GDEM,
         via: "https://www.earthdata.nasa.gov/data/catalog/lpcloud-astgtm-003",
         role: RasterRole::Reference,
@@ -782,7 +782,7 @@ const ASTER_GDEM: Attribution = Attribution {
     license: "CC0-1.0",
     provider: "NASA",
     terms: Terms {
-        name: "LP DAAC のデータ利用方針 (制限なし。引用のお願い)",
+        name: "LP DAAC のデータ利用方針 (制限なし。引用をお願いされています)",
         url: "https://lpdaac.usgs.gov/data/data-citation-and-policies/",
         commercial: Commercial::Allowed,
         attribution_required: false,
@@ -816,7 +816,7 @@ const MLIT_KSJ_N03: Attribution = Attribution {
     license: "CC-BY-4.0",
     provider: "国土交通省",
     terms: Terms {
-        name: "CC BY 4.0 (複製には測量法に基づく承認が要る)",
+        name: "CC BY 4.0 (複製には測量法に基づく承認が必要です)",
         url: "https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N03-2026.html",
         commercial: Commercial::Allowed,
         attribution_required: true,
@@ -862,7 +862,7 @@ const GSI_DEM_SOURCE: Attribution = Attribution {
     license: "other",
     provider: "国土地理院",
     terms: Terms {
-        name: "測量法に基づく承認 (複製・使用) が必要",
+        name: "測量法に基づく承認 (複製・使用) が必要です",
         url: "https://www.gsi.go.jp/LAW/2930-index.html",
         commercial: Commercial::NotRestricted,
         attribution_required: true,
@@ -897,7 +897,7 @@ const REEARTH_BUILDINGS: Attribution = Attribution {
     license: "ODbL-1.0",
     provider: "Re:Earth",
     terms: Terms {
-        name: "ODbL 1.0 (Produced Work。表示には出典が要る)",
+        name: "ODbL 1.0 (Produced Work。表示には出典が必要です)",
         url: "https://github.com/reearth/reearth-buildings#license--required-attribution",
         commercial: Commercial::Allowed,
         attribution_required: true,

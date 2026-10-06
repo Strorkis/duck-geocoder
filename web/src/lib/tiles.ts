@@ -66,7 +66,7 @@ const DEFAULT_VECTOR_LOOK: VectorLook = { color: '#666666' };
 export const DEM_ENCODING_LABELS: Record<string, string> = {
   terrarium: 'Terrarium (Mapzen)',
   mapbox: 'Terrain-RGB (Mapbox)',
-  gsi: '地理院の独自形式 (このアプリが読み込むときに Terrarium へ詰め直す)',
+  gsi: '地理院の独自形式 (このアプリで読み込むときに Terrarium へ詰め直しています)',
 };
 
 /** 高さの基準の呼び名。 */

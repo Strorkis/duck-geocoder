@@ -315,10 +315,22 @@ body,
   margin-top: 0.2rem;
 }
 
-#help h3 {
+#help h3,
+.credits-heading {
   margin: 0.6rem 0 0.1rem;
   font-size: 0.85rem;
   color: #14508c;
+}
+
+/* 出典ダイアログの2つ目の見出し (詳細) は、表との間を空けて区切りを見せる。 */
+.credits-heading + .info-lead + #credits {
+  margin-top: 0.2rem;
+}
+
+#terms-summary + .credits-heading {
+  margin-top: 1.2rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid #dde3ea;
 }
 
 #help h3:first-child {
@@ -1703,8 +1715,34 @@ body,
   padding-bottom: 0.3rem;
 }
 
-#search-dialog .layer-row.support {
-  padding-left: 0;
+/* 「検索できるもの」の1行。項目名と例を主に、使っているデータは右に小さく。 */
+.search-item {
+  display: grid;
+  grid-template-columns: 7.5rem 1fr auto;
+  gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid #eef1f4;
+}
+
+.search-item-name {
+  font-weight: 600;
+}
+
+.search-item-example {
+  color: #555;
+}
+
+.search-item-source {
+  font-size: 0.7rem;
+  color: #999;
+}
+
+/* ダイアログの先頭の一文 (何が書いてあるかの案内)。 */
+.info-lead {
+  margin: 0 0 0.4rem;
+  font-size: 0.8rem;
+  color: #555;
 }
 
 #layer-support[hidden] {

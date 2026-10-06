@@ -102,7 +102,7 @@ export function createStacViewer(dialog: HTMLDialogElement): (path: string) => v
     if (shown !== document_) {
       noteEl.textContent =
         `features は ${features!.length.toLocaleString()} 件のうち先頭 ` +
-        `${STAC_FEATURE_PREVIEW} 件だけ表示しています。全体は下のリンクから。`;
+        `${STAC_FEATURE_PREVIEW} 件だけ表示しています。全体は下のリンクから見られます。`;
       noteEl.hidden = false;
     }
     jsonEl.textContent = JSON.stringify(shown, null, 2);

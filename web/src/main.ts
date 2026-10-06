@@ -604,17 +604,24 @@ async function main() {
     },
   });
 
-  /** 裏方 (検索・逆ジオコーディングが使うもの)。**切れてはいけない**ので出すだけ。 */
-  const supportRow = (title: string, source: string): HTMLElement => {
+  /**
+   * 「検索できるもの」の1行。**何を打てばよいか** (項目名と例) を主にし、
+   * どのデータから引いているか (出所の名前) は小さく添えるだけにする。
+   * 検索の裏方は**切れてはいけない**ので、チェックは出さない。
+   */
+  const searchItem = (title: string, example: string, source: string): HTMLElement => {
     const row = document.createElement('div');
-    row.className = 'layer-row support';
+    row.className = 'search-item';
     const name = document.createElement('span');
-    name.className = 'layer-name';
+    name.className = 'search-item-name';
     name.textContent = title;
+    const exampleEl = document.createElement('span');
+    exampleEl.className = 'search-item-example';
+    exampleEl.textContent = `例: ${example}`;
     const sourceEl = document.createElement('span');
-    sourceEl.className = 'layer-source';
+    sourceEl.className = 'search-item-source';
     sourceEl.textContent = source;
-    row.append(name, sourceEl);
+    row.append(name, exampleEl, sourceEl);
     return row;
   };
 
@@ -723,19 +730,19 @@ async function main() {
     requestRoadRefresh();
   });
 
-  // 裏方は種別から引く。**一覧に出すが切らせない** (外すと検索が壊れる)。
-  const supportKinds: [DatasetKind, string][] = [
-    // **打つ言葉で書く。** データセット名 (「位置参照情報」) では、
-    // 何を打てば当たるのかが分からない。出所は2段目に小さく出る。
-    ['admin', '市区町村名'],
-    ['oaza', '町名・丁目'],
-    ['block', '街区 (〜丁目〜番)'],
-    ['railway_station', '駅名・路線名'],
-    ['road_route', '道路名 (国道13号など)'],
+  // 「検索できるもの」は種別から引く (そのデータが配信されていれば出す)。
+  // **打つ言葉で書く。** データセット名 (「位置参照情報」) では、何を打てば当たるのかが分からない。
+  // 街区 (〜番) は検索には使っていないので載せない (以前は載せていた)。
+  const searchKinds: [DatasetKind, string, string][] = [
+    ['admin', '市区町村', '港区、札幌市'],
+    ['oaza', '町名・丁目', '六本木、銀座四丁目'],
+    ['railway_station', '駅', '東京駅、新宿'],
+    ['railway_station', '鉄道の路線', '山手線'],
+    ['road_route', '道路の路線', '国道13号'],
   ];
-  const supportRows = supportKinds.flatMap(([kind, title]) => {
+  const supportRows = searchKinds.flatMap(([kind, title, example]) => {
     const collection = byKind(kind)[0];
-    return collection ? [supportRow(title, collection.attribution.split('（')[0])] : [];
+    return collection ? [searchItem(title, example, collection.group?.title ?? collection.provider ?? '')] : [];
   });
   if (supportRows.length > 0) {
     layerSupportRowsEl.replaceChildren(...supportRows);

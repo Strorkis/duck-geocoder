@@ -280,7 +280,7 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
     const note = document.createElement('p');
     note.className = 'download-note';
     note.textContent =
-      'GMLはメッシュ単位の原典そのもの。用途などのコードを読むにはコードリストが要るので、変換ツールに渡すならZIPにまとめたものを使ってください。';
+      'GML はメッシュ単位の原典そのものです。用途などのコードを読むにはコードリストが要るので、変換ツールに渡すときは ZIP にまとめたものを使ってください。';
     container.append(select, list, pack, packStatus, note);
   };
 
@@ -294,11 +294,12 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
       const size = data['file:size'];
       fact('形式', 'PMTiles', size ? ` (${formatBytes(size)})` : '', ' ', externalLink(data.href, 'タイル'));
       const zoom = data['duck:zoom'];
-      if (zoom) fact('ズーム', `${zoom[0]}〜${zoom[1]} (それより寄ると拡大して描く)`);
+      if (zoom) fact('ズーム', `${zoom[0]}〜${zoom[1]} (それより寄ると拡大して描きます)`);
     }
-    fact('引き方', '重ねて見るだけ。SQL では引けない (表示用に簡略化されている)');
+    // **UI では SQL と言わない** (利用者の指摘)。できること (見るだけか、検索に使うか) で言う。
+    fact('使い方', '重ねて見るためのものです (表示用に簡略化されています)。検索や周辺検索には使いません');
     // **配布元の描き方は使っていない。** 形の種類 (カタログに載っている) から描いている。
-    fact('描き方', 'データだけを読み、形 (面・線・点) ごとにこのアプリが描く');
+    fact('描き方', 'データだけを読み、形 (面・線・点) ごとにこのアプリで描いています');
     if (collection.bbox) fact('範囲', formatBbox(collection.bbox));
 
     // 層は24あるので、テーマごとにたたんでおく。属性も添える (ホバーで読めるもの)。
@@ -357,15 +358,15 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
       if (collection.dem.description) fact('読み方', collection.dem.description);
     }
     if (collection.zoom && collection.kind !== 'reference') {
-      fact('ズーム', `${collection.zoom[0]}〜${collection.zoom[1]} (それより寄ると拡大して描く)`);
+      fact('ズーム', `${collection.zoom[0]}〜${collection.zoom[1]} (それより寄ると拡大して描きます)`);
     }
     const use: Partial<Record<DatasetKind, string>> = {
-      terrain: '地図を立体にするだけ。SQL では引けない',
-      raster_tiles: '下に敷いて見るだけ。SQL では引けない',
-      '3d_tiles': 'この地図 (MapLibre) では描けない。公式のビューアで見る',
-      reference: 'このカタログからは配っていない (公開元を指すだけ)。この地図ではまだ描かない',
+      terrain: '地図を立体にするためのものです。検索や周辺検索には使いません',
+      raster_tiles: '背景として見るためのものです。検索や周辺検索には使いません',
+      '3d_tiles': 'この地図 (MapLibre) では描けません。公式のビューアで見られます',
+      reference: 'このカタログからは配っていません (公開元への案内だけです)。この地図にはまだ出せません',
     };
-    if (use[collection.kind]) fact('引き方', use[collection.kind]!);
+    if (use[collection.kind]) fact('使い方', use[collection.kind]!);
     if (collection.viewer) fact('ビューア', externalLink(collection.viewer, '公式のビューアで開く'));
     // 公開元の STAC は**ページの中で開く** (置き場所によっては、ブラウザで開くとダウンロードになる)。
     if (collection.sourceStac) {

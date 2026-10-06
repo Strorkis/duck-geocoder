@@ -141,56 +141,57 @@ const SUB_CATALOGS: &[SubCatalog] = &[
     SubCatalog {
         dir: "plateau",
         title: "PLATEAU",
-        description: "国土交通省が整備する3D都市モデル。",
+        description: "国土交通省が整備している3D都市モデルです。",
     },
     SubCatalog {
         dir: "overture",
         title: "Overture Maps",
-        description: "Overture Maps Foundation が公開する地図データ。OpenStreetMapなど複数の出所をまとめたもの。",
+        description: "Overture Maps Foundation が公開している地図データです。OpenStreetMap など、複数の出所をまとめたものです。",
     },
     SubCatalog {
         dir: "ksj",
         title: "国土数値情報",
-        description: "国土交通省が整備する国土数値情報。",
+        description: "国土交通省が整備している国土数値情報です。",
     },
     SubCatalog {
         dir: "estat",
         title: "国勢調査",
-        description: "総務省統計局の国勢調査。地域メッシュごとの集計。",
+        description: "総務省統計局の国勢調査を、地域メッシュごとに集計したものです。",
     },
     SubCatalog {
         dir: "isj",
         title: "位置参照情報",
-        description: "国土交通省の位置参照情報。住所の代表点。",
+        description: "国土交通省の位置参照情報です。住所の代表点を持っています。",
     },
+    // **UI に出る文章は丁寧語で書く** (利用者の指摘、2026-10-06)。内輪の言い方 (「うち」) もしない。
     SubCatalog {
         dir: "gsi",
         title: "国土地理院",
-        description: "国土地理院が公開している地図タイル・ベクトルタイル・標高タイル。\
-                      このカタログでは複製せず、公開元の配信をそのまま使う。",
+        description: "国土地理院が公開している地図タイル・ベクトルタイル・標高タイルです。\
+                      このカタログでは複製せず、公開元の配信をそのまま使っています。",
     },
     SubCatalog {
         dir: "mapterhorn",
         title: "Mapterhorn",
-        description: "世界の標高タイル。このカタログでは複製せず、公開元の配信をそのまま使う。",
+        description: "世界の標高タイルです。このカタログでは複製せず、公開元の配信をそのまま使っています。",
     },
     SubCatalog {
         dir: "reearth",
         title: "Re:Earth",
-        description: "Re:Earth が公開している標高タイルと 3D の建物 (3D Tiles)。\
-                      このカタログでは複製せず、公開元の配信をそのまま使う。",
+        description: "Re:Earth が公開している標高タイルと 3D の建物 (3D Tiles) です。\
+                      このカタログでは複製せず、公開元の配信をそのまま使っています。",
     },
     // JAXA と NASA は配信を使っておらず (まだ描かない)、公開元への案内だけを載せている。
     SubCatalog {
         dir: "jaxa",
         title: "JAXA",
-        description: "宇宙航空研究開発機構 (JAXA) の衛星データ。\
-                      このカタログでは複製せず、公開元 (JAXA Earth API) への案内だけを載せる。",
+        description: "宇宙航空研究開発機構 (JAXA) の衛星データです。\
+                      このカタログでは複製せず、公開元 (JAXA Earth API) への案内だけを載せています。",
     },
     SubCatalog {
         dir: "nasa",
         title: "NASA",
-        description: "米国航空宇宙局 (NASA) の衛星データ。このカタログでは複製せず、公開元への案内だけを載せる。",
+        description: "米国航空宇宙局 (NASA) の衛星データです。このカタログでは複製せず、公開元への案内だけを載せています。",
     },
 ];
 
@@ -823,9 +824,9 @@ pub fn build(
             "title": "duck-geocoder のデータ",
             // 使う条件の要約 (`duck:terms`) は独自に規約を読んだもの。STAC Browser など、
             // カタログだけを見る人にも届くように、ルートの説明に書く。
-            "description": "日本のオープン地理空間データをGeoParquetにしたもの。ブラウザからDuckDB-WASMで直接読む。\
+            "description": "日本のオープンな地理空間データを GeoParquet にしたものです。ブラウザから DuckDB-WASM で直接読めます。\
                             各 Collection の使う条件の要約 (duck:terms) は、このカタログが独自に規約を読んでまとめた参考情報で、\
-                            正確さは保証しない。使う前に、必ず各配布元の規約の本文を確かめること。",
+                            正確さは保証しません。使う前に、必ず各配布元の規約の本文を確かめてください。",
             "links": links,
         }),
     });

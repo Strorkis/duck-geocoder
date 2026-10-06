@@ -450,7 +450,7 @@ const MLIT_KSJ: Attribution = Attribution {
 const ISJ_TERMS: Terms = Terms {
     // 約款の第2条2項「公共測量等の高度な精度が要求される測量、各種証明等には使用することが
     // できません」は、バッジでは表せないので名前に添える (2026-10-05 に読んだ)。
-    name: "位置参照情報ダウンロードサービス利用規約 (精度の要る測量・証明には使えない)",
+    name: "位置参照情報ダウンロードサービス利用規約 (精度の要る測量・証明には使えません)",
     url: "https://nlftp.mlit.go.jp/isj/agreement.html",
     commercial: Commercial::NotRestricted,
     attribution_required: true,
@@ -611,7 +611,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             kind: DatasetKind::AdminNames,
             collection: "ksj-admin-names",
             title: "行政区域の名称",
-            description: "市区町村の名前の一覧。地名検索に使う。",
+            description: "市区町村の名前の一覧です。地名の検索に使っています。",
             attribution: MLIT_KSJ,
             summary_columns: &[],
             mesh_digits: None,
@@ -624,7 +624,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             kind: DatasetKind::Admin,
             collection: "ksj-admin",
             title: "行政区域",
-            description: "市区町村の境界。地図で指した場所の市区町村を調べるのに使う。",
+            description: "市区町村の境界です。地図で指した場所の市区町村を調べるのに使っています。",
             attribution: MLIT_KSJ,
             summary_columns: &[],
             mesh_digits: None,
@@ -638,7 +638,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             collection: "ksj-railway-stations",
             title: "鉄道駅",
             // 原典がホームの延長を線で持っているので、点に潰さず線のまま配っている。
-            description: "鉄道駅。ホームの範囲を線で表す。",
+            description: "鉄道の駅です。ホームの範囲を線で表しています。",
             attribution: MLIT_KSJ_RAILWAY,
             summary_columns: &["railway_class", "institution_type"],
             mesh_digits: None,
@@ -652,7 +652,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             collection: "ksj-railway",
             title: "鉄道路線",
             // 鉄道区分と事業者種別はコードを名前に解決したうえで、原典のコードも併せて持つ。
-            description: "鉄道の路線。路線名・事業者・鉄道の種類を持つ。",
+            description: "鉄道の路線です。路線名・事業者・鉄道の種類を持っています。",
             attribution: MLIT_KSJ_RAILWAY,
             summary_columns: &["railway_class", "institution_type"],
             mesh_digits: None,
@@ -665,7 +665,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             kind: DatasetKind::AdminNames,
             collection: "overture-admin-names",
             title: "行政区域の名称",
-            description: "市区町村の名前の一覧。地名検索に使う。",
+            description: "市区町村の名前の一覧です。地名の検索に使っています。",
             attribution: OVERTURE_DIVISIONS,
             summary_columns: &[],
             mesh_digits: None,
@@ -679,7 +679,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             kind: DatasetKind::Admin,
             collection: "overture-admin",
             title: "行政区域",
-            description: "市区町村の境界。地図で指した場所の市区町村を調べるのに使う。",
+            description: "市区町村の境界です。地図で指した場所の市区町村を調べるのに使っています。",
             attribution: OVERTURE_DIVISIONS,
             summary_columns: &[],
             mesh_digits: None,
@@ -693,7 +693,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             kind: DatasetKind::Buildings,
             collection: "overture-buildings",
             title: "建物",
-            description: "建物の形。高さや種別が入っていないものが多い。",
+            description: "建物の形です。高さや種別が入っていないものが多くあります。",
             attribution: OVERTURE_BUILDINGS,
             // Overtureの建物種別。"residential" "commercial" など。
             summary_columns: &["class"],
@@ -707,7 +707,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             kind: DatasetKind::RoadRoute,
             collection: "overture-road-routes",
             title: "道路の路線",
-            description: "道路の路線名 (「国道13号」など) の一覧。路線名での検索に使う。",
+            description: "道路の路線名 (「国道13号」など) の一覧です。路線名での検索に使っています。",
             attribution: OVERTURE_TRANSPORTATION,
             summary_columns: &[],
             mesh_digits: None,
@@ -721,7 +721,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             collection: "overture-roads",
             title: "道路",
             // 1つの区間が複数の路線に属することがあるので、路線名と系統はリストで持つ。
-            description: "高速道路・国道・都道府県道。路線名を持つ。",
+            description: "高速道路・国道・都道府県道です。路線名を持っています。",
             attribution: OVERTURE_TRANSPORTATION,
             // Overtureの道路等級。"motorway"=高速、"trunk"≒国道、"primary"≒主要地方道・県道。
             summary_columns: &["class"],
@@ -736,7 +736,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             collection: "overture-power-lines",
             title: "送電線",
             // power_line (送電線) と cable (地中・海底線)。配電線 (minor_line) は入れない。
-            description: "送電線と地中・海底の電力線。線の名前を持つものがある。",
+            description: "送電線と、地中・海底の電力線です。線の名前を持つものもあります。",
             attribution: OVERTURE_BASE,
             // 種別は2つ (送電線・地中線) だけなので絞り込みは作らない。
             summary_columns: &[],
@@ -751,7 +751,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             collection: "overture-waterways",
             title: "川",
             // river と canal の線だけ。小川・用水路と、川幅を持つ面は入れない。
-            description: "川と運河の流れの線。元はOpenStreetMapで、国のデータではない。",
+            description: "川と運河の流れの線です。元は OpenStreetMap で、国のデータではありません。",
             attribution: OVERTURE_BASE,
             summary_columns: &[],
             mesh_digits: None,
@@ -769,7 +769,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             // 建物が実際にある場所を数えているので、市区町村の境界とは一致しない
             // (PLATEAUの整備範囲は市域と一致しない)。メッシュは経緯度から計算する
             // 方眼なので境界データを含まない。詳細は `crate::coverage`。
-            description: "PLATEAUの建物がある場所を、1km四方のメッシュで示したもの。",
+            description: "PLATEAU の建物がある場所を、1km四方のメッシュで示したものです。",
             attribution: MLIT_PLATEAU,
             summary_columns: &[],
             // 3次メッシュ (1km)。UIはコードを前から切って粗くする。
@@ -785,7 +785,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             // Overtureの「建物」とは親のサブカタログで見分ける。
             title: "建物",
             // 都市ごとに1ファイル (PLATEAUの配布単位に合わせてある)。
-            description: "建物の形。高さ・用途・階数がほぼすべてに入っている。",
+            description: "建物の形です。高さ・用途・階数が、ほぼすべての建物に入っています。",
             attribution: MLIT_PLATEAU,
             // PLATEAUの用途。コードリストで解決済みの「住宅」「商業施設」など。
             summary_columns: &["usage"],
@@ -803,7 +803,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             title: "人口メッシュ (1km)",
             // 全国で1ファイル。引いた表示で125mを読むと転送量が跳ね上がるため、
             // 俯瞰用に別に持つ。人口・世帯数は合計、密度は中の125mの最大値。
-            description: "令和2年国勢調査の人口と世帯数を、1km四方のメッシュで集計したもの。人口密度は中にある125mメッシュの最大値。",
+            description: "令和2年国勢調査の人口と世帯数を、1km四方のメッシュで集計したものです。人口密度は、中にある125mメッシュの最大値です。",
             attribution: ESTAT_MESH,
             summary_columns: &[],
             via: "https://www.e-stat.go.jp/gis/statmap-search?page=1&type=1",
@@ -817,7 +817,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             collection: "estat-mesh-pop",
             title: "人口メッシュ",
             // ジオメトリはメッシュコードから計算したもの。都道府県ごとに1ファイル。
-            description: "令和2年国勢調査の人口と世帯数を、125m四方のメッシュで集計したもの。",
+            description: "令和2年国勢調査の人口と世帯数を、125m四方のメッシュで集計したものです。",
             attribution: ESTAT_MESH,
             summary_columns: &[],
             via: "https://www.e-stat.go.jp/gis/statmap-search?page=1&type=1",
@@ -830,7 +830,7 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             kind: DatasetKind::Oaza,
             collection: "isj-oaza",
             title: "大字・町丁目",
-            description: "町名・丁目の代表点。住所検索に使う。",
+            description: "町名・丁目の代表点です。住所の検索に使っています。",
             attribution: MLIT_ISJ_OAZA,
             summary_columns: &[],
             mesh_digits: None,
@@ -843,7 +843,8 @@ const DESCRIPTIONS: &[(&str, Description)] = &[
             kind: DatasetKind::Block,
             collection: "isj-block",
             title: "街区",
-            description: "街区 (「〜番」) の代表点。番地まで含む住所検索に使う。",
+            // 検索にはまだ使っていない (2026-10-06 に確かめた)。以前は「住所検索に使う」と書いていた。
+            description: "街区 (「〜番」) の代表点です。いまは検索には使っていません。",
             attribution: MLIT_ISJ_BLOCK,
             summary_columns: &[],
             mesh_digits: None,
