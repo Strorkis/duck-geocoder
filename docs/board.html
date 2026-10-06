@@ -313,7 +313,7 @@
   <body>
     <header>
       <h1>duck-geocoder ダッシュボード</h1>
-      <span class="meta">更新 2026-10-06 19:58 (日本時間)</span>
+      <span class="meta">更新 2026-10-06 21:25 (日本時間)</span>
       <span class="meta">
         <a href="https://strorkis.github.io/duck-geocoder/">公開サイト</a> ·
         <a href="roadmap.md">方針 (roadmap.md)</a> · STAC 配布形式の実験
@@ -332,7 +332,7 @@
       </div>
       <div class="card kpi">
         <div class="label">公開待ちのコミット</div>
-        <div class="value">46 <small>件</small></div>
+        <div class="value">48 <small>件</small></div>
         <span class="status you">R2へのアップロード → push 待ち</span>
       </div>
       <div class="card kpi">
@@ -362,13 +362,14 @@
             表示部分のライブラリ化 (main.ts 7,741→859行。ここで止める)・配っているライブラリのライセンス表示・
             AW3D30 (JAXA) を参照だけで・カタログの追加 (色別標高図・陰影起伏図・PLATEAU の 3D Tiles・N03 と NASA は参照だけ)・
             追加のダイアログを3タブと目次に・公開前の権利の確認 (deploy.md)・
-            UI とカタログの文章を丁寧語に (使い方・検索できるもの・出典・使っている技術も見直し)
+            UI とカタログの文章を丁寧語に (使い方・検索できるもの・出典・使っている技術も見直し)・
+            英語の画面 (<code>?lang=en</code>。カタログの英語版はこれから)
           </span>
         </li>
         <li>
           <b>テスト</b><span class="status done">済み</span>
           <span class="sub">
-            E2E 115件 (本番ビルド。STAC Browser のリンクがある状態で)、単体 (WKB) 12件、パイプライン 191件、remote-zip 11件
+            E2E 116件 (本番ビルド。STAC Browser のリンクがある状態で)、単体 18件 (WKB・言語)、パイプライン 191件、remote-zip 11件
           </span>
         </li>
         <li class="current">
@@ -540,6 +541,13 @@
       <section class="card" aria-label="次にやること">
         <h2>次にやること</h2>
         <ol class="tasks">
+          <li>
+            <b>カタログの英語版</b>
+            <span class="sub">
+              画面は英語にできた。カタログの題名・説明・条件の名前は日本語のまま。STAC の Language extension で
+              英語版の文書を結ぶ (STAC Browser も切り替わる)。JSON が約2倍になる
+            </span>
+          </li>
           <li>
             <b>配らずに手元で変換する仕組み (構想)</b>
             <span class="sub">
