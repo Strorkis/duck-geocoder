@@ -63,6 +63,9 @@ const ja = {
   loading: '読み込み中…',
   stacFeaturesPreview: (total: number, shown: number) =>
     `features は ${total.toLocaleString()} 件のうち先頭 ${shown} 件だけ表示しています。全体は下のリンクから見られます。`,
+  stacItemsPreview: (total: number, shown: number) =>
+    `この Collection の Item ${total.toLocaleString()} 件のうち先頭 ${Math.min(total, shown)} 件を、stac-geoparquet から主な列だけ読んで表示しています。`,
+  stacSaveItems: 'stac-geoparquet を保存する (全 Collection 分) ↓',
 
   // ---- 検索欄 (ui/search-box.ts) ----
   badgeAdmin: '行政区域',
@@ -180,6 +183,7 @@ const ja = {
   // ---- ⓘ のカード (ui/collection-card.ts) ----
   viewStacDocument: 'STACの文書を見る',
   viewCollection: 'Collection を見る',
+  itemsFileTitle: '全データの Item を1つにまとめた stac-geoparquet です (保存されます)',
   openStacBrowser: 'STAC Browser で開く (別のタブ)',
   downloadThisArea: 'この範囲を取得',
   findingFiles: '範囲のファイルを調べています…',
@@ -361,6 +365,9 @@ const en: Messages = {
   loading: 'Loading…',
   stacFeaturesPreview: (total, shown) =>
     `Showing only the first ${shown} of ${total.toLocaleString()} features. Open the full document from the link below.`,
+  stacItemsPreview: (total, shown) =>
+    `Showing the first ${Math.min(total, shown)} of this Collection's ${total.toLocaleString()} Items, with the main columns read from the stac-geoparquet file.`,
+  stacSaveItems: 'Save the stac-geoparquet file (all Collections) ↓',
 
   badgeAdmin: 'Municipality',
   badgePlace: 'Place',
@@ -478,6 +485,7 @@ const en: Messages = {
 
   viewStacDocument: 'View the STAC document',
   viewCollection: 'View the Collection',
+  itemsFileTitle: 'The Items of all datasets in one stac-geoparquet file (downloads)',
   openStacBrowser: 'Open in STAC Browser (new tab)',
   downloadThisArea: 'Download this area',
   findingFiles: 'Finding files in this area…',

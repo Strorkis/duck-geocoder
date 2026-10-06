@@ -51,6 +51,9 @@ setWorkerUrl(maplibreWorkerUrl);
 import {
   dataUrl,
   fetchCollections,
+  itemsLoaded,
+  readItems,
+  resolveHref,
   type Bbox,
   type Collection,
   type DatasetKind,
@@ -60,6 +63,10 @@ import {
 interface TestHooks {
   __map?: MapLibreMap;
   __dataUrl?: (file: string) => string;
+  /** Item を読んだ Collection の ID。 */
+  __itemsLoaded?: readonly string[];
+  /** Item ID → 配信の起点からのパス (全 Collection)。テストがデータのURLを引くのに使う。 */
+  __itemPaths?: () => Promise<Record<string, string>>;
 }
 
 // データの実際のURLは、テストがデータの有無を確かめるのに要る。
@@ -176,7 +183,7 @@ async function main() {
   let ensureSections: (() => Promise<void>) | undefined;
   let collections: Collection[] = [];
   try {
-    collections = await fetchCollections();
+    collections = await fetchCollections(lang);
     const [db, createdMap] = await Promise.all([
       initDuckDb(collections),
       initMap(collections),
@@ -208,6 +215,14 @@ async function main() {
   // dataUrl を公開しているのは、データが別オリジン (オブジェクトストレージ) に
   // 移っても、テスト側を書き換えずに公開URLへ流せるようにするため。
   (window as unknown as TestHooks).__map = map;
+  (window as unknown as TestHooks).__itemsLoaded = itemsLoaded;
+  // アプリの読み方 (Collection ごと) を通さずに全部を読む。`__itemsLoaded` には数えない。
+  (window as unknown as TestHooks).__itemPaths = async () => {
+    const file = collections.find((collection) => collection.itemsPath)?.itemsPath;
+    if (!file) return {};
+    const items = await readItems(file);
+    return Object.fromEntries(items.map((item) => [item.id, resolveHref(item.assets.data.href, file)]));
+  };
 
   loadingEl.hidden = true;
 

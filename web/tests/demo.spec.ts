@@ -2,7 +2,12 @@ import { test, expect, type Page } from '@playwright/test';
 import type { MapLibreMap, GeoJSONSource } from 'maplibre-gl';
 
 /** main.ts がテスト用に公開しているもの。 */
-type TestWindow = { __map?: MapLibreMap; __dataUrl?: (file: string) => string };
+type TestWindow = {
+  __map?: MapLibreMap;
+  __dataUrl?: (file: string) => string;
+  __itemsLoaded?: readonly string[];
+  __itemPaths?: () => Promise<Record<string, string>>;
+};
 
 /** 行政区域データセット。逆ジオコーディングと転送量の計測がこれを見る。 */
 const ADMIN_DATASET = 'overture_admin_jp';
@@ -11,96 +16,39 @@ const BUILDINGS_COLLECTION = 'overture-buildings';
 /** PLATEAUの建物。高さ・用途を持つので、絞り込みはこちらでしか出ない。 */
 const PLATEAU_DATASET = 'plateau_bldg_13103';
 
-interface StacLink {
-  rel: string;
-  href: string;
-}
-
 /**
  * Item ID → 配信の起点からのパス。**worker内で使い回す。**
  *
- * カタログを歩くのは毎回同じ道のりで、**結果はページに依存しない**。
- * 測ると1回で15〜25往復・最大734KB (PLATEAUのItemCollectionが595KBある) で、
- * これをテストごとに払っていた。1件あたり約0.4〜0.6秒。
- *
- * `null` は「カタログに無い」。走っている間にカタログは変わらないので、
- * 無かったことも覚えてよい。
+ * 結果はページに依存せず、走っている間にカタログは変わらないので、1回だけ引けばよい。
  */
-const datasetPaths = new Map<string, string | null>();
+const datasetPaths = new Map<string, string>();
 
 /**
- * データセットのURLを**STACを辿って**引く。
+ * データセットのURLを**STACのItemから**引く。
  *
  * 配信時のパスはItemのアセットが持っている (出所ごとにディレクトリを
  * 切っているので `overture/....parquet` のような形)。テストにパスを書くと、
  * 置き場所を変えるたびに書き換えることになる。**Item IDだけを書く。**
  *
- * 見つからなければ null。開発サーバーは存在しないファイルに index.html を
- * 200で返すので、HEADの成否だけでは「配信されているか」を判定できない。
+ * Item は stac-geoparquet (items.parquet) に入っているので、**アプリの DuckDB に読ませる**
+ * (`__itemPaths`)。テストの側に Parquet を読む仕組みを別に持たない。
+ * そのため、アプリの起動が済んでから呼ぶ (beforeEach の後なら済んでいる)。
+ *
+ * 見つからなければ null。
  */
 async function datasetUrl(page: Page, id: string): Promise<string | null> {
-  if (!datasetPaths.has(id)) await walkCatalog(page, id);
-  const path = datasetPaths.get(id) ?? null;
-  return path === null ? null : resolveDataUrl(page, path);
+  if (datasetPaths.size === 0) {
+    await page.waitForFunction(() => '__itemPaths' in window, undefined, { timeout: 30_000 });
+    const paths = await page.evaluate(() => (window as unknown as TestWindow).__itemPaths!());
+    for (const [itemId, path] of Object.entries(paths)) datasetPaths.set(itemId, path);
+  }
+  const path = datasetPaths.get(id);
+  return path === undefined ? null : resolveDataUrl(page, path);
 }
 
-/**
- * 目的のIDが見つかるまでカタログを歩き、**道中で見たItemをすべて覚える**。
- *
- * 探しているものだけを覚えると、次に別のIDを聞かれたときにまた歩き直すことに
- * なる。1つのItemCollectionには同じ出所のファイルがまとめて入っているので、
- * ついでに入れておくと以降の問い合わせがほぼ通信なしで済む。
- */
-async function walkCatalog(page: Page, id: string): Promise<void> {
-  const fetchJson = async <T>(path: string): Promise<T | null> => {
-    const response = await page.request.get(await resolveDataUrl(page, path));
-    return response.ok() ? ((await response.json()) as T) : null;
-  };
-
-  /**
-   * 1つの文書の子を辿る。見つかったら true。
-   *
-   * **子がCatalog (サブカタログ) なら降りる。** アプリと同じ規則。ここを直し忘れると
-   * 全データが「無い」と判定され、テストが**失敗せずにスキップされる**。
-   */
-  const visit = async (path: string): Promise<boolean> => {
-    const document = await fetchJson<{ type?: string; links: StacLink[] }>(path);
-    if (!document) return false;
-
-    if (document.type !== 'Collection') {
-      for (const child of document.links.filter((link) => link.rel === 'child')) {
-        if (await visit(resolveHref(child.href, path))) return true;
-      }
-      return false;
-    }
-
-    const itemsHref = document.links.find((link) => link.rel === 'items')?.href;
-    if (!itemsHref) return false;
-    const itemsPath = resolveHref(itemsHref, path);
-    const items = await fetchJson<{
-      features: { id: string; assets: { data: { href: string } } }[];
-    }>(itemsPath);
-    for (const feature of items?.features ?? []) {
-      datasetPaths.set(feature.id, resolveHref(feature.assets.data.href, itemsPath));
-    }
-    return datasetPaths.has(id);
-  };
-
-  // 全部歩いても無かったら**覚えておく** — 無いことの確認も毎回歩くと高くつく。
-  if (!(await visit('catalog.json'))) datasetPaths.set(id, null);
-}
-
-/**
- * STACの相対リンクを配信の起点からのパスに直す。**アプリ側と同じ規則。**
- *
- * STACの相対リンクは**その文書からの相対**なので、
- * 起点からの相対だと思って組み立てると階層を作った瞬間に壊れる
- * (実際ここで壊れて、`catalog.json` の代わりに index.html を掴んだ)。
- */
-function resolveHref(href: string, base: string): string {
-  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return href;
-  const root = 'https://duck.invalid/';
-  return new URL(href, new URL(base, root)).href.slice(root.length);
+interface StacLink {
+  rel: string;
+  href: string;
 }
 
 /**
@@ -156,10 +104,13 @@ function resolveDataUrl(page: Page, file: string): Promise<string> {
  * (Rust側の tests/real_data.rs と同じ方針)。
  */
 async function skipIfDataMissing(page: Page) {
-  const url = await datasetUrl(page, ADMIN_DATASET);
+  // アプリが起動時に読むまとめで見る (起動が済む前に呼ばれるので、Item は引けない)。
+  // 開発サーバーは無いファイルに index.html を200で返すので、中身で確かめる。
+  const response = await page.request.get(await resolveDataUrl(page, 'collections.json'));
+  const body = response.ok() ? await response.text() : '';
   test.skip(
-    url === null,
-    `${ADMIN_DATASET} がカタログに無い (READMEの手順で用意してください)`,
+    !body.includes('"duck:kind":"admin"'),
+    '行政区域がカタログに無い (READMEの手順で用意してください)',
   );
 }
 
@@ -382,7 +333,7 @@ test('使い方に操作が一通り書かれている', async ({ page }) => {
 /**
  * **英語の画面。** 言語は ?lang= かブラウザの言語で決まる (src/i18n)。テストは日本語に固定してあるので、
  * ここで ?lang=en を開いて、画面の文言が英語になり、日本語へ戻れることを確かめる。
- * データの中身 (地名・カタログの題名) は訳さないので見ない。
+ * カタログの題名は英語版のカタログ (`*.en.json`) から出る。地名は訳さないので見ない。
  */
 test('英語の画面に切り替えられ、日本語へ戻れる', async ({ page }) => {
   await page.goto('./?lang=en');
@@ -399,6 +350,15 @@ test('英語の画面に切り替えられ、日本語へ戻れる', async ({ pa
   await page.locator('.layer-add-button[data-section="data"]').click();
   await expect(page.locator('.catalog-tab[data-section="view"]')).toContainText('View only');
   await expect(page.locator('[data-catalog-layer] .catalog-add').first()).toHaveText(/Add|Added/);
+  // 見出しは英語版のカタログの題名 (「国土数値情報」ではなく National Land Numerical Information)。
+  const english = (await (
+    await page.request.get(await resolveDataUrl(page, 'catalog.en.json'))
+  ).json()) as { links: (StacLink & { title?: string })[] };
+  const groups = english.links.filter((l) => l.rel === 'child').map((l) => l.title);
+  const headings = await page.locator('#layer-catalog-dialog .catalog-group-title').allTextContents();
+  expect(headings.length).toBeGreaterThan(0);
+  expect(groups).toEqual(expect.arrayContaining(headings));
+  expect(headings.join()).not.toMatch(/[ぁ-んァ-ン一-龠]/);
   await closeCatalog(page);
 
   // **いまの言語が分かる。** English は太字の文字 (押せない)、日本語は押せるリンク。
@@ -634,25 +594,36 @@ test('extensions.duckdb.org を遮断しても逆ジオコーディングでき�
  *
  * Collection (何があるか) は件数で増えないので起動時に読む。
  * Item (ファイル1つずつの href と bbox) は使う段になって読む。
+ *
+ * Item は stac-geoparquet 1つにまとめたので、通信の数では見分けられない。アプリが
+ * Item を読んだ Collection を数える (`__itemsLoaded`)。ファイルは **Range で部分だけ**読む。
  */
 test('使わないデータのItemは起動時に読まない', async ({ page }) => {
-  const requested: string[] = [];
+  const itemsRequests: (string | undefined)[] = [];
   page.on('request', (request) => {
-    const path = new URL(request.url()).pathname;
-    if (path.endsWith('-items.json')) requested.push(path.split('/').pop()!);
+    if (request.method() !== 'GET') return;
+    if (new URL(request.url()).pathname.endsWith('/items.parquet')) {
+      itemsRequests.push(request.headers()['range']);
+    }
   });
   await page.reload();
   await waitForReady(page);
+  const loaded = () =>
+    page.evaluate(() => [...((window as unknown as TestWindow).__itemsLoaded ?? [])]);
 
   // 行政区域だけは起動時に要る。どのファイルを読むかが決まらないため。
-  expect(requested.some((file) => file.startsWith('overture-admin'))).toBe(true);
-  // 人口メッシュ (47ファイル・80KB) は、まだ誰も要求していない。
-  expect(requested.filter((file) => file.startsWith('estat-mesh-pop'))).toEqual([]);
+  expect(await loaded()).toContain('overture-admin');
+  // 人口メッシュ (47ファイル) は、まだ誰も要求していない。
+  expect((await loaded()).filter((id) => id.startsWith('estat-mesh-pop'))).toEqual([]);
 
   // **都市ごとのItemは引いた表示で読まない。** 306都市あり、フッターを引くだけで
   // 1回の表示が600往復を超える。読むのは整備範囲 (1ファイル) の方。
-  expect(requested).not.toContain('plateau-buildings-items.json');
-  expect(requested).toContain('plateau-buildings-coverage-items.json');
+  await expect.poll(loaded).toContain('plateau-buildings-coverage');
+  expect(await loaded()).not.toContain('plateau-buildings');
+
+  // まとめたファイルは丸ごと取らない (どの読み込みにも Range が付いている)。
+  expect(itemsRequests.length).toBeGreaterThan(0);
+  expect(itemsRequests.filter((range) => range === undefined)).toEqual([]);
 
   // 寄ると都市ごとの方に切り替わる。
   await page.evaluate(() => {
@@ -660,7 +631,7 @@ test('使わないデータのItemは起動時に読まない', async ({ page })
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 16 });
   });
   await expect.poll(() => sourceFeatureCount(page, 'buildings')).toBeGreaterThan(0);
-  expect(requested).toContain('plateau-buildings-items.json');
+  expect(await loaded()).toContain('plateau-buildings');
 });
 
 // 出典は既定でたたんである。出所が6件あって、広げると452×112pxの箱になるため。
@@ -2321,10 +2292,13 @@ test('STACの文書はページの中で開いて、リンクを辿れる', asyn
   await expect(type).toHaveText('Collection');
   await expect(json).toContainText(`"id": "${LAYER.plateauBuildings}"`);
 
-  // Item (ファイル) の一覧へ進む。306件あるので、全部は整形して出さない。
+  // Item (ファイル) の一覧へ進む。stac-geoparquet (アセット) から、この Collection の行だけを読む。
+  // 306件あるので、全部は整形して出さない。保存のリンクは Parquet そのもの。
   await follow('items');
   await expect(type).toHaveText('FeatureCollection');
   await expect(page.locator('#stac-note')).toContainText('件のうち先頭');
+  await expect(json).toContainText(`"collection": "${LAYER.plateauBuildings}"`);
+  await expect(page.locator('#stac-raw')).toHaveAttribute('href', /items\.parquet$/);
 
   // 戻って、親 (サブカタログ) へ。**見出しと同じ題名**であること。
   await page.locator('#stac-back').click();

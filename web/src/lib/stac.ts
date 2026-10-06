@@ -6,14 +6,16 @@
  * 変換したファイルが増えればUIは自動で追随する。
  *
  * ```text
- * catalog.json                      ← Catalog。出所ごとのサブカタログへの child リンク
- * estat/catalog.json                ← Catalog (サブカタログ)。「国勢調査」
- * estat/estat-mesh-pop.json         ← Collection。何があるか。件数で増えない
- * estat/estat-mesh-pop-items.json   ← ItemCollection。ファイル1つずつの href と bbox
+ * catalog.json                ← Catalog。出所ごとのサブカタログへの child リンク
+ * estat/catalog.json          ← Catalog (サブカタログ)。「国勢調査」
+ * estat/estat-mesh-pop.json   ← Collection。何があるか。件数で増えない
+ * items.parquet               ← 全 Collection の Item (stac-geoparquet)。Collection ごとに行グループ
+ * collections.json            ← アプリ用のまとめ (Catalog と Collection を1つに。英語版は .en.json)
  * ```
  *
- * **起動時に読むのは Catalog と Collection だけ。** Item は使う段になって読む。
- * 1ファイルに全部入れていた頃は、人口メッシュ47件で72KBまで膨らんでいた。
+ * **起動時に読むのはまとめ1つだけ。** 文書を1つずつ辿ると3段・43回の読み込みになっていた。
+ * Item は使う段になって、**その Collection の行グループだけ**を Range で読む
+ * (DuckDB に読ませるので、DuckDB が起きるまで待つ)。
  *
  * **レイヤーの一覧はこの階層で組む。** サブカタログが見出し、Collectionが行。
  * 画面を読むことがそのままカタログを歩くことになるようにしてある。
@@ -23,6 +25,8 @@ export interface StacLink {
   href: string;
   type?: string;
   title?: string;
+  /** 同じ文書の別の言語 (Language extension の `rel: alternate`)。 */
+  hreflang?: string;
 }
 
 export type DatasetKind =
@@ -241,9 +245,14 @@ export function tierExpression(tiers: Tiers): string {
   return `CASE ${whens.join(' ')} ELSE ${quote(last.id)} END`;
 }
 
-/** STAC Item。1つのGeoParquetに対応する。 */
+/**
+ * STAC Item。1つのGeoParquetに対応する。
+ *
+ * stac-geoparquet から読んだ行を、STAC の Item の形に戻したもの (properties は列から戻す)。
+ */
 export interface StacItem {
   id: string;
+  collection: string;
   bbox?: number[];
   /** `via` (このファイルの配布元) など。PLATEAUは都市ごとのzipを指す。 */
   links?: StacLink[];
@@ -262,7 +271,7 @@ export interface StacItem {
  */
 export interface LocatedItem {
   feature: StacItem;
-  /** ItemCollectionの、配信の起点からのパス。 */
+  /** Item を載せていたファイル (stac-geoparquet) の、配信の起点からのパス。 */
   base: string;
 }
 
@@ -297,7 +306,7 @@ export interface Collection {
   group: CatalogGroup | undefined;
   /** Collection文書の、配信の起点からのパス。 */
   path: string;
-  /** ItemCollection文書の、配信の起点からのパス。無ければ undefined。 */
+  /** Item を載せた stac-geoparquet の、配信の起点からのパス。無ければ undefined。 */
   itemsPath: string | undefined;
   attribution: string;
   attributionUrl: string;
@@ -348,7 +357,7 @@ export interface Collection {
   isDefault: boolean;
   /** 標高のエンコード (`dem.encoding` の近道)。 */
   demEncoding: string | undefined;
-  /** Itemを読む。**Collectionごとに1回だけ**通信する。 */
+  /** Itemを読む。**Collectionごとに1回だけ**読む (その Collection の行グループだけ)。 */
   items: () => Promise<LocatedItem[]>;
 }
 
@@ -370,14 +379,28 @@ export function dataUrl(file: string): string {
   return new URL(`${DATA_BASE_URL}/${file}`, window.location.href).toString();
 }
 
-/** 配信の起点にある唯一のファイル。ここから全部を辿る。 */
-export const CATALOG_PATH = 'catalog.json';
+/**
+ * アプリが起動時に読むまとめ (言語ごと)。パイプラインの `stac_i18n::BUNDLE_FILE*` と同じ名前。
+ *
+ * 中身は STAC API の `/collections` と同じ形に、サブカタログ (`duck:catalogs`) と
+ * 各文書の置き場所 (`duck:path`) を足したもの。**文書ごとの JSON はそのまま置いてある**
+ * (STAC Browser などはそちらを辿る)。
+ */
+const BUNDLE_PATHS = { ja: 'collections.json', en: 'collections.en.json' } as const;
+
+/** まとめに入っている文書。`duck:path` はその文書の、配信の起点からのパス。 */
+type Bundled<T> = T & { 'duck:path': string };
+
+interface Bundle {
+  collections: Bundled<StacCollection>[];
+  'duck:catalogs': Bundled<StacCatalog>[];
+}
 
 /**
  * STACの相対リンクを、配信の起点からのパスに直す。
  *
  * **STACの相対リンクは「その文書からの相対」。** `overture/roads.json` の中の
- * `roads-items.json` は `overture/roads-items.json` を指す。
+ * `../items.parquet` は `items.parquet` を、`catalog.json` は `overture/catalog.json` を指す。
  * ここが配信の起点からの相対だと思って読むと、階層を作った瞬間に壊れる。
  *
  * 起点からのパスに正規化して返すのは、**この文字列がDuckDBの登録名を兼ねる**ため
@@ -421,49 +444,62 @@ export async function fetchStac<T>(path: string): Promise<T> {
 }
 
 /**
- * Catalogから全Collectionを読む。**カタログに書かれた順に返す** (一覧の並びになる)。
+ * 全Collectionを読む。**カタログに書かれた順に返す** (一覧の並びになる。まとめはその順で入っている)。
  *
  * Collectionは**ファイルが増えても大きくならない** (収録範囲は全体の1件だけ、
  * 列構成と語彙は出所ごとに1つ) ので、起動時に全部読んでよい。
  * ファイル1つずつの情報を持つItemは、使う段になってから読む。
  */
-export async function fetchCollections(): Promise<Collection[]> {
-  const catalog = await fetchStac<StacCatalog>(CATALOG_PATH);
-  return walkCatalog(catalog, CATALOG_PATH, undefined);
+export async function fetchCollections(language: keyof typeof BUNDLE_PATHS): Promise<Collection[]> {
+  const bundle = await fetchStac<Bundle>(BUNDLE_PATHS[language]);
+  // 見出しはサブカタログ。Collection の `parent` リンクがどれを指すかで結ぶ
+  // (リンクはその文書からの相対なので、置き場所から解いて比べる)。
+  const groups = new Map(
+    bundle['duck:catalogs'].map((catalog) => [
+      catalog['duck:path'],
+      {
+        id: catalog.id,
+        title: catalog.title ?? catalog.id,
+        description: catalog.description ?? '',
+        path: catalog['duck:path'],
+      } satisfies CatalogGroup,
+    ]),
+  );
+  return bundle.collections.map((document) => {
+    const path = document['duck:path'];
+    const parent = document.links.find((link) => link.rel === 'parent');
+    // ルート直下の Collection は、どのサブカタログにも当たらない (見出しなし)。
+    const group = parent ? groups.get(resolveHref(parent.href, path)) : undefined;
+    return toCollection(document, path, group);
+  });
 }
 
 /**
- * Catalogの子を辿る。**子がCatalogなら降り、Collectionならそこで止まる。**
+ * stac-geoparquet から Item を読む関数。`collection` を省くと全部。
  *
- * STACはどちらも子にできる。種類はリンクではなく**文書の `type`** で見分ける
- * (リンクの `type` はメディアタイプで、どちらも `application/json`)。
- *
- * 兄弟は並べて取る。サブカタログを挟んだぶん往復は1段増えるが、
- * 1段の中は並列なので、起動の待ちは1往復ぶんしか伸びない。
+ * **DuckDB が起きたところで差し込む** (`setItemReader`)。Parquet を読むのに DuckDB を使うので、
+ * ここ (カタログを読む側) は DuckDB を知らない。差し込まれる前に呼ばれたら、差し込まれるまで待つ。
  */
-async function walkCatalog(
-  catalog: StacCatalog,
-  path: string,
-  group: CatalogGroup | undefined,
-): Promise<Collection[]> {
-  const children = catalog.links.filter((link) => link.rel === 'child');
-  const nested = await Promise.all(
-    children.map(async (link) => {
-      // **文書の位置を持ち回る。** 中のリンクはその文書からの相対なので、
-      // どこにある文書だったかを知らないと解決できない。
-      const childPath = resolveHref(link.href, path);
-      const document = await fetchStac<StacCatalog | StacCollection>(childPath);
-      if (document.type === 'Collection') return [toCollection(document, childPath, group)];
-      return walkCatalog(document, childPath, {
-        id: document.id,
-        title: document.title ?? document.id,
-        description: document.description ?? '',
-        path: childPath,
-      });
-    }),
-  );
-  return nested.flat();
+export type ItemReader = (file: string, collection?: string) => Promise<StacItem[]>;
+
+let resolveItemReader!: (reader: ItemReader) => void;
+const itemReader = new Promise<ItemReader>((resolve) => (resolveItemReader = resolve));
+
+export function setItemReader(reader: ItemReader): void {
+  resolveItemReader(reader);
 }
+
+/** stac-geoparquet の Item を読む。`file` は配信の起点からのパス。 */
+export async function readItems(file: string, collection?: string): Promise<StacItem[]> {
+  return (await itemReader)(file, collection);
+}
+
+/**
+ * **Item を読んだ Collection の ID** (読んだ順)。E2E が「使わないものを読んでいない」ことを確かめる。
+ *
+ * 以前は `*-items.json` の通信を数えていたが、まとめた今はファイルが1つなので、通信では見分けられない。
+ */
+export const itemsLoaded: string[] = [];
 
 function toCollection(
   document: StacCollection,
@@ -477,7 +513,10 @@ function toCollection(
       ? (extent as Bbox)
       : null;
 
-  const itemsHref = document.links.find((link) => link.rel === 'items')?.href;
+  // Item は stac-geoparquet のアセット (roles に `stac-items`) が指す。
+  const itemsHref = Object.values(document.assets ?? {}).find((asset) =>
+    asset.roles?.includes('stac-items'),
+  )?.href;
   const itemsPath = itemsHref ? resolveHref(itemsHref, path) : undefined;
   let items: Promise<LocatedItem[]> | undefined;
 
@@ -516,8 +555,10 @@ function toCollection(
       .filter((link) => link.rel === 'derived_from')
       .map((link) => resolveHref(link.href, path)),
     viewer: document.links.find((link) => link.rel === 'alternate' && link.type === 'text/html')?.href,
-    sourceStac: document.links.find((link) => link.rel === 'alternate' && link.type === 'application/json')
-      ?.href,
+    // `hreflang` の付いたものは同じ文書の別の言語 (Language extension) で、公開元ではない。
+    sourceStac: document.links.find(
+      (link) => link.rel === 'alternate' && link.type === 'application/json' && !link.hreflang,
+    )?.href,
     isDefault: document['duck:default'] === true,
     zoom: document['duck:zoom'],
     tileSize: document['duck:tile_size'],
@@ -530,10 +571,11 @@ function toCollection(
     ),
     items: () =>
       (items ??= itemsPath
-        ? fetchStac<{ features: StacItem[] }>(itemsPath).then((collection) =>
-            // Itemのアセットは**ItemCollectionの文書からの相対**。
-            collection.features.map((feature) => ({ feature, base: itemsPath })),
-          )
+        ? readItems(itemsPath, document.id).then((features) => {
+            itemsLoaded.push(document.id);
+            // Itemのアセットは**stac-geoparquet のファイルからの相対**。
+            return features.map((feature) => ({ feature, base: itemsPath }));
+          })
         : Promise.resolve([])),
   };
 }

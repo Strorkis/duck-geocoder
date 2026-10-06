@@ -1209,15 +1209,18 @@ body,
   text-decoration: underline;
 }
 
-/* 同じ Collection を STAC Browser で開くリンク (公開時だけ)。見た目は上と揃える。 */
-.browse-link {
+/* 同じ Collection を STAC Browser で開くリンク (公開時だけ) と、Item の stac-geoparquet を
+   保存するリンク。見た目は上と揃える。 */
+.browse-link,
+.items-link {
   flex: none;
   font-size: 0.65rem;
   color: #999;
   text-decoration: none;
 }
 
-.browse-link:hover {
+.browse-link:hover,
+.items-link:hover {
   color: #14508c;
   text-decoration: underline;
 }

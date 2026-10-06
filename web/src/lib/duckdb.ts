@@ -5,7 +5,16 @@
  * 使うときに初めて Item を読み、ファイルを DuckDB に教える (`ensure*` / `source.ensure()`)。
  */
 import * as duckdb from '@duckdb/duckdb-wasm';
-import { dataUrl, itemFile, itemFiles, resolveHref, type Collection, type DatasetKind } from './stac';
+import {
+  dataUrl,
+  itemFile,
+  itemFiles,
+  resolveHref,
+  setItemReader,
+  type Collection,
+  type DatasetKind,
+  type StacLink,
+} from './stac';
 import {
   LINE_KINDS,
   type BuildingCoverage,
@@ -150,14 +159,56 @@ export async function initDuckDb(collections: Collection[]): Promise<Database> {
   });
 
   // DuckDBにファイルを教える。通信はしないので、何度呼んでも安い。
-  const registered = new Set<string>();
+  // **登録の終わりを待てるよう Promise で覚える** — 並んで呼ばれたとき、
+  // 後から来た方が登録の済む前に読みに行かないようにする。
+  const registered = new Map<string, Promise<void>>();
   const register = async (files: string[]) => {
-    for (const file of files) {
-      if (registered.has(file)) continue;
-      registered.add(file);
-      await db.registerFileURL(file, dataUrl(file), duckdb.DuckDBDataProtocol.HTTP, false);
-    }
+    await Promise.all(
+      files.map((file) => {
+        let done = registered.get(file);
+        if (!done) {
+          done = db.registerFileURL(file, dataUrl(file), duckdb.DuckDBDataProtocol.HTTP, false);
+          registered.set(file, done);
+        }
+        return done;
+      }),
+    );
   };
+
+  // Item は stac-geoparquet から読む。**Collection で絞ると、その行グループだけを Range で読む**
+  // (パイプラインが Collection ごとに行グループを分け、`collection` 列の最小・最大で読み飛ばせる)。
+  // 値は文字列で埋め込む — 準備した問い合わせの引数だと、行グループの読み飛ばしに使われないことがある。
+  setItemReader(async (file, collection) => {
+    await register([file]);
+    const where =
+      collection === undefined ? '' : `WHERE collection = '${collection.replace(/'/g, "''")}'`;
+    const result = await conn.query(`
+      SELECT id, collection, bbox, links,
+             "table:row_count" AS row_count, "duck:source_lod" AS source_lod,
+             assets.data.href AS href
+      FROM read_parquet('${file}') ${where};
+    `);
+    return result.toArray().map((row) => {
+      const bbox = row.bbox?.toJSON() as { xmin: number; ymin: number; xmax: number; ymax: number } | null;
+      return {
+        id: row.id,
+        collection: row.collection,
+        bbox: bbox ? [bbox.xmin, bbox.ymin, bbox.xmax, bbox.ymax] : undefined,
+        links: row.links
+          ? [...row.links].map((link: { toJSON: () => StacLink }) => {
+              const { rel, href, type, title } = link.toJSON();
+              return { rel, href, type: type ?? undefined, title: title ?? undefined };
+            })
+          : undefined,
+        properties: {
+          // Int64 は BigInt で返る。
+          'table:row_count': row.row_count === null ? undefined : Number(row.row_count),
+          'duck:source_lod': row.source_lod ?? undefined,
+        },
+        assets: { data: { href: row.href } },
+      };
+    });
+  });
 
   /**
    * Collection の Item を読み、ファイルを DuckDB に教える。**使うときに一度だけ** (`once`)。

@@ -454,12 +454,21 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
       el.append(head, description, facts);
       return el;
     }
-    // **ファイル数はItemCollectionを読まないと分からない。** 起動時には読まない
+    // **ファイル数はItemを読まないと分からない。** 起動時には読まない
     // 約束なので、開いたときに読む (1回だけ。建物を引くときもこれを使い回す)。
     const count = document.createElement('span');
     count.className = 'collection-item-count';
     count.textContent = '…';
-    fact(m.factFiles, count, ' ', jsonLink(collection.itemsPath, 'Items'));
+    // Item は stac-geoparquet (全 Collection で1つ) なので、ページの中では見せずに保存させる。
+    const itemsLink = document.createElement('a');
+    itemsLink.className = 'items-link';
+    itemsLink.textContent = 'Items';
+    itemsLink.title = m.itemsFileTitle;
+    if (collection.itemsPath) {
+      itemsLink.href = dataUrl(collection.itemsPath);
+      itemsLink.download = '';
+    }
+    fact(m.factFiles, count, ' ', itemsLink);
     collection
       .items()
       .then((items) => (count.textContent = m.itemFileCount(items.length)))
