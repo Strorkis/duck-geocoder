@@ -166,27 +166,31 @@ const SUB_CATALOGS: &[SubCatalog] = &[
     SubCatalog {
         dir: "gsi",
         title: "国土地理院",
-        description: "国土地理院が公開している地図タイルとベクトルタイル。うちでは複製せず、公開元を直接指す。",
+        description: "国土地理院が公開している地図タイル・ベクトルタイル・標高タイル。\
+                      このカタログでは複製せず、公開元の配信をそのまま使う。",
     },
     SubCatalog {
         dir: "mapterhorn",
         title: "Mapterhorn",
-        description: "世界の標高タイル。うちでは複製せず、公開元を直接指す。",
+        description: "世界の標高タイル。このカタログでは複製せず、公開元の配信をそのまま使う。",
     },
     SubCatalog {
         dir: "reearth",
         title: "Re:Earth",
-        description: "Re:Earth が公開している標高タイルと 3D の建物 (3D Tiles)。うちでは複製せず、公開元を直接指す。",
+        description: "Re:Earth が公開している標高タイルと 3D の建物 (3D Tiles)。\
+                      このカタログでは複製せず、公開元の配信をそのまま使う。",
     },
+    // JAXA と NASA は配信を使っておらず (まだ描かない)、公開元への案内だけを載せている。
     SubCatalog {
         dir: "jaxa",
         title: "JAXA",
-        description: "宇宙航空研究開発機構 (JAXA) の衛星データ。うちでは複製せず、公開元 (JAXA Earth API) を直接指す。",
+        description: "宇宙航空研究開発機構 (JAXA) の衛星データ。\
+                      このカタログでは複製せず、公開元 (JAXA Earth API) への案内だけを載せる。",
     },
     SubCatalog {
         dir: "nasa",
         title: "NASA",
-        description: "米国航空宇宙局 (NASA) の衛星データ。うちでは複製せず、公開元を直接指す。",
+        description: "米国航空宇宙局 (NASA) の衛星データ。このカタログでは複製せず、公開元への案内だけを載せる。",
     },
 ];
 
