@@ -9,6 +9,7 @@ import type { Map as MapLibreMap } from 'maplibre-gl';
 import type { Collection } from '../lib/stac';
 import { TERRAIN_SOURCE, defaultOf, terrainSource } from '../lib/tiles';
 import { sliderSettings } from './layer-list';
+import { m } from '../i18n';
 
 export interface TerrainRowOptions {
   map: MapLibreMap;
@@ -58,7 +59,7 @@ export function createTerrainRow({ map, collections, openDetails }: TerrainRowOp
   });
   // 起伏の強調は ⚙ で行の下に開く (地図を見ながら動かすもの)。
   slotEl.append(
-    sliderSettings('起伏の強調', 1, 3, 0.5, 1, (v) => `×${v}`, (v) => {
+    sliderSettings(m.exaggeration, 1, 3, 0.5, 1, (v) => `×${v}`, (v) => {
       exaggeration = v;
       if (map.getTerrain()) apply();
     }),

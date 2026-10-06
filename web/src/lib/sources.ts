@@ -3,6 +3,7 @@
  * 問い合わせ (DuckDB) からも画面からも使う。地図には依存しない。
  */
 import type { Bbox, ItemFile, Tiers } from './stac';
+import { m } from '../i18n';
 
 /** 地図の表示範囲。 */
 export interface ViewBounds {
@@ -288,7 +289,7 @@ export function lodNote(
 ): string {
   if (source.coarseLodToleranceM === undefined || lod !== COARSE_LOD) return '';
   const until = coarseLodUntilZoom(source.coarseLodToleranceM);
-  return ` · 簡略表示 (ズーム${until + 1}から原寸)`;
+  return m.simplifiedNote(until + 1);
 }
 
 /**
@@ -316,5 +317,5 @@ export function sourceLodNote(
   if (lods.length === 0) return '';
   const max = Math.max(...lods);
   if (max <= SHOWN_LOD) return '';
-  return ` · 表示はLOD${SHOWN_LOD} / 原典はLOD${max}まで`;
+  return m.sourceLodNote(SHOWN_LOD, max);
 }

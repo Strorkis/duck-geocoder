@@ -14,6 +14,7 @@ import { lodForZoom, lodNote, type RailwaySource } from '../../lib/sources';
 import { fetchRailwayInView, type RailwayFeature } from '../../lib/queries';
 import { EMPTY_FEATURE_COLLECTION, RAILWAY_COLORS, RAILWAY_FALLBACK_COLOR } from '../map';
 import { requester, type DrawContext } from './context';
+import { m } from '../../i18n';
 
 export function createRailwayLayer(
   ctx: DrawContext,
@@ -86,7 +87,7 @@ export function createRailwayLayer(
     const limit = ctx.detail().railwayLimit;
     const zoom = map.getZoom();
     const bounds = ctx.currentBounds();
-    const results = await ctx.busy('鉄道を読み込み中…', () =>
+    const results = await ctx.busy(m.loadingNamed(m.railways), () =>
       Promise.all(
         visible.map(async (source) => {
           await source.ensure();
@@ -123,26 +124,26 @@ export function createRailwayLayer(
       ctx.setStatus(
         source.id,
         features.length === 0
-          ? 'この範囲にありません'
-          : `${features.length.toLocaleString()} ${source.kind === 'railway' ? '本' : '駅'}` +
+          ? m.noneInView
+          : (source.kind === 'railway' ? m.lineCount(features.length) : m.stationCount(features.length)) +
               lodNote(source, lodForZoom(source, zoom)) +
-              (features.length >= limit ? ' (表示上限)' : ''),
+              (features.length >= limit ? m.displayLimit : ''),
       );
     }
 
     if (lines.length === 0 && stations.length === 0) {
-      summary.textContent = 'この範囲に鉄道がありません';
+      summary.textContent = m.noRailwaysInView;
       return;
     }
     const capped = lines.length >= limit || stations.length >= limit;
     const lineInfo = visible.find((source) => source.kind === 'railway');
     summary.textContent =
-      `路線 ${lines.length.toLocaleString()} / 駅 ${stations.length.toLocaleString()}` +
+      m.railwaySummary(lines.length, stations.length) +
       (lineInfo ? lodNote(lineInfo, lodForZoom(lineInfo, zoom)) : '') +
-      (capped ? ' (上限に達しました。拡大すると全部出ます)' : '');
+      (capped ? m.limitReached : '');
   };
 
-  const request = requester(ctx, 'railway', '鉄道', refresh);
+  const request = requester(ctx, 'railway', m.railways, refresh);
   for (const input of inputs) input.addEventListener('change', request);
   const setAll = (checked: boolean) => {
     for (const input of inputs) input.checked = checked;

@@ -1,7 +1,8 @@
 /**
  * **SORA 2.5 の地上リスク (iGRC)** の表。人口密度の凡例の区切りに使う。
- * 画面にも地図にも依存しない。
+ * 画面にも地図にも依存しない (凡例の文言だけ、画面の言語の辞書から引く)。
  */
+import { m } from '../i18n';
 
 /** 機体の区分。SORA 2.5 の iGRC 表の列。 */
 export const AIRCRAFT_CLASSES = [
@@ -30,14 +31,14 @@ export const IGRC_BANDS: {
   color: string;
   igrc: (number | null)[];
 }[] = [
-  { limit: 5, label: '5 未満', color: '#ffffb2', igrc: [2, 3, 4, 5, 6] },
+  { limit: 5, label: m.lessThan('5'), color: '#ffffb2', igrc: [2, 3, 4, 5, 6] },
   { limit: 50, label: '5 〜 50', color: '#fed976', igrc: [3, 4, 5, 6, 7] },
   { limit: 500, label: '50 〜 500', color: '#feb24c', igrc: [4, 5, 6, 7, 8] },
   { limit: 5000, label: '500 〜 5,000', color: '#fd8d3c', igrc: [5, 6, 7, 8, 9] },
   { limit: 50000, label: '5,000 〜 50,000', color: '#f03b20', igrc: [6, 7, 8, 9, 10] },
   {
     limit: Number.POSITIVE_INFINITY,
-    label: '50,000 超',
+    label: m.moreThan('50,000'),
     color: '#bd0026',
     igrc: [7, 8, null, null, null],
   },

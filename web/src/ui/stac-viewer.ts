@@ -9,6 +9,7 @@
  */
 import { dataUrl, fetchStac, isAbsoluteUrl, resolveHref, type StacLink } from '../lib/stac';
 import { externalLink } from './credits';
+import { m } from '../i18n';
 
 /** STACの文書のうち、見せるのに要るところだけ。種類を問わず読む。 */
 interface StacDocument {
@@ -63,7 +64,7 @@ export function createStacViewer(dialog: HTMLDialogElement): (path: string) => v
   const render = async (path: string) => {
     backButton.disabled = trail.length < 2;
     typeEl.textContent = '';
-    titleEl.textContent = '読み込み中…';
+    titleEl.textContent = m.loading;
     pathEl.textContent = path;
     linksEl.replaceChildren();
     noteEl.hidden = true;
@@ -74,7 +75,7 @@ export function createStacViewer(dialog: HTMLDialogElement): (path: string) => v
     try {
       document_ = await fetchStac<StacDocument>(path);
     } catch (e) {
-      titleEl.textContent = '読めませんでした';
+      titleEl.textContent = m.couldNotRead;
       jsonEl.textContent = String(e);
       return;
     }
@@ -100,9 +101,7 @@ export function createStacViewer(dialog: HTMLDialogElement): (path: string) => v
         ? { ...document_, features: features.slice(0, STAC_FEATURE_PREVIEW) }
         : document_;
     if (shown !== document_) {
-      noteEl.textContent =
-        `features は ${features!.length.toLocaleString()} 件のうち先頭 ` +
-        `${STAC_FEATURE_PREVIEW} 件だけ表示しています。全体は下のリンクから見られます。`;
+      noteEl.textContent = m.stacFeaturesPreview(features!.length, STAC_FEATURE_PREVIEW);
       noteEl.hidden = false;
     }
     jsonEl.textContent = JSON.stringify(shown, null, 2);

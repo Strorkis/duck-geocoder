@@ -16,6 +16,7 @@ import type { Map as MapLibreMap } from 'maplibre-gl';
 import type { Bbox, CatalogGroup, Collection, VectorLayerInfo } from '../lib/stac';
 import type { BuildingCoverage } from '../lib/sources';
 import type { VectorOverlay } from '../lib/tiles';
+import { m } from '../i18n';
 
 /** 一覧の区分。データ (GeoParquet) と、見るだけの地図タイル。 */
 export type Section = 'data' | 'tile';
@@ -116,18 +117,18 @@ export function sliderSettings(
   return settings;
 }
 
-const SECTION_TITLES: Record<Section, string> = { data: 'データ', tile: '地図タイル' };
+const SECTION_TITLES: Record<Section, string> = { data: m.sectionData, tile: m.sectionTile };
 
 /**
  * カタログのダイアログのタブ。一覧の区分に、**この地図では描けないもの** (3D Tiles・配っていない
  * 元データ) を足す。足せないものが足せるものの間に混ざると、探すときの邪魔になる。
  */
 type CatalogTab = Section | 'view';
-const CATALOG_TAB_TITLES: Record<CatalogTab, string> = { ...SECTION_TITLES, view: '見るだけ・元データ' };
+const CATALOG_TAB_TITLES: Record<CatalogTab, string> = { ...SECTION_TITLES, view: m.catalogTabView };
 const tabOf = (layer: Layer): CatalogTab => (layer.viewOnly ? 'view' : layer.section);
 
 /** 「ズーム14から」。**行は消さない** — 消すと、寄れば出ることが分からない。 */
-const fromZoom = (minzoom: number) => `ズーム${minzoom}から`;
+const fromZoom = (minzoom: number) => m.fromZoom(minzoom);
 
 export function createLayerList(options: LayerListOptions): LayerList {
   const { map, layers, statusOf, isPresent, openDetails, catalogLink } = options;
@@ -327,8 +328,8 @@ export function createLayerList(options: LayerListOptions): LayerList {
     handle.type = 'button';
     handle.className = 'layer-drag-handle';
     handle.textContent = '⋮⋮';
-    handle.title = 'ドラッグして並べ替えます (↑↓キーでも動かせます)';
-    handle.setAttribute('aria-label', `${layer.title}の重ね順を変える`);
+    handle.title = m.dragHandleTitle;
+    handle.setAttribute('aria-label', m.reorderLabel(layer.title));
     handle.addEventListener('pointerdown', (e) => startDrag(e, el, layer.section));
     handle.addEventListener('keydown', (e) => keyMove(e, layer));
 
@@ -358,7 +359,7 @@ export function createLayerList(options: LayerListOptions): LayerList {
     name.title = [layer.group?.title, layer.title, layer.vintage].filter(Boolean).join(' · ');
 
     // **いまの位置のまま寄る。** 出るズームより引いているときだけ出す (寄っていれば要らない)。
-    const zoomIn = iconButton('layer-zoom-button', '🔍', `ズーム${layer.minZoom ?? 0}まで寄る`, () => {
+    const zoomIn = iconButton('layer-zoom-button', '🔍', m.zoomInTo(layer.minZoom ?? 0), () => {
       if (layer.minZoom === undefined) return;
       // 出していなければ一緒に出す。寄っただけで何も出ないのは分かりにくい。
       if (!layer.visible) {
@@ -376,7 +377,7 @@ export function createLayerList(options: LayerListOptions): LayerList {
     const settings = iconButton(
       'layer-settings-button',
       '⚙',
-      settingsOpen ? '絞り込みを閉じる' : `${layer.title}の絞り込み・色分け`,
+      settingsOpen ? m.closeSettings : m.layerSettings(layer.title),
       () => {
         settingsRowId = settingsRowId === layer.id ? null : layer.id;
         // 共有している設定を、開いた行の出所に向ける (建物ならPLATEAUかOvertureか)。
@@ -387,10 +388,10 @@ export function createLayerList(options: LayerListOptions): LayerList {
     settings.setAttribute('aria-expanded', String(settingsOpen));
     settings.hidden = !hasSettings(layer);
 
-    const detail = iconButton('layer-detail-button', 'ⓘ', `${layer.title}について (カタログ・使う条件・取得)`, () =>
+    const detail = iconButton('layer-detail-button', 'ⓘ', m.layerDetailsLong(layer.title), () =>
       openDetails(layer),
     );
-    const removeButton = iconButton('layer-remove-button', '✕', `${layer.title}を一覧から外す`, () =>
+    const removeButton = iconButton('layer-remove-button', '✕', m.removeLayer(layer.title), () =>
       remove(layer),
     );
 
@@ -410,7 +411,7 @@ export function createLayerList(options: LayerListOptions): LayerList {
     if (!present) {
       const absent = document.createElement('span');
       absent.className = 'layer-absent-note';
-      absent.textContent = 'この範囲にはありません';
+      absent.textContent = m.notInView;
       sub.append(absent);
     }
     sub.append(status);
@@ -446,7 +447,7 @@ export function createLayerList(options: LayerListOptions): LayerList {
     const shown = parts.layers.filter((part) => parts.overlay.visible.get(part.id));
     // 出しているのに、いまのズームでは1つも描かれないなら、いつから描かれるかを言う。
     if (shown.length > 0 && shown.every((part) => zoom < part.minzoom)) {
-      status.textContent = `${fromZoom(Math.min(...shown.map((part) => part.minzoom)))}描かれます`;
+      status.textContent = m.drawnFromZoom(Math.min(...shown.map((part) => part.minzoom)));
       status.title = status.textContent;
     }
 
@@ -456,7 +457,7 @@ export function createLayerList(options: LayerListOptions): LayerList {
     const expander = iconButton(
       'layer-expander',
       open ? '▾' : '▸',
-      open ? '中の層をたたむ' : `中の層を開く (${parts.layers.length})`,
+      open ? m.collapseParts : m.expandParts(parts.layers.length),
       () => {
         if (expandedRows.has(layer.id)) expandedRows.delete(layer.id);
         else expandedRows.add(layer.id);
@@ -552,7 +553,7 @@ export function createLayerList(options: LayerListOptions): LayerList {
     meta.className = 'catalog-meta';
     meta.textContent = [
       layer.vintage,
-      present ? null : 'この範囲にはありません',
+      present ? null : m.notInView,
       layer.minZoom !== undefined ? fromZoom(layer.minZoom) : null,
       layer.viewOnly ?? null,
     ]
@@ -566,25 +567,25 @@ export function createLayerList(options: LayerListOptions): LayerList {
       const partsEl = document.createElement('span');
       partsEl.className = 'catalog-parts';
       const titles = (hits.length > 0 ? hits : layer.parts.layers).map((part) => part.title);
-      const shown = titles.slice(0, 8).join('、') + (titles.length > 8 ? ` ほか${titles.length - 8}` : '');
-      partsEl.textContent = hits.length > 0 ? `当たった層: ${shown}` : `${titles.length}層: ${shown}`;
+      const shown = titles.slice(0, 8).join(m.listSeparator) + (titles.length > 8 ? m.andMore(titles.length - 8) : '');
+      partsEl.textContent = hits.length > 0 ? m.matchedParts(shown) : m.partsList(titles.length, shown);
       body.append(partsEl);
     }
 
-    const detail = iconButton('layer-detail-button', 'ⓘ', `${layer.title}について`, () => openDetails(layer));
+    const detail = iconButton('layer-detail-button', 'ⓘ', m.layerDetails(layer.title), () => openDetails(layer));
 
     const placed = order[layer.section].includes(layer.id);
     const add = document.createElement('button');
     add.type = 'button';
     add.className = 'catalog-add';
     if (layer.viewOnly) {
-      add.textContent = '描けません';
+      add.textContent = m.cannotDraw;
       add.disabled = true;
     } else if (placed) {
-      add.textContent = '追加済み';
+      add.textContent = m.added;
       add.disabled = true;
     } else {
-      add.textContent = hits.length > 0 ? `${hits.length}層を追加` : '追加';
+      add.textContent = hits.length > 0 ? m.addParts(hits.length) : m.addButton;
       add.addEventListener('click', () => {
         place(layer, hits.length > 0 ? hits.map((part) => part.id) : undefined);
       });
@@ -615,7 +616,7 @@ export function createLayerList(options: LayerListOptions): LayerList {
     const heading = document.createElement('div');
     heading.className = 'catalog-subgroup';
     heading.dataset.collection = collection.id;
-    heading.textContent = `${collection.title} · ${count}件`;
+    heading.textContent = `${collection.title} · ${m.itemCount(count)}`;
     return heading;
   };
 

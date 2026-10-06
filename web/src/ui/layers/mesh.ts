@@ -11,6 +11,7 @@ import { fetchMeshInView } from '../../lib/queries';
 import { AIRCRAFT_CLASSES, IGRC_BANDS, igrcBand } from '../../lib/igrc';
 import { EMPTY_FEATURE_COLLECTION } from '../map';
 import { requester, type DrawContext } from './context';
+import { m } from '../../i18n';
 
 export interface MeshLayer {
   request: () => void;
@@ -46,8 +47,8 @@ export function createMeshLayer(ctx: DrawContext, sources: MeshSource[]): MeshLa
       const value = band.igrc[aircraftIndex];
       if (value === null) {
         igrc.className = 'out-of-scope';
-        igrc.textContent = '範囲外';
-        igrc.title = 'SORAの適用範囲外';
+        igrc.textContent = m.outOfScope;
+        igrc.title = m.outOfScopeSora;
       } else {
         igrc.textContent = String(value);
       }
@@ -84,11 +85,11 @@ export function createMeshLayer(ctx: DrawContext, sources: MeshSource[]): MeshLa
     // 引くと、これに当たる代わりに125mから束ねることになっていた。
     const source = meshSourceFor(sources, digits);
     if (!source) {
-      await clear('この縮尺の人口密度は配信されていません');
+      await clear(m.meshNotAtThisScale);
       return;
     }
 
-    const cells = await ctx.busy('人口密度を読み込み中…', async () => {
+    const cells = await ctx.busy(m.loadingNamed(m.populationDensity), async () => {
       await source.ensure();
       return fetchMeshInView(ctx.conn, source, ctx.currentBounds(), digits);
     });
@@ -125,18 +126,16 @@ export function createMeshLayer(ctx: DrawContext, sources: MeshSource[]): MeshLa
     // **表示範囲の最大値を出す。** SORAは運航範囲の中で最も密度の高いところを採るので、
     // 地図から目で探させるより数字で出す方が確実。
     if (cells.length === 0) {
-      summary.textContent = 'この範囲に人口メッシュがありません';
+      summary.textContent = m.noMeshInView;
       return;
     }
     const peak = cells.reduce((max, cell) => Math.max(max, cell.density), 0);
     const igrc = igrcBand(peak).igrc[aircraftIndex];
-    const size = MESH_SIZE_LABELS[digits] ?? `${digits}桁`;
-    summary.textContent =
-      `${size}メッシュ / 表示範囲の最大 ${Math.round(peak).toLocaleString()} 人/km² ` +
-      `(iGRC ${igrc === null ? '範囲外' : igrc})`;
+    const size = MESH_SIZE_LABELS[digits] ?? m.meshDigits(digits);
+    summary.textContent = m.meshSummary(size, Math.round(peak), igrc === null ? m.outOfScope : String(igrc));
   };
 
-  const request = requester(ctx, 'mesh', '人口密度', refresh);
+  const request = requester(ctx, 'mesh', m.populationDensity, refresh);
 
   for (const [index, { label }] of AIRCRAFT_CLASSES.entries()) {
     const option = document.createElement('option');

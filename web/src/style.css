@@ -1528,6 +1528,20 @@ body,
   border-top: none;
 }
 
+/* 言語の切り替え。ダイアログを開くボタンと区別して、控えめなリンクにする。 */
+#lang-switch {
+  display: block;
+  padding: 0.4rem 0 0;
+  border-top: 1px solid #eee;
+  font-size: 0.8rem;
+  color: #14508c;
+  text-decoration: none;
+}
+
+#lang-switch:hover {
+  text-decoration: underline;
+}
+
 /* 出典・使っている技術のダイアログ。**中身は内側の要素に入れ、dialog自身の余白は0**
    (STACの文書のダイアログと同じ。背景を押したときだけ dialog がクリックの的になる)。 */
 .info-dialog {

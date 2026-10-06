@@ -18,6 +18,7 @@ import {
 } from '../../lib/queries';
 import { BUILDING_COLOR_BY_HEIGHT, BUILDING_COLOR_BY_TIER, EMPTY_FEATURE_COLLECTION } from '../map';
 import { requester, type DrawContext } from './context';
+import { m } from '../../i18n';
 
 export interface BuildingLayers {
   request: () => void;
@@ -122,13 +123,13 @@ export function createBuildingLayers(ctx: DrawContext, sources: BuildingSource[]
       if (!source.coverage) {
         // 整備範囲を持たない出所は、引いた表示では何も描かない。
         // **どこまで寄れば出るかを数字で言う。**
-        statuses.push([source, `ズーム${firstVisibleZoom(source)}まで寄ると出ます`]);
+        statuses.push([source, m.zoomInToShow(firstVisibleZoom(source))]);
         continue;
       }
       const area = source.coverage;
       // 配られているより細かくはできない。引くほど粗く束ねる。
       const digits = Math.min(meshDigits(zoom), area.meshDigits);
-      const cells = await ctx.busy('整備範囲を読み込み中…', async () => {
+      const cells = await ctx.busy(m.loadingNamed(m.coverage), async () => {
         await area.ensure();
         return fetchCoverageInView(ctx.conn, area, bounds, digits);
       });
@@ -137,9 +138,12 @@ export function createBuildingLayers(ctx: DrawContext, sources: BuildingSource[]
       const buildings = cells.reduce((total, cell) => total + cell.buildings, 0);
       statuses.push([
         source,
-        `整備範囲 ${cells.length.toLocaleString()} メッシュ` +
-          ` (${MESH_SIZE_LABELS[digits] ?? `${digits}桁`}) · ` +
-          `建物 ${buildings.toLocaleString()} 棟 · ズーム${firstVisibleZoom(source)}から建物の形を表示`,
+        m.coverageSummary(
+          cells.length,
+          MESH_SIZE_LABELS[digits] ?? m.meshDigits(digits),
+          buildings,
+          firstVisibleZoom(source),
+        ),
       ]);
     }
     await coverage?.setData({ type: 'FeatureCollection', features: coverageFeatures });
@@ -148,7 +152,7 @@ export function createBuildingLayers(ctx: DrawContext, sources: BuildingSource[]
     for (const source of visible) {
       const depth = depths.get(source);
       if (depth === null || depth === undefined) continue;
-      const rows = await ctx.busy('建物を読み込み中…', async () => {
+      const rows = await ctx.busy(m.loadingNamed(m.buildings), async () => {
         await source.ensure();
         return fetchBuildingsInView(
           ctx.conn,
@@ -182,23 +186,23 @@ export function createBuildingLayers(ctx: DrawContext, sources: BuildingSource[]
         });
       }
       const count =
-        rows.length >= detail.buildingsLimit ? `${detail.buildingsLimit}件以上 (表示上限)` : `${rows.length}件`;
+        rows.length >= detail.buildingsLimit ? m.atLeastItemsCapped(detail.buildingsLimit) : m.itemCount(rows.length);
       // **間引いているときは、どこまで出しているかを言う。** 黙って減らすと
       // 「住宅が無い」と読まれてしまう。
       const thinned =
         depth === 'all'
           ? ''
-          : ` · ${source
-              .tiers!.tiers.slice(0, depth + 1)
-              .map((t) => t.title)
-              .join('・')}のみ (ズーム${detail.buildingsMinZoom}ですべて)`;
+          : m.thinnedTiers(
+              source.tiers!.tiers.slice(0, depth + 1).map((t) => t.title),
+              detail.buildingsMinZoom,
+            );
       statuses.push([source, count + thinned + sourceLodNote(source, bounds)]);
     }
     await mapSource.setData({ type: 'FeatureCollection', features });
     for (const [source, text] of statuses) showStatus(source, text);
   };
 
-  const request = requester(ctx, 'buildings', '建物', refresh);
+  const request = requester(ctx, 'buildings', m.buildings, refresh);
 
   // ---- 絞り込みのパネル (共有) ------------------------------------------------------
 
@@ -241,7 +245,7 @@ export function createBuildingLayers(ctx: DrawContext, sources: BuildingSource[]
         request();
       });
       // 何が入るのかを添える。段の名前だけでは「業務」に工場が入るのか分からない。
-      label.title = tier.values.length > 0 ? tier.values.join('・') : 'どの段にも入らないもの';
+      label.title = tier.values.length > 0 ? tier.values.join('・') : m.noTier;
       label.append(checkbox, document.createTextNode(tier.title));
       tierOptionsEl.append(label);
     }

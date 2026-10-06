@@ -6,6 +6,8 @@
  * 決める材料が利用者の側に無いため。**上限に当たったことは各レイヤーが
  * 「表示上限」と断る**ので、そこを見て段を上げればよい。
  */
+import { m } from '../i18n';
+
 export type DetailLevel = 'low' | 'medium' | 'high';
 
 export interface DetailSettings {
@@ -38,7 +40,7 @@ export interface DetailSettings {
  */
 export const DETAIL_LEVELS: Record<DetailLevel, DetailSettings & { label: string }> = {
   low: {
-    label: '控えめ',
+    label: m.detailLow,
     buildingsMinZoom: 16,
     buildingsLimit: 1500,
     railwayLimit: 2000,
@@ -46,7 +48,7 @@ export const DETAIL_LEVELS: Record<DetailLevel, DetailSettings & { label: string
     roadClassZoomShift: -2,
   },
   medium: {
-    label: '標準',
+    label: m.detailMedium,
     buildingsMinZoom: 15,
     buildingsLimit: 3000,
     railwayLimit: 4000,
@@ -54,7 +56,7 @@ export const DETAIL_LEVELS: Record<DetailLevel, DetailSettings & { label: string
     roadClassZoomShift: 0,
   },
   high: {
-    label: '多め',
+    label: m.detailHigh,
     buildingsMinZoom: 14,
     buildingsLimit: 40000,
     railwayLimit: 8000,

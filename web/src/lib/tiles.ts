@@ -24,6 +24,7 @@ import {
 } from 'maplibre-gl';
 import { Protocol as PmtilesProtocol } from 'pmtiles';
 import type { Collection, DatasetKind, VectorLayerInfo } from './stac';
+import { m } from '../i18n';
 
 /** 背景地図の地図上の ID (ソースと層で同じ)。 */
 export const basemapLayerId = (collection: Collection) => `basemap/${collection.id}`;
@@ -66,17 +67,21 @@ const DEFAULT_VECTOR_LOOK: VectorLook = { color: '#666666' };
 export const DEM_ENCODING_LABELS: Record<string, string> = {
   terrarium: 'Terrarium (Mapzen)',
   mapbox: 'Terrain-RGB (Mapbox)',
-  gsi: '地理院の独自形式 (このアプリで読み込むときに Terrarium へ詰め直しています)',
+  gsi: m.demGsi,
 };
 
 /** 高さの基準の呼び名。 */
 export const DEM_VERTICAL_LABELS: Record<string, string> = {
-  orthometric: '海面から (標高)',
-  ellipsoid: 'WGS84 楕円体から (楕円体高)',
+  orthometric: m.verticalOrthometric,
+  ellipsoid: m.verticalEllipsoid,
 };
 
 /** 形の種類の呼び名。 */
-export const GEOMETRY_LABELS: Record<string, string> = { Point: '点', LineString: '線', Polygon: '面' };
+export const GEOMETRY_LABELS: Record<string, string> = {
+  Point: m.geometryPoint,
+  LineString: m.geometryLine,
+  Polygon: m.geometryPolygon,
+};
 
 /**
  * タイルの層1つを描く地図の層。**カタログに書いた形の種類だけから決める**

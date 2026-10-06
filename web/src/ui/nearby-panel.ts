@@ -10,6 +10,7 @@ import type { ExpressionSpecification, GeoJSONSource, Map as MapLibreMap } from 
 import type { Collection } from '../lib/stac';
 import { MESH_SIZE_LABELS } from '../lib/mesh';
 import { geometryOf } from '../lib/wkb';
+import { m } from '../i18n';
 import {
   bboxOverlaps,
   geometryBbox,
@@ -32,6 +33,9 @@ import {
   type NearbyFrame,
   type NearbyOrigin,
 } from '../lib/nearby';
+
+/** 種類の名前 (地図の絞り込みの鍵でもある「建物」「駅」…) を、画面の言語で見せる。 */
+const kindLabel = (kind: string): string => m.nearbyKinds[kind] ?? kind;
 
 export interface NearbyPanelOptions {
   map: MapLibreMap;
@@ -152,7 +156,7 @@ export function createNearbyPanel(options: NearbyPanelOptions): NearbyPanel {
     // 地図をクリックせずにそれを起点にもできる。
     if (on) {
       panel.hidden = false;
-      originEl.textContent = '地図の点・線・建物をクリックしてください';
+      originEl.textContent = m.nearbyPrompt;
       resultsEl.replaceChildren();
       fromSearchButton.hidden = lastSelection === null;
     }
@@ -219,19 +223,19 @@ export function createNearbyPanel(options: NearbyPanelOptions): NearbyPanel {
     const spec = hit && layers.find(({ layer }) => layer === hit.layer.id);
     if (!hit || !spec) {
       return {
-        label: `地図上の点 (${lngLat.lat.toFixed(5)}, ${lngLat.lng.toFixed(5)})`,
+        label: m.mapPoint(lngLat.lat.toFixed(5), lngLat.lng.toFixed(5)),
         geometry: { type: 'Point', coordinates: [lngLat.lng, lngLat.lat] },
       };
     }
     if (spec.nameKey === null) {
       return {
-        label: `${spec.label} ${(hit.properties.name as string | null) ?? '(名称なし)'}`,
+        label: `${kindLabel(spec.label)} ${(hit.properties.name as string | null) ?? m.unnamed}`,
         geometry: hit.geometry,
         height: (hit.properties.height as number | null | undefined) ?? null,
       };
     }
     const name = hit.properties[spec.nameKey] as string | null;
-    if (!name) return { label: `${spec.label} (名前なし)`, geometry: hit.geometry };
+    if (!name) return { label: `${kindLabel(spec.label)} ${m.unnamed}`, geometry: hit.geometry };
     const data = await (map.getSource(hit.source) as GeoJSONSource).getData();
     const lines: GeoJSON.Position[][] = [];
     if (data.type === 'FeatureCollection') {
@@ -357,7 +361,7 @@ export function createNearbyPanel(options: NearbyPanelOptions): NearbyPanel {
       await source.ensure();
       const found = await fetchNearbyPopulation(conn, source, frame);
       if (found && found.cells > 0) {
-        population = { ...found, label: MESH_SIZE_LABELS[source.digits] ?? `${source.digits}桁` };
+        population = { ...found, label: MESH_SIZE_LABELS[source.digits] ?? m.meshDigits(source.digits) };
         break;
       }
     }
@@ -373,8 +377,8 @@ export function createNearbyPanel(options: NearbyPanelOptions): NearbyPanel {
     panel.hidden = false;
     fromSearchButton.hidden = lastSelection === null;
     const distance = Number(distanceSelect.value);
-    originEl.textContent = `起点: ${origin.label} (${distance} m 以内)`;
-    resultsEl.textContent = '調べています…';
+    originEl.textContent = m.nearbyOrigin(origin.label, distance);
+    resultsEl.textContent = m.investigating;
     const mine = ++token;
     const frame = nearbyFrame(origin, distance, currentBounds());
     // **押したものをすぐ強調する** (結果を待たずに、何を起点にしたかが分かるように)。
@@ -388,7 +392,7 @@ export function createNearbyPanel(options: NearbyPanelOptions): NearbyPanel {
     for (const id of NEARBY_LAYERS) if (map.getLayer(id)) map.moveLayer(id);
 
     try {
-      const result = await busy('周辺を調べています…', () => query(frame, distance));
+      const result = await busy(m.investigatingNearby, () => query(frame, distance));
       if (mine !== token) return;
 
       await setSourceData('nearby-zone', result.zoneGeometry);
@@ -416,7 +420,7 @@ export function createNearbyPanel(options: NearbyPanelOptions): NearbyPanel {
       render(result, frame);
     } catch (e) {
       console.error('[nearby] failed', e);
-      if (mine === token) resultsEl.textContent = '調べられませんでした';
+      if (mine === token) resultsEl.textContent = m.nearbyFailed;
     }
   };
 
@@ -434,7 +438,7 @@ export function createNearbyPanel(options: NearbyPanelOptions): NearbyPanel {
         box.type = 'checkbox';
         box.checked = !view.hidden.has(key);
         box.dataset.nearbyKind = key;
-        box.title = '地図に出す';
+        box.title = m.showOnMap;
         box.addEventListener('change', () => {
           if (box.checked) view.hidden.delete(key);
           else view.hidden.add(key);
@@ -449,10 +453,10 @@ export function createNearbyPanel(options: NearbyPanelOptions): NearbyPanel {
       dd.append(...value);
       list.append(dt, dd);
     };
-    const count = (n: number, unit: string) => {
+    const count = (text: string) => {
       const strong = document.createElement('strong');
       strong.className = 'nearby-count';
-      strong.textContent = `${n.toLocaleString()} ${unit}`;
+      strong.textContent = text;
       return strong;
     };
     /** 押せる名前の札。押すとそれだけを残して寄る (もう一度で戻る)。 */
@@ -464,7 +468,7 @@ export function createNearbyPanel(options: NearbyPanelOptions): NearbyPanel {
         chip.type = 'button';
         chip.className = 'nearby-chip';
         chip.textContent = name;
-        chip.title = 'これだけを地図に残して寄る';
+        chip.title = m.focusThis;
         const pressed = view.focus?.kind === kind && view.focus.name === name;
         chip.setAttribute('aria-pressed', String(pressed));
         chip.addEventListener('click', () => {
@@ -480,7 +484,7 @@ export function createNearbyPanel(options: NearbyPanelOptions): NearbyPanel {
       if (rest > 0) {
         const more = document.createElement('span');
         more.className = 'nearby-more';
-        more.textContent = `ほか${rest}件`;
+        more.textContent = m.andMoreItems(rest);
         box.append(more);
       }
       return box;
@@ -497,7 +501,7 @@ export function createNearbyPanel(options: NearbyPanelOptions): NearbyPanel {
         chip.className = 'nearby-chip tier';
         chip.dataset.rank = String(rank);
         chip.textContent = `${title} ${n.toLocaleString()}`;
-        chip.title = 'この段を地図に出す / 隠す';
+        chip.title = m.toggleTier;
         chip.setAttribute('aria-pressed', String(!view.hidden.has(key)));
         chip.addEventListener('click', () => {
           if (view.hidden.has(key)) view.hidden.delete(key);
@@ -510,43 +514,40 @@ export function createNearbyPanel(options: NearbyPanelOptions): NearbyPanel {
       return box;
     };
 
-    if (result.buildings.length === 0 && sources.buildings.length > 0) row('建物', null, 'なし');
+    // 種類の名前 (「建物」「駅」…) は地図の絞り込みの鍵でもあるので、鍵はそのままにして見せる文字だけ訳す。
+    if (result.buildings.length === 0 && sources.buildings.length > 0) row(kindLabel('建物'), null, m.none);
     for (const found of result.buildings) {
       const group = collections.find((c) => c.id === found.source.id)?.group?.title;
       const total = found.counts.reduce((sum, [, n]) => sum + n, 0);
       const shown = found.named.slice(0, 10);
       row(
-        `建物${group ? ` (${group})` : ''}`,
+        `${kindLabel('建物')}${group ? ` (${group})` : ''}`,
         '建物',
-        count(total, '棟'),
+        count(m.buildingCount(total)),
         tierToggles(found.counts),
         ...(shown.length > 0 ? [chips('建物', shown, found.named.length - shown.length)] : []),
       );
     }
     for (const [label, { names, total }] of result.names) {
       if (total === 0) {
-        row(label, null, 'なし');
+        row(kindLabel(label), null, m.none);
         continue;
       }
-      row(label, label, count(total, '件'), chips(label, names, total - names.length));
+      row(kindLabel(label), label, count(m.hitCount(total)), chips(label, names, total - names.length));
     }
     if (result.population) {
       row(
-        '人口',
+        m.population,
         null,
-        count(Math.round(result.population.population), '人'),
-        ` (概算。${result.population.label}メッシュ ${result.population.cells.toLocaleString()} 個の合計)`,
+        count(m.peopleCount(Math.round(result.population.population))),
+        m.populationNote(result.population.label, result.population.cells),
       );
     }
     const notes: string[] = [];
-    if (result.population) {
-      notes.push('人口は範囲に掛かるメッシュの値の合計なので、範囲より広い分を含みます。');
-    }
-    if (frame.clipped) {
-      notes.push('起点が画面より大きいので、表示範囲の中だけを数えています。');
-    }
+    if (result.population) notes.push(m.notePopulation);
+    if (frame.clipped) notes.push(m.noteClipped);
     if (result.buildings.some((b) => b.features.length >= NEARBY_DRAW_LIMIT)) {
-      notes.push(`地図に描く建物は${NEARBY_DRAW_LIMIT.toLocaleString()}件までです (数は全部)。`);
+      notes.push(m.noteDrawLimit(NEARBY_DRAW_LIMIT));
     }
     const note = document.createElement('p');
     note.className = 'note';

@@ -12,6 +12,7 @@ import { CITYGML_TYPES, fetchCityGmlFiles, packCityGml, type CityGmlFile } from 
 import { DEM_ENCODING_LABELS, DEM_VERTICAL_LABELS, GEOMETRY_LABELS } from '../lib/tiles';
 import { externalLink, termsBadges } from './credits';
 import { formatBytes, saveBytes } from './download';
+import { m } from '../i18n';
 
 export interface CollectionCardOptions {
   collections: Collection[];
@@ -53,7 +54,7 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
     button.type = 'button';
     button.className = 'json-link';
     button.textContent = label;
-    button.title = 'STACの文書を見る';
+    button.title = m.viewStacDocument;
     button.disabled = !path;
     // **ページの中で開く** (`openStac`)。生のJSONへ飛ばすと地図から離れる。
     if (path) button.addEventListener('click', () => openStac(path));
@@ -75,7 +76,7 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
     const section = document.createElement('details');
     section.className = 'download-section';
     const summary = document.createElement('summary');
-    summary.textContent = 'この範囲を取得';
+    summary.textContent = m.downloadThisArea;
     const body = document.createElement('div');
     section.append(summary, body);
     section.addEventListener('toggle', () => {
@@ -85,7 +86,7 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
   };
 
   const fillDownloads = async (collection: Collection, body: HTMLElement) => {
-    body.replaceChildren(document.createTextNode('範囲のファイルを調べています…'));
+    body.replaceChildren(document.createTextNode(m.findingFiles));
     const bounds = currentBounds();
     const items = (await collection.items()).filter(({ feature }) => {
       const bbox = feature.bbox?.length === 4 ? (feature.bbox as Bbox) : null;
@@ -94,7 +95,7 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
     const files = items.map(itemFile);
     body.replaceChildren();
     if (files.length === 0) {
-      body.append('この範囲にはファイルがありません');
+      body.append(m.noFilesInView);
       return;
     }
 
@@ -104,12 +105,12 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
     const clip = document.createElement('button');
     clip.type = 'button';
     clip.className = 'download-clip';
-    clip.textContent = 'この範囲を GeoParquet で保存';
+    clip.textContent = m.saveGeoParquet;
     clip.addEventListener('click', () => {
       void (async () => {
         clip.disabled = true;
         try {
-          status.textContent = '数えています…';
+          status.textContent = m.counting;
           await ensureSpatial();
           // 表示で使っていないファイルもあるので登録する (済んでいるものは何もしない)。
           await registerFiles(files);
@@ -123,14 +124,14 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
           const counted = await conn.query(`SELECT count(*) AS n FROM read_parquet([${list}]) WHERE ${where};`);
           const rows = Number((counted.toArray()[0].toJSON() as { n: number | bigint }).n);
           if (rows === 0) {
-            status.textContent = 'この範囲にはありません';
+            status.textContent = m.notInView;
             return;
           }
           if (rows > MAX_EXPORT_ROWS) {
-            status.textContent = `${rows.toLocaleString()} 件あり、多すぎます (上限 ${MAX_EXPORT_ROWS.toLocaleString()} 件)。寄ってから保存してください`;
+            status.textContent = m.tooManyRows(rows, MAX_EXPORT_ROWS);
             return;
           }
-          status.textContent = `${rows.toLocaleString()} 件を書き出しています…`;
+          status.textContent = m.writingRows(rows);
           const bytes = await exportParquet(`SELECT *${exclude} FROM read_parquet([${list}]) WHERE ${where}`, {
             'duck:attribution': collection.attribution,
             'duck:terms': collection.terms ? `${collection.terms.name} ${collection.terms.url}` : collection.license,
@@ -139,10 +140,10 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
             ...(collection.vintage ? { 'duck:vintage': collection.vintage } : {}),
           });
           saveBytes(bytes, `${collection.id}_${new Date().toISOString().slice(0, 10)}.parquet`);
-          status.textContent = `${rows.toLocaleString()} 件・${formatBytes(bytes.length)} を保存しました (出典と規約をファイルのメタデータに入れています)`;
+          status.textContent = m.savedRows(rows, formatBytes(bytes.length));
         } catch (e) {
           console.error('[download] failed', e);
-          status.textContent = '書き出せませんでした';
+          status.textContent = m.writeFailed;
         } finally {
           clip.disabled = false;
         }
@@ -162,15 +163,12 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
       ours.download = '';
       li.append(ours);
       const via = item.feature.links?.find((link) => link.rel === 'via')?.href ?? collection.via;
-      if (via) li.append(' · ', externalLink(via, '配布元'));
+      if (via) li.append(' · ', externalLink(via, m.distributor));
       fileList.append(li);
     }
     const fileHead = document.createElement('p');
     fileHead.className = 'download-head';
-    fileHead.textContent =
-      `ファイルごと (${items.length.toLocaleString()} 件` +
-      (items.length > shown.length ? `、先頭 ${shown.length} 件を表示` : '') +
-      ')';
+    fileHead.textContent = m.wholeFiles(items.length, items.length > shown.length ? shown.length : null);
     body.append(fileHead, fileList);
 
     // 3. CityGML (PLATEAU だけ)。
@@ -183,11 +181,11 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
     box.className = 'citygml-section';
     const head = document.createElement('p');
     head.className = 'download-head';
-    head.textContent = 'CityGML (PLATEAU配信サービス)';
+    head.textContent = m.citygmlHead;
     const find = document.createElement('button');
     find.type = 'button';
     find.className = 'citygml-find';
-    find.textContent = 'この範囲の CityGML を探す';
+    find.textContent = m.citygmlFind;
     const result = document.createElement('div');
     box.append(head, find, result);
 
@@ -195,16 +193,16 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
       void (async () => {
         const codes = meshCodesInView(bounds);
         if (!codes) {
-          result.textContent = '範囲が広すぎます。寄ってから探してください';
+          result.textContent = m.areaTooLarge;
           return;
         }
         find.disabled = true;
-        result.textContent = '探しています…';
+        result.textContent = m.finding;
         try {
           renderCityGml(result, await fetchCityGmlFiles(codes));
         } catch (e) {
           console.error('[citygml] failed', e);
-          result.textContent = 'PLATEAU配信サービスから取れませんでした';
+          result.textContent = m.plateauApiFailed;
         } finally {
           find.disabled = false;
         }
@@ -216,7 +214,7 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
   const renderCityGml = (container: HTMLElement, files: CityGmlFile[]) => {
     container.replaceChildren();
     if (files.length === 0) {
-      container.textContent = 'この範囲にはありません';
+      container.textContent = m.notInView;
       return;
     }
     const types = [...new Set(files.map((f) => f.type))].sort((a, b) =>
@@ -228,7 +226,7 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
       const option = document.createElement('option');
       option.value = type;
       const count = files.filter((f) => f.type === type).length;
-      option.textContent = `${CITYGML_TYPES[type] ?? type} (${type}) · ${count} ファイル`;
+      option.textContent = `${CITYGML_TYPES[type] ?? type} (${type}) · ${m.fileCount(count)}`;
       select.append(option);
     }
     const list = document.createElement('ul');
@@ -248,13 +246,13 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
           li.append(
             externalLink(file.url, `${file.code}`),
             ` · LOD${file.maxLod}` +
-              (file.features ? ` · ${file.features.toLocaleString()} 件` : '') +
+              (file.features ? ` · ${m.featureCount(file.features)}` : '') +
               (file.fileSize ? ` · ${formatBytes(file.fileSize)}` : ''),
           );
           return li;
         }),
       );
-      pack.textContent = `ZIPにまとめる (コードリスト・テクスチャ込み${total ? `、約 ${formatBytes(total)}` : ''})`;
+      pack.textContent = m.packZip(total ? formatBytes(total) : null);
       packStatus.textContent = '';
     };
     select.addEventListener('change', show);
@@ -262,15 +260,15 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
       void (async () => {
         const urls = files.filter((f) => f.type === select.value).map((f) => f.url);
         pack.disabled = true;
-        packStatus.textContent = 'PLATEAU配信サービスにまとめてもらっています…';
+        packStatus.textContent = m.packRequested;
         try {
           const zip = await packCityGml(urls, (progress) => {
-            packStatus.textContent = `まとめています… ${Math.round(progress * 100)}%`;
+            packStatus.textContent = m.packProgress(Math.round(progress * 100));
           });
-          packStatus.replaceChildren(externalLink(zip, 'ZIPをダウンロード'));
+          packStatus.replaceChildren(externalLink(zip, m.downloadZip));
         } catch (e) {
           console.error('[citygml pack] failed', e);
-          packStatus.textContent = 'まとめられませんでした';
+          packStatus.textContent = m.packFailed;
         } finally {
           pack.disabled = false;
         }
@@ -279,8 +277,7 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
     show();
     const note = document.createElement('p');
     note.className = 'download-note';
-    note.textContent =
-      'GML はメッシュ単位の原典そのものです。用途などのコードを読むにはコードリストが要るので、変換ツールに渡すときは ZIP にまとめたものを使ってください。';
+    note.textContent = m.gmlNote;
     container.append(select, list, pack, packStatus, note);
   };
 
@@ -292,29 +289,29 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
     const data = collection.assets.data;
     if (data) {
       const size = data['file:size'];
-      fact('形式', 'PMTiles', size ? ` (${formatBytes(size)})` : '', ' ', externalLink(data.href, 'タイル'));
+      fact(m.factFormat, 'PMTiles', size ? ` (${formatBytes(size)})` : '', ' ', externalLink(data.href, m.tiles));
       const zoom = data['duck:zoom'];
-      if (zoom) fact('ズーム', `${zoom[0]}〜${zoom[1]} (それより寄ると拡大して描きます)`);
+      if (zoom) fact(m.factZoom, m.zoomRange(zoom[0], zoom[1]));
     }
     // **UI では SQL と言わない** (利用者の指摘)。できること (見るだけか、検索に使うか) で言う。
-    fact('使い方', '重ねて見るためのものです (表示用に簡略化されています)。検索や周辺検索には使いません');
+    fact(m.factUse, m.useVectorTiles);
     // **配布元の描き方は使っていない。** 形の種類 (カタログに載っている) から描いている。
-    fact('描き方', 'データだけを読み、形 (面・線・点) ごとにこのアプリで描いています');
-    if (collection.bbox) fact('範囲', formatBbox(collection.bbox));
+    fact(m.factDrawing, m.drawingVectorTiles);
+    if (collection.bbox) fact(m.factExtent, formatBbox(collection.bbox));
 
     // 層は24あるので、テーマごとにたたんでおく。属性も添える (ホバーで読めるもの)。
     const themes = collection.themes ?? [];
     const layersEl = document.createElement('details');
     const summary = document.createElement('summary');
-    summary.textContent = `層 (${themes.reduce((sum, theme) => sum + theme.layers.length, 0)})`;
+    summary.textContent = m.layersSummary(themes.reduce((sum, theme) => sum + theme.layers.length, 0));
     const list = document.createElement('ul');
     list.className = 'vector-layer-list';
     for (const theme of themes) {
       for (const layer of theme.layers) {
         const item = document.createElement('li');
         const fields = layer.fields.length > 0 ? ` — ${layer.fields.join(', ')}` : '';
-        const shape = layer.geometry ? `${GEOMETRY_LABELS[layer.geometry] ?? layer.geometry}・` : '';
-        item.textContent = `${theme.title} › ${layer.title} (${layer.id}、${shape}ズーム${layer.minzoom}〜)${fields}`;
+        const shape = layer.geometry ? GEOMETRY_LABELS[layer.geometry] ?? layer.geometry : null;
+        item.textContent = `${theme.title} › ${layer.title} (${m.layerFacts(layer.id, shape, layer.minzoom)})${fields}`;
         list.append(item);
       }
     }
@@ -325,7 +322,7 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
     if (collection.generatorOptions) {
       const generator = document.createElement('details');
       const generatorSummary = document.createElement('summary');
-      generatorSummary.textContent = '作り方 (配布元のメタデータ)';
+      generatorSummary.textContent = m.generatorSummary;
       const code = document.createElement('pre');
       code.className = 'generator-options';
       code.textContent = collection.generatorOptions.replace(/; /g, ';\n');
@@ -342,37 +339,37 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
   const tileFacts = (collection: Collection, fact: Fact) => {
     const link = collection.tileLink;
     if (link?.rel === '3d-tiles') {
-      fact('形式', '3D Tiles ', externalLink(link.href, 'tileset.json'));
+      fact(m.factFormat, '3D Tiles ', externalLink(link.href, 'tileset.json'));
     } else if (link) {
       const tileJson = link.rel === 'tilejson';
       // XYZ のテンプレートはそのままでは開けないので、文字で見せる (TileJSON はリンク)。
       const where = tileJson ? externalLink(link.href, 'TileJSON') : document.createElement('code');
       if (!tileJson) where.textContent = link.href;
-      const kind = collection.kind === 'terrain' ? '標高タイル' : '地図タイル';
-      fact('形式', `${kind} (${tileJson ? 'TileJSON' : 'XYZ'}) `, where);
+      const kind = collection.kind === 'terrain' ? m.elevationTiles : m.mapTiles;
+      fact(m.factFormat, `${kind} (${tileJson ? 'TileJSON' : 'XYZ'}) `, where);
     }
     // **標高の中身の約束** (エンコード・高さの基準・値なしの扱い)。同じ「標高タイル」でも違う。
     if (collection.dem) {
-      fact('標高の形式', DEM_ENCODING_LABELS[collection.dem.encoding] ?? collection.dem.encoding);
-      fact('高さの基準', DEM_VERTICAL_LABELS[collection.dem.vertical] ?? collection.dem.vertical);
-      if (collection.dem.description) fact('読み方', collection.dem.description);
+      fact(m.factDemEncoding, DEM_ENCODING_LABELS[collection.dem.encoding] ?? collection.dem.encoding);
+      fact(m.factVertical, DEM_VERTICAL_LABELS[collection.dem.vertical] ?? collection.dem.vertical);
+      if (collection.dem.description) fact(m.factDecoding, collection.dem.description);
     }
     if (collection.zoom && collection.kind !== 'reference') {
-      fact('ズーム', `${collection.zoom[0]}〜${collection.zoom[1]} (それより寄ると拡大して描きます)`);
+      fact(m.factZoom, m.zoomRange(collection.zoom[0], collection.zoom[1]));
     }
     const use: Partial<Record<DatasetKind, string>> = {
-      terrain: '地図を立体にするためのものです。検索や周辺検索には使いません',
-      raster_tiles: '背景として見るためのものです。検索や周辺検索には使いません',
-      '3d_tiles': 'この地図 (MapLibre) では描けません。公式のビューアで見られます',
-      reference: 'このカタログからは配っていません (公開元への案内だけです)。この地図にはまだ出せません',
+      terrain: m.useTerrain,
+      raster_tiles: m.useRasterTiles,
+      '3d_tiles': m.use3dTiles,
+      reference: m.useReference,
     };
-    if (use[collection.kind]) fact('使い方', use[collection.kind]!);
-    if (collection.viewer) fact('ビューア', externalLink(collection.viewer, '公式のビューアで開く'));
+    if (use[collection.kind]) fact(m.factUse, use[collection.kind]!);
+    if (collection.viewer) fact(m.factViewer, externalLink(collection.viewer, m.openOfficialViewer));
     // 公開元の STAC は**ページの中で開く** (置き場所によっては、ブラウザで開くとダウンロードになる)。
     if (collection.sourceStac) {
-      fact('公開元の STAC', jsonLink(collection.sourceStac, 'Collection を見る'));
+      fact(m.factSourceStac, jsonLink(collection.sourceStac, m.viewCollection));
     }
-    if (collection.bbox) fact('範囲', formatBbox(collection.bbox));
+    if (collection.bbox) fact(m.factExtent, formatBbox(collection.bbox));
   };
 
   /**
@@ -393,7 +390,7 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
       });
       return button;
     });
-    fact('作られた元', ...buttons.flatMap((button, i) => (i === 0 ? [button] : [' · ', button])));
+    fact(m.factDerivedFrom, ...buttons.flatMap((button, i) => (i === 0 ? [button] : [' · ', button])));
   };
 
   const card = (collection: Collection): HTMLElement => {
@@ -411,7 +408,7 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
     if (STAC_BROWSER_URL && collection.path) {
       const browse = externalLink(`${STAC_BROWSER_URL}#/${collection.path}`, 'STAC Browser');
       browse.className = 'browse-link';
-      browse.title = 'STAC Browser で開く (別のタブ)';
+      browse.title = m.openStacBrowser;
       head.append(browse);
     }
 
@@ -432,16 +429,16 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
     // **使うときの条件はバッジで出す。** 識別子 (`other` を含む) だけでは何ができるか
     // 分からない。規約の本文へのリンクを必ず添える (バッジは要約)。
     if (collection.terms) {
-      fact('使う条件', termsBadges(collection.terms), ' ', externalLink(collection.terms.url, collection.terms.name));
+      fact(m.factTerms, termsBadges(collection.terms), ' ', externalLink(collection.terms.url, collection.terms.name));
     } else {
       // 古いカタログ (duck:terms の無いもの) では識別子だけ出す。
       fact(
-        'ライセンス',
-        collection.license === 'other' ? externalLink(collection.attributionUrl, '利用規約') : collection.license,
+        m.factLicense,
+        collection.license === 'other' ? externalLink(collection.attributionUrl, m.termsOfUse) : collection.license,
       );
     }
-    if (collection.provider) fact('提供', collection.provider);
-    if (collection.vintage) fact('版', collection.vintage);
+    if (collection.provider) fact(m.factProvider, collection.provider);
+    if (collection.vintage) fact(m.factVintage, collection.vintage);
     if (collection.kind === 'vector_tiles') {
       el.append(head, description, facts, ...vectorTilesFacts(collection, fact));
       return el;
@@ -462,17 +459,17 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
     const count = document.createElement('span');
     count.className = 'collection-item-count';
     count.textContent = '…';
-    fact('ファイル', count, ' ', jsonLink(collection.itemsPath, 'Items'));
+    fact(m.factFiles, count, ' ', jsonLink(collection.itemsPath, 'Items'));
     collection
       .items()
-      .then((items) => (count.textContent = `${items.length.toLocaleString()} 件`))
-      .catch(() => (count.textContent = '読めません'));
-    if (collection.bbox) fact('範囲', formatBbox(collection.bbox));
+      .then((items) => (count.textContent = m.itemFileCount(items.length)))
+      .catch(() => (count.textContent = m.couldNotRead));
+    if (collection.bbox) fact(m.factExtent, formatBbox(collection.bbox));
 
     // 列は多い (PLATEAUは十数列) ので、たたんでおく。
     const columns = document.createElement('details');
     const summary = document.createElement('summary');
-    summary.textContent = `列 (${collection.columns.size})`;
+    summary.textContent = m.columnsSummary(collection.columns.size);
     const list = document.createElement('p');
     list.textContent = [...collection.columns].join(', ');
     columns.append(summary, list);

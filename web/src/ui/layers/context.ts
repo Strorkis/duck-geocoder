@@ -12,6 +12,7 @@ import type * as duckdb from '@duckdb/duckdb-wasm';
 import type { Map as MapLibreMap } from 'maplibre-gl';
 import type { DetailSettings } from '../../lib/detail';
 import type { ViewBounds } from '../../lib/sources';
+import { m } from '../../i18n';
 
 export interface DrawContext {
   map: MapLibreMap;
@@ -35,7 +36,7 @@ export function requester(ctx: DrawContext, name: string, label: string, run: ()
   return () => {
     run().catch((e: unknown) => {
       console.error(`[${name}] failed`, e);
-      ctx.showFailure(`${label}の読み込みに失敗しました`);
+      ctx.showFailure(m.loadFailed(label));
     });
   };
 }

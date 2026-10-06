@@ -379,6 +379,37 @@ test('使い方に操作が一通り書かれている', async ({ page }) => {
   await expect(help).toContainText('Esc');
 });
 
+/**
+ * **英語の画面。** 言語は ?lang= かブラウザの言語で決まる (src/i18n)。テストは日本語に固定してあるので、
+ * ここで ?lang=en を開いて、画面の文言が英語になり、日本語へ戻れることを確かめる。
+ * データの中身 (地名・カタログの題名) は訳さないので見ない。
+ */
+test('英語の画面に切り替えられ、日本語へ戻れる', async ({ page }) => {
+  await page.goto('./?lang=en');
+  await waitForReady(page);
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+  await expect(page.locator('#search-input')).toHaveAttribute('placeholder', /Japanese/);
+  await expect(page.locator('.layer-add-button[data-section="data"]')).toHaveText('+ Add');
+
+  // TS で作る文言 (使い方のダイアログ・カタログのタブ) も英語。
+  await openInfoDialog(page, 'help-dialog');
+  await expect(page.locator('#help')).toContainText('Search');
+  await expect(page.locator('#help')).toContainText('Esc');
+  await page.locator('#help-dialog .info-dialog-close').click();
+  await page.locator('.layer-add-button[data-section="data"]').click();
+  await expect(page.locator('.catalog-tab[data-section="view"]')).toContainText('View only');
+  await expect(page.locator('[data-catalog-layer] .catalog-add').first()).toHaveText(/Add|Added/);
+  await closeCatalog(page);
+
+  // 切り替えのリンクは「日本語」を指し、押すと日本語の画面に戻る。
+  const toJapanese = page.locator('#lang-switch');
+  await expect(toJapanese).toHaveText('日本語');
+  await toJapanese.click();
+  await waitForReady(page);
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ja');
+  await expect(page.locator('.layer-add-button[data-section="data"]')).toHaveText('＋ 追加');
+});
+
 test('地名を入力すると候補が表示される', async ({ page }) => {
   await page.locator('#search-input').fill('港区');
 

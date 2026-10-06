@@ -14,10 +14,11 @@
               id="search-input"
               type="text"
               placeholder="地名・駅・路線で検索"
+              data-i18n-placeholder="searchPlaceholder"
               autocomplete="off"
               disabled
             />
-            <button id="clear-button" type="button" title="クリア" hidden>×</button>
+            <button id="clear-button" type="button" title="クリア" data-i18n-title="clear" hidden>×</button>
           </div>
           <!-- 逆ジオコーディングは押したときだけ効かせる。常時オンだと、建物を
                眺めている最中のクリックで行政区域の全体まで引き戻されてしまう。 -->
@@ -26,6 +27,7 @@
             type="button"
             aria-pressed="false"
             title="押してから地図をクリックすると、その地点の市区町村を判定します (Escで解除)"
+            data-i18n-title="pickTitle"
             disabled
           >
             📍
@@ -37,12 +39,13 @@
             type="button"
             aria-pressed="false"
             title="押してから地図の点・線・建物をクリックすると、その周辺に何があるかを調べます (Escで解除)"
+            data-i18n-title="nearbyTitle"
             disabled
           >
             ◎
           </button>
           <!-- スマホ幅だけ出す。右下の「使い方・出典…」を、ここから開く (画面の下は一覧が使う)。 -->
-          <button id="info-menu-button" type="button" aria-expanded="false" title="使い方・出典など">☰</button>
+          <button id="info-menu-button" type="button" aria-expanded="false" title="使い方・出典など" data-i18n-title="infoMenuTitle">☰</button>
         </div>
         <ul id="results"></ul>
       </div>
@@ -77,7 +80,7 @@
           <div id="layer-list">
             <!-- 見出しを押すと一覧ごと畳める (スマホ幅では畳んだ状態で始める。地図を広く見せるため)。 -->
             <button id="data-panel-toggle" type="button" aria-expanded="true">
-              <span>データと地図</span><span class="panel-toggle-mark" aria-hidden="true"></span>
+              <span data-i18n="dataAndMap">データと地図</span><span class="panel-toggle-mark" aria-hidden="true"></span>
             </button>
             <div id="layer-body">
             <!-- 一覧には**使うものだけ**を置く。足すのは「＋ 追加」(カタログのダイアログ)、
@@ -87,31 +90,31 @@
             <!-- **データ**: GeoParquet。検索や周辺検索の対象になる。 -->
             <section id="data-section" class="layer-section">
               <div class="layer-section-title">
-                <span>データ</span>
-                <button type="button" class="layer-add-button" data-section="data" title="カタログからデータを追加">＋ 追加</button>
+                <span data-i18n="sectionData">データ</span>
+                <button type="button" class="layer-add-button" data-section="data" title="カタログからデータを追加" data-i18n-title="addDataTitle" data-i18n="add">＋ 追加</button>
               </div>
               <div id="layer-rows"></div>
-              <p id="layer-empty" class="layer-empty" hidden>「＋ 追加」から使うデータを選んでください</p>
+              <p id="layer-empty" class="layer-empty" data-i18n="layerEmpty" hidden>「＋ 追加」から使うデータを選んでください</p>
             </section>
             <!-- **地図タイル**: 見るだけのもの (ベクタータイル・背景地図・標高)。調べられないことを見出しで言う。 -->
             <section id="tile-section" class="layer-section">
               <div class="layer-section-title">
-                <span>地図タイル <span class="layer-section-note">表示のみ</span></span>
-                <button type="button" class="layer-add-button" data-section="tile" title="カタログから地図タイルを追加">＋ 追加</button>
+                <span><span data-i18n="sectionTile">地図タイル</span> <span class="layer-section-note" data-i18n="viewOnlyNote">表示のみ</span></span>
+                <button type="button" class="layer-add-button" data-section="tile" title="カタログから地図タイルを追加" data-i18n-title="addTileTitle" data-i18n="add">＋ 追加</button>
               </div>
               <div id="tile-rows"></div>
-              <p id="tile-empty" class="layer-empty" hidden>「＋ 追加」から背景地図などを選んでください</p>
+              <p id="tile-empty" class="layer-empty" data-i18n="tileEmpty" hidden>「＋ 追加」から背景地図などを選んでください</p>
               <!-- 地形は**1つだけ**選ぶ (MapLibre は地形を1つしか持てない)。 -->
               <div id="terrain-row" class="layer-row" data-layer="terrain" hidden>
                 <div class="layer-head">
                   <input type="checkbox" id="terrain-toggle" />
-                  <label class="layer-name" for="terrain-toggle">地形 (立体)</label>
-                  <button type="button" id="terrain-settings" class="layer-settings-button" title="起伏の強調" aria-expanded="false">⚙</button>
-                  <button type="button" id="terrain-detail" class="layer-detail-button" title="この標高について (形式・出所)">ⓘ</button>
+                  <label class="layer-name" for="terrain-toggle" data-i18n="terrain3d">地形 (立体)</label>
+                  <button type="button" id="terrain-settings" class="layer-settings-button" title="起伏の強調" data-i18n-title="terrainExaggeration" aria-expanded="false">⚙</button>
+                  <button type="button" id="terrain-detail" class="layer-detail-button" title="この標高について (形式・出所)" data-i18n-title="terrainDetailTitle">ⓘ</button>
                 </div>
                 <!-- どの標高を使うか。2段目に置く (1段目に詰めると「地形」が押し潰された)。 -->
                 <div class="layer-sub">
-                  <select id="terrain-source" aria-label="地形に使う標高"></select>
+                  <select id="terrain-source" aria-label="地形に使う標高" data-i18n-aria-label="terrainSourceLabel"></select>
                 </div>
                 <div id="terrain-slot" hidden></div>
               </div>
@@ -119,8 +122,8 @@
             <div id="view-settings">
               <!-- 表示量もレイヤーをまたぐ設定なので、個別の⚙ではなくここに置く。 -->
               <div id="detail-section">
-                <p class="layer-heading">表示量</p>
-                <select id="detail-level" title="出しきれないときは上げ、重いときは下げてください"></select>
+                <p class="layer-heading" data-i18n="detailLevel">表示量</p>
+                <select id="detail-level" title="出しきれないときは上げ、重いときは下げてください" data-i18n-title="detailLevelTitle"></select>
               </div>
             </div>
             </div>
@@ -139,27 +142,27 @@
           <!-- **重要度の段。** 用途 (十数個) を3段にまとめたもの。段の規則はカタログの
                `duck:tiers` から来る。出所が段を持たなければ隠したままにする。 -->
           <div class="field" id="tier-field" hidden>
-            <label>重要度</label>
+            <label data-i18n="tier">重要度</label>
             <div id="tier-options"></div>
             <label class="toggle">
               <input id="tier-color" type="checkbox" />
-              重要度で色分けする
+              <span data-i18n="tierColor">重要度で色分けする</span>
             </label>
           </div>
           <!-- 絞り込みは属性が揃っている出所 (PLATEAU) でだけ出す。 -->
           <div id="building-filters" hidden>
             <div class="field" id="height-field">
-              <label for="min-height">高さ <output id="min-height-value">0 m</output> 以上</label>
+              <label for="min-height" data-i18n-html="minHeight">高さ <output id="min-height-value">0 m</output> 以上</label>
               <input id="min-height" type="range" min="0" max="200" step="5" value="0" />
             </div>
             <!-- 用途の1つ1つは**たたんでおく。** 十数個を並べて切り替えさせるのは
                  重く、まずは重要度の段で足りる。細かく選びたい人だけが開く。 -->
             <details class="field" id="usage-field">
-              <summary>用途で細かく選ぶ</summary>
+              <summary data-i18n="usageDetail">用途で細かく選ぶ</summary>
               <!-- 1つだけ見たいときに全部外させないための一括操作。 -->
               <span class="bulk">
-                <button id="usage-all" type="button">すべて</button>
-                <button id="usage-none" type="button">なし</button>
+                <button id="usage-all" type="button" data-i18n="selectAll">すべて</button>
+                <button id="usage-none" type="button" data-i18n="selectNone">なし</button>
               </span>
               <div id="usage-options"></div>
             </details>
@@ -172,14 +175,14 @@
         <div id="mesh-section" hidden>
           <div id="mesh-controls">
             <div class="field">
-              <label for="aircraft-class">機体 (最大寸法 / 最大速度)</label>
+              <label for="aircraft-class" data-i18n="aircraftClass">機体 (最大寸法 / 最大速度)</label>
               <select id="aircraft-class"></select>
             </div>
             <!-- 凡例は色の段と iGRC の対応を示す。色だけでは「濃い/薄い」しか
                  読めないので、判断に使う数値を併記する。 -->
             <table id="mesh-legend">
               <thead>
-                <tr><th>人口密度 (人/km²)</th><th>iGRC</th></tr>
+                <tr><th data-i18n="densityHeader">人口密度 (人/km²)</th><th>iGRC</th></tr>
               </thead>
               <tbody></tbody>
             </table>
@@ -193,10 +196,10 @@
                  等級ごとにファイルが分かれているので、外した等級は読みに行かない。 -->
             <div class="field">
               <label>
-                種別
+                <span data-i18n="roadClass">種別</span>
                 <span class="bulk">
-                  <button id="road-all" type="button">全部</button>
-                  <button id="road-none" type="button">解除</button>
+                  <button id="road-all" type="button" data-i18n="selectAll">全部</button>
+                  <button id="road-none" type="button" data-i18n="selectNone">解除</button>
                 </span>
               </label>
               <div id="road-classes"></div>
@@ -210,10 +213,10 @@
                  出所が増えてもここに書き足さなくてよい。 -->
             <div class="field">
               <label>
-                事業者種別
+                <span data-i18n="operatorType">事業者種別</span>
                 <span class="bulk">
-                  <button id="railway-all" type="button">全部</button>
-                  <button id="railway-none" type="button">解除</button>
+                  <button id="railway-all" type="button" data-i18n="selectAll">全部</button>
+                  <button id="railway-none" type="button" data-i18n="selectNone">解除</button>
                 </span>
               </label>
               <div id="railway-types"></div>
@@ -231,34 +234,37 @@
         <!-- 4つとも**ダイアログで開く。** このパネルの幅 (15rem) に畳んで入れると、
              長い文言が細切れに折り返して読めず、開くと地図を覆う。
              「検索できるもの」は検索の裏方が揃ってから出す。 -->
-        <button type="button" class="info-open" data-dialog="help-dialog">使い方</button>
-        <button type="button" id="layer-support" class="info-open" data-dialog="search-dialog" hidden>
+        <button type="button" class="info-open" data-dialog="help-dialog" data-i18n="help">使い方</button>
+        <button type="button" id="layer-support" class="info-open" data-dialog="search-dialog" data-i18n="searchable" hidden>
           検索できるもの
         </button>
-        <button type="button" class="info-open" data-dialog="credits-dialog">出典</button>
-        <button type="button" class="info-open" data-dialog="tech-dialog">使っている技術</button>
+        <button type="button" class="info-open" data-dialog="credits-dialog" data-i18n="credits">出典</button>
+        <button type="button" class="info-open" data-dialog="tech-dialog" data-i18n="tech">使っている技術</button>
+        <!-- 言語の切り替え。**いまと違う方の言語を、その言語の名前で**出す (読めない人にも分かるように)。
+             押すと ?lang= を変えて読み直す (src/i18n)。 -->
+        <a id="lang-switch" href="?lang=en" lang="en">English</a>
       </div>
       <!-- 周辺検索の結果。地図を隠さないよう右上に寄せる。 -->
       <div id="nearby-panel" hidden>
         <div class="nearby-head">
-          <strong>周辺</strong>
-          <select id="nearby-distance" title="起点からの距離">
+          <strong data-i18n="nearby">周辺</strong>
+          <select id="nearby-distance" title="起点からの距離" data-i18n-title="nearbyDistance">
             <option value="50">50 m</option>
             <option value="100" selected>100 m</option>
             <option value="300">300 m</option>
             <option value="500">500 m</option>
           </select>
-          <button type="button" id="nearby-close" title="閉じる">×</button>
+          <button type="button" id="nearby-close" title="閉じる" data-i18n-title="close">×</button>
         </div>
         <!-- 結果を出しているあいだ、ほかのデータを薄くする (消しはしない。当たった場所の手がかりに残す)。 -->
-        <label class="nearby-focus"><input type="checkbox" id="nearby-focus" checked /> 結果だけを目立たせる</label>
+        <label class="nearby-focus"><input type="checkbox" id="nearby-focus" checked /> <span data-i18n="nearbyFocus">結果だけを目立たせる</span></label>
         <p id="nearby-origin"></p>
-        <button type="button" id="nearby-from-search" hidden>検索で選んだものを起点にする</button>
+        <button type="button" id="nearby-from-search" data-i18n="nearbyFromSearch" hidden>検索で選んだものを起点にする</button>
         <div id="nearby-results"></div>
       </div>
       <div id="loading">
         <div class="spinner"></div>
-        <p id="loading-message">読み込み中…</p>
+        <p id="loading-message" data-i18n="loading">読み込み中…</p>
       </div>
     </div>
     <!-- 出典は地図右下の ⓘ にも出るが、そちらは1行に詰まって読みにくい
@@ -269,10 +275,10 @@
     <dialog id="help-dialog" class="info-dialog">
       <div class="info-dialog-body">
         <div class="info-dialog-head">
-          <strong>使い方</strong>
-          <button type="button" class="info-dialog-close" title="閉じる">×</button>
+          <strong data-i18n="help">使い方</strong>
+          <button type="button" class="info-dialog-close" title="閉じる" data-i18n-title="close">×</button>
         </div>
-        <div id="help">
+        <div id="help" data-i18n-html="helpBody">
           <!-- **短く書く。** 細かい振る舞いは画面を触れば分かるので、ボタンの意味と入口だけ。 -->
           <h3>探す</h3>
           <ul>
@@ -302,7 +308,7 @@
       <div class="info-dialog-body">
         <div class="info-dialog-head">
           <strong id="layer-detail-title"></strong>
-          <button type="button" class="info-dialog-close" title="閉じる">×</button>
+          <button type="button" class="info-dialog-close" title="閉じる" data-i18n-title="close">×</button>
         </div>
         <div id="layer-catalog"></div>
       </div>
@@ -313,8 +319,8 @@
     <dialog id="layer-catalog-dialog" class="info-dialog">
       <div class="info-dialog-body">
         <div class="info-dialog-head">
-          <strong>カタログから追加</strong>
-          <button type="button" class="info-dialog-close" title="閉じる">×</button>
+          <strong data-i18n="catalogTitle">カタログから追加</strong>
+          <button type="button" class="info-dialog-close" title="閉じる" data-i18n-title="close">×</button>
         </div>
         <!-- タブ・絞り込み・目次は、下へ送っても上に残す (長くなっても見失わない)。 -->
         <div class="catalog-controls">
@@ -330,38 +336,40 @@
             id="layer-filter"
             type="search"
             placeholder="絞り込み (例: 送電、水部、写真、標高)"
+            data-i18n-placeholder="catalogFilterPlaceholder"
             aria-label="カタログを絞り込む"
+            data-i18n-aria-label="catalogFilterLabel"
             autocomplete="off"
           />
-          <nav id="catalog-index" aria-label="出所へ飛ぶ" hidden></nav>
+          <nav id="catalog-index" aria-label="出所へ飛ぶ" data-i18n-aria-label="catalogIndexLabel" hidden></nav>
         </div>
         <div id="catalog-rows"></div>
-        <p id="layer-filter-empty" class="layer-empty" hidden>当てはまるものがありません</p>
+        <p id="layer-filter-empty" class="layer-empty" data-i18n="catalogEmpty" hidden>当てはまるものがありません</p>
       </div>
     </dialog>
     <dialog id="search-dialog" class="info-dialog">
       <div class="info-dialog-body">
         <div class="info-dialog-head">
-          <strong>検索できるもの</strong>
-          <button type="button" class="info-dialog-close" title="閉じる">×</button>
+          <strong data-i18n="searchable">検索できるもの</strong>
+          <button type="button" class="info-dialog-close" title="閉じる" data-i18n-title="close">×</button>
         </div>
-        <p class="info-lead">上の検索欄に、次のような名前を入れて探せます。右は使っているデータです。</p>
+        <p class="info-lead" data-i18n="searchLead">上の検索欄に、次のような名前を入れて探せます。右は使っているデータです。</p>
         <div id="layer-support-rows"></div>
       </div>
     </dialog>
     <dialog id="credits-dialog" class="info-dialog">
       <div class="info-dialog-body">
         <div class="info-dialog-head">
-          <strong>出典と使う条件</strong>
-          <button type="button" class="info-dialog-close" title="閉じる">×</button>
+          <strong data-i18n="creditsTitle">出典と使う条件</strong>
+          <button type="button" class="info-dialog-close" title="閉じる" data-i18n-title="close">×</button>
         </div>
         <!-- 使うときの条件の一覧。出典の文言を1つずつ読まなくても分かるように先頭に置く。
              **上下で同じ出所が並ぶ**ので、見出しと一文で何の一覧かを言う (言わないと重複に見えた)。 -->
-        <h3 class="credits-heading">使う条件の早見表</h3>
-        <p class="info-lead">データの出所ごとに、商用で使えるか、出典の表示が要るかなどをまとめています。</p>
+        <h3 class="credits-heading" data-i18n="termsHeading">使う条件の早見表</h3>
+        <p class="info-lead" data-i18n="termsLead">データの出所ごとに、商用で使えるか、出典の表示が要るかなどをまとめています。</p>
         <div id="terms-summary"></div>
-        <h3 class="credits-heading">出典の表示と配布元</h3>
-        <p class="info-lead">
+        <h3 class="credits-heading" data-i18n="creditsHeading">出典の表示と配布元</h3>
+        <p class="info-lead" data-i18n="creditsLead">
           上の表と同じ出所について、表示する出典の文言、規約、配布元へのリンクを詳しく並べています。
         </p>
         <dl id="credits"></dl>
@@ -373,8 +381,8 @@
     <dialog id="tech-dialog" class="info-dialog">
       <div class="info-dialog-body">
         <div class="info-dialog-head">
-          <strong>使っている技術</strong>
-          <button type="button" class="info-dialog-close" title="閉じる">×</button>
+          <strong data-i18n="tech">使っている技術</strong>
+          <button type="button" class="info-dialog-close" title="閉じる" data-i18n-title="close">×</button>
         </div>
         <div id="tech-credits"></div>
       </div>
@@ -385,18 +393,18 @@
     <dialog id="stac-viewer">
       <div class="stac-viewer-body">
         <div class="stac-viewer-head">
-          <button type="button" id="stac-back" title="前の文書へ戻る">←</button>
+          <button type="button" id="stac-back" title="前の文書へ戻る" data-i18n-title="stacBack">←</button>
           <div class="stac-viewer-title">
             <span id="stac-type"></span>
             <strong id="stac-title"></strong>
             <code id="stac-path"></code>
           </div>
-          <button type="button" id="stac-close" title="閉じる">×</button>
+          <button type="button" id="stac-close" title="閉じる" data-i18n-title="close">×</button>
         </div>
         <dl id="stac-links"></dl>
         <p id="stac-note" hidden></p>
         <pre id="stac-json"></pre>
-        <a id="stac-raw" target="_blank" rel="noopener">JSONをそのまま開く ↗</a>
+        <a id="stac-raw" target="_blank" rel="noopener" data-i18n="stacRaw">JSONをそのまま開く ↗</a>
       </div>
     </dialog>
     <script type="module" src="/src/main.ts"></script>

@@ -16,6 +16,7 @@ import { LINE_KINDS, type LineKind } from '../lib/sources';
 import { TERRAIN_SOURCE, baseStyle } from '../lib/tiles';
 import { buildDataCredits, collapseAttribution, watchAttributionHeight } from './credits';
 import { LAYER_ANCHORS } from './layer-list';
+import { m } from '../i18n';
 
 export const EMPTY_FEATURE_COLLECTION: GeoJSON.FeatureCollection = {
   type: 'FeatureCollection',
@@ -29,12 +30,7 @@ export const LINE_STYLES: Record<LineKind, { color: string; width: number; dash:
 };
 
 /** 線の種別 (`class`) の呼び名。Overture の値はOSM由来の英語なので言い直す。 */
-export const LINE_CLASS_LABELS: Record<string, string> = {
-  power_line: '送電線',
-  cable: '地中・海底線',
-  river: '川',
-  canal: '運河',
-};
+export const LINE_CLASS_LABELS: Readonly<Record<string, string>> = m.lineClassLabels;
 
 /**
  * 道路の等級ごとの色と呼び名。**語彙はカタログから来る**ので、ここには
@@ -44,9 +40,9 @@ export const LINE_CLASS_LABELS: Record<string, string> = {
  * 「おおよそ」と分かる書き方にしてある。
  */
 export const ROAD_STYLES: Record<string, { label: string; color: string; width: number }> = {
-  motorway: { label: '高速道路', color: '#2f7d32', width: 3 },
-  trunk: { label: '国道', color: '#c2410c', width: 2.4 },
-  primary: { label: '都道府県道', color: '#8a6d3b', width: 1.8 },
+  motorway: { label: m.roadMotorway, color: '#2f7d32', width: 3 },
+  trunk: { label: m.roadTrunk, color: '#c2410c', width: 2.4 },
+  primary: { label: m.roadPrimary, color: '#8a6d3b', width: 1.8 },
 };
 
 /**

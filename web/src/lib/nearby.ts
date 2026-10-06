@@ -9,6 +9,7 @@
 import type * as duckdb from '@duckdb/duckdb-wasm';
 import { tierExpression, type ItemFile } from './stac';
 import { geometryOf } from './wkb';
+import { m } from '../i18n';
 import {
   EXACT_LOD,
   filesInView,
@@ -138,7 +139,7 @@ export async function fetchNearbyBuildings(
   `);
   const rows = counted.toArray().map((row) => row.toJSON() as { tier: string; n: number | bigint; names: unknown });
   if (rows.length === 0) return null;
-  const order = source.tiers?.tiers ?? [{ id: 'all', title: 'すべて', values: [] }];
+  const order = source.tiers?.tiers ?? [{ id: 'all', title: m.allTiers, values: [] }];
   const counts = order.map(
     (t) => [t.title, Number(rows.find((r) => r.tier === t.id)?.n ?? 0)] as [string, number],
   );
@@ -176,7 +177,7 @@ export async function fetchNearbyBuildings(
         origin: source.id,
         tierRank: source.tiers ? rank : -1,
         // 種類ごとの表示の切り替えに使う (段の題名。段の無い出所は「すべて」)。
-        tier: order[rank]?.title ?? 'すべて',
+        tier: order[rank]?.title ?? m.allTiers,
         height: r.height,
       },
       geometry: geometryOf(r.geometry),

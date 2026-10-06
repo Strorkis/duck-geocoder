@@ -6,6 +6,7 @@
  */
 import type { Map as MapLibreMap } from 'maplibre-gl';
 import type { Collection, Terms } from '../lib/stac';
+import { lang, m } from '../i18n';
 
 /** 外部へのリンク。別タブで開き、参照元を渡さない。 */
 export function externalLink(href: string, label: string): HTMLAnchorElement {
@@ -87,21 +88,15 @@ export function termsBadges(terms: Terms): HTMLElement {
     el.title = title;
     box.append(el);
   };
-  if (terms.commercial === 'allowed') badge('商用可', 'ok', '規約が商用利用を認めています');
+  if (terms.commercial === 'allowed') badge(m.badgeCommercial, 'ok', m.badgeCommercialTitle);
   else if (terms.commercial === 'allowed_with_notice') {
-    badge('商用は事前に連絡', 'note', '商用利用は認められていますが、使う前に提供元への連絡が必要です');
+    badge(m.badgeCommercialNotice, 'note', m.badgeCommercialNoticeTitle);
   } else if (terms.commercial === 'not_restricted') {
-    badge('商用の制限の記載なし', 'note', '規約に、商用を認めるとも禁じるとも書かれていません。本文を確かめてください');
-  } else badge('非商用のみ', 'warn', '商用には使えません');
-  if (terms.attribution_required) badge('出典表示が必要', 'note', '使うときは出典を表示してください');
-  if (terms.note_modification) badge('加工したら明記', 'note', '加工したデータを使うときは、加工したことを書いてください');
-  if (terms.share_alike) {
-    badge(
-      '継承あり',
-      'warn',
-      '派生したデータを配るときは、同じライセンスにする必要があります (別のファイルとして並べるだけなら及びません)',
-    );
-  }
+    badge(m.badgeCommercialUnstated, 'note', m.badgeCommercialUnstatedTitle);
+  } else badge(m.badgeNonCommercial, 'warn', m.badgeNonCommercialTitle);
+  if (terms.attribution_required) badge(m.badgeAttribution, 'note', m.badgeAttributionTitle);
+  if (terms.note_modification) badge(m.badgeModification, 'note', m.badgeModificationTitle);
+  if (terms.share_alike) badge(m.badgeShareAlike, 'warn', m.badgeShareAlikeTitle);
   return box;
 }
 
@@ -115,10 +110,10 @@ export function buildDataCredits(collections: Collection[]): string[] {
 
 /** 一覧表の「商用」の欄。 */
 const COMMERCIAL_LABELS: Record<Terms['commercial'], string> = {
-  allowed: '可',
-  allowed_with_notice: '可 (事前に連絡)',
-  not_restricted: '記載なし',
-  non_commercial: '不可',
+  allowed: m.commercialAllowed,
+  allowed_with_notice: m.commercialWithNotice,
+  not_restricted: m.commercialUnstated,
+  non_commercial: m.commercialNo,
 };
 
 /**
@@ -134,27 +129,25 @@ export function renderTermsSummary(container: HTMLElement, collections: Collecti
   const table = document.createElement('table');
   table.className = 'terms-table';
   const head = table.createTHead().insertRow();
-  for (const label of ['データ', '商用', '出典表示', '加工したら明記', '継承', '規約']) {
+  for (const label of m.termsColumns) {
     const th = document.createElement('th');
     th.textContent = label;
     head.append(th);
   }
   const body = table.createTBody();
-  const mark = (value: boolean) => (value ? '要' : '—');
+  const mark = (value: boolean) => (value ? m.required : '—');
   for (const { titles, group, terms } of rows) {
     const row = body.insertRow();
     row.insertCell().textContent = group ? `${group}: ${titles.join('・')}` : titles.join('・');
     row.insertCell().textContent = COMMERCIAL_LABELS[terms!.commercial];
     row.insertCell().textContent = mark(terms!.attribution_required);
     row.insertCell().textContent = mark(terms!.note_modification);
-    row.insertCell().textContent = terms!.share_alike ? 'あり' : '—';
+    row.insertCell().textContent = terms!.share_alike ? m.yes : '—';
     row.insertCell().append(externalLink(terms!.url, terms!.name));
   }
   const note = document.createElement('p');
   note.className = 'terms-note';
-  note.textContent =
-    'このサイトが独自に規約を読んでまとめた参考情報で、正確さは保証しません。使う前に、必ず各規約の本文を確かめてください。' +
-    '「記載なし」は、規約が商用を認めるとも禁じるとも書いていないものです。';
+  note.textContent = m.termsNote;
   container.replaceChildren(table, note);
 }
 
@@ -199,7 +192,7 @@ export function renderCredits(container: HTMLElement, collections: Collection[])
     if (via.length > 0) {
       const sources = document.createElement('div');
       sources.className = 'via';
-      sources.append('配布元: ');
+      sources.append(m.viaLabel);
       for (const [index, href] of via.entries()) {
         if (index > 0) sources.append(' / ');
         sources.append(externalLink(href, new URL(href).hostname));
@@ -401,24 +394,85 @@ const TECH_CREDITS: { heading: string; items: TechCredit[] }[] = [
   },
 ];
 
+/**
+ * 謝辞の英語。**項目名 (日本語の `name`) で引く** (PMTiles はライブラリと考え方の2項目でリンク先が同じ)。
+ * 無い項目は日本語のまま出る。見出しは並びの順。
+ */
+const TECH_HEADINGS_EN = [
+  'Libraries used in the app',
+  'Libraries used to convert the data',
+  'Ideas and specifications borrowed (no library used)',
+];
+const TECH_CREDITS_EN: Record<string, { use: string; name?: string; who?: string }> = {
+  'DuckDB-WASM': {
+    use: 'Reads GeoParquet with SQL inside the browser. HTTP range requests fetch only the row groups needed',
+  },
+  'DuckDB spatial': { use: 'Finds the municipality at a clicked point and measures distances for nearby search' },
+  'MapLibre GL JS': { use: 'Draws the map and the 3D buildings' },
+  'STAC Browser': {
+    use: 'A page for browsing the catalog without a map (/catalog/). Built with one patch that fixes the item list',
+  },
+  'PMTiles (JavaScript)': {
+    use: 'Reads only the tiles needed from GSI’s vector tiles (a single PMTiles file) with range requests',
+  },
+  'PLATEAU GIS Converter (nusamai)': {
+    use: 'Reads PLATEAU’s CityGML and resolves codes such as usage into Japanese names',
+  },
+  DuckDB: { use: 'Extracts Overture data and simplifies roads and railways (coarse levels)' },
+  'Apache Arrow / Parquet (arrow-rs)': { use: 'Writes GeoParquet' },
+  PROJ: { use: 'Transforms coordinate systems' },
+  'GeoRust (geo-types / wkb / geojson)': { use: 'Handles geometries and writes WKB' },
+  STAC: {
+    who: 'Specification',
+    use: 'The shape of the data catalog (Catalog → Collection → Item). The list headings and rows follow this hierarchy',
+  },
+  GeoParquet: {
+    who: 'Specification (OGC)',
+    use: 'The format of the distributed files. The bbox column lets row groups outside the view be skipped',
+  },
+  'STR (Sort-Tile-Recursive) で並べる': {
+    name: 'Sorting with STR (Sort-Tile-Recursive)',
+    who: 'Kanahiro (CNG Japan 2026 talk) · method by Leutenegger et al. (ICDE 1997)',
+    use: 'Sorts nearby features into the same row group, following the talk “Spatial sort for well-packed GeoParquet”',
+  },
+  'Cloud Optimized GeoParquet (COGP)': {
+    use: 'Puts coarse levels at the start of the row groups and finer levels after them. The layout is kept compatible so we can switch later',
+  },
+  'PMTiles (考え方)': {
+    name: 'PMTiles (the idea)',
+    use: 'Keeping all resolutions in one file. The coarse levels of GeoParquet are not split into separate files for this reason',
+  },
+  Portolan: {
+    who: 'Specification',
+    use: 'Distributing data just by putting STAC and GeoParquet on object storage. Field names are borrowed (not yet compliant)',
+  },
+  '地域メッシュ (JIS X 0410)': {
+    name: 'Japanese grid squares (JIS X 0410)',
+    who: 'Japanese Industrial Standards',
+    use: 'Cells for coverage and the population mesh. Computed from latitude and longitude, so no boundary data is needed',
+  },
+  'SORA 2.5': { use: 'The population density legend (ground risk classes)' },
+};
+
 /** 使っている技術の謝辞を出す。出典 (`renderCredits`) と同じ見た目にする。 */
 export function renderTechCredits(container: HTMLElement): void {
   container.replaceChildren();
-  for (const { heading, items } of TECH_CREDITS) {
+  for (const [index, { heading, items }] of TECH_CREDITS.entries()) {
     const title = document.createElement('p');
     title.className = 'tech-heading';
-    title.textContent = heading;
+    title.textContent = lang === 'en' ? (TECH_HEADINGS_EN[index] ?? heading) : heading;
     const list = document.createElement('dl');
     list.className = 'tech-list';
-    for (const { name, who, use, url } of items) {
+    for (const item of items) {
+      const en = lang === 'en' ? TECH_CREDITS_EN[item.name] : undefined;
       const term = document.createElement('dt');
-      term.append(externalLink(url, name));
+      term.append(externalLink(item.url, en?.name ?? item.name));
       const by = document.createElement('span');
       by.className = 'vintage';
-      by.textContent = who;
+      by.textContent = en?.who ?? item.who;
       term.append(' ', by);
       const detail = document.createElement('dd');
-      detail.textContent = use;
+      detail.textContent = en?.use ?? item.use;
       list.append(term, detail);
     }
     container.append(title, list);
@@ -429,10 +483,10 @@ export function renderTechCredits(container: HTMLElement): void {
     const note = document.createElement('p');
     note.className = 'tech-licenses';
     note.append(
-      'ライセンスの全文: ',
-      externalLink(`${import.meta.env.BASE_URL}THIRD-PARTY-LICENSES.md`, '画面のライブラリ'),
+      m.fullLicenses,
+      externalLink(`${import.meta.env.BASE_URL}THIRD-PARTY-LICENSES.md`, m.appLibraries),
       ' · ',
-      externalLink(`${import.meta.env.BASE_URL}duckdb/LICENSES.md`, 'DuckDB と拡張'),
+      externalLink(`${import.meta.env.BASE_URL}duckdb/LICENSES.md`, m.duckdbAndExtensions),
     );
     container.append(note);
   }

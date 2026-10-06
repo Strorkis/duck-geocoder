@@ -5,27 +5,12 @@
  * このAPIはブラウザから直接呼べる (`access-control-allow-origin: *` を確かめた)。
  * **呼ぶのは利用者が押したときだけ** (起動時には呼ばない。配信サービスに負荷をかけない)。
  */
+import { m } from '../i18n';
 
 const PLATEAU_API = 'https://api.plateauview.mlit.go.jp';
 
 /** CityGMLの地物の種類の呼び名。APIが返す種類のうち、よく出るもの。 */
-export const CITYGML_TYPES: Record<string, string> = {
-  bldg: '建物',
-  tran: '道路',
-  rwy: '鉄道',
-  brid: '橋',
-  luse: '土地利用',
-  dem: '地形',
-  fld: '洪水浸水想定',
-  tnm: '津波浸水想定',
-  htd: '高潮浸水想定',
-  lsld: '土砂災害警戒区域',
-  urf: '都市計画決定',
-  veg: '植生',
-  frn: '都市設備',
-  ubld: '地下街',
-  wwy: '航路',
-};
+export const CITYGML_TYPES: Readonly<Record<string, string>> = m.citygmlTypes;
 
 /** メッシュ単位のCityGMLファイル1つ。 */
 export interface CityGmlFile {

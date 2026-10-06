@@ -11,6 +11,7 @@ import { COARSE_LOD, lodForZoom, lodNote, type RoadSource } from '../../lib/sour
 import { fetchRoadsInView } from '../../lib/queries';
 import { EMPTY_FEATURE_COLLECTION, ROAD_STYLES } from '../map';
 import { requester, type DrawContext } from './context';
+import { m } from '../../i18n';
 
 /**
  * 等級ごとに、**どのズームから出すか**。
@@ -89,7 +90,7 @@ export function createRoadLayer(ctx: DrawContext, source: RoadSource, classes: s
     const limit = ctx.detail().roadLimit;
 
     const lod = lodForZoom(source, zoom);
-    const features = await ctx.busy('道路を読み込み中…', async () => {
+    const features = await ctx.busy(m.loadingNamed(m.roads), async () => {
       await source.ensure();
       return fetchRoadsInView(ctx.conn, source, ctx.currentBounds(), shownClasses, limit, lod);
     });
@@ -120,23 +121,21 @@ export function createRoadLayer(ctx: DrawContext, source: RoadSource, classes: s
     const heldBackNote = () => {
       if (heldBack === 0) return '';
       const next = Math.min(...selected.filter((cls) => !shownClasses.includes(cls)).map(classMinZoom));
-      return ` · ${heldBack}種別はズーム${next}から`;
+      return m.classesHeldBack(heldBack, next);
     };
 
     if (features.length === 0) {
-      summary.textContent =
-        (shownClasses.length === 0 ? '選んだ等級はこのズームでは出しません' : 'この範囲に道路がありません') +
-        heldBackNote();
+      summary.textContent = (shownClasses.length === 0 ? m.noClassAtThisZoom : m.noRoadsInView) + heldBackNote();
       return;
     }
     summary.textContent =
-      `${features.length.toLocaleString()} ${lod === COARSE_LOD ? '本' : '区間'}` +
+      (lod === COARSE_LOD ? m.lineCount(features.length) : m.segmentCount(features.length)) +
       lodNote(source, lod) +
       heldBackNote() +
-      (features.length >= limit ? ' (上限に達しました。拡大すると全部出ます)' : '');
+      (features.length >= limit ? m.limitReached : '');
   };
 
-  const request = requester(ctx, 'road', '道路', refresh);
+  const request = requester(ctx, 'road', m.roads, refresh);
   for (const input of inputs) input.addEventListener('change', request);
   const setAll = (checked: boolean) => {
     for (const input of inputs) input.checked = checked;

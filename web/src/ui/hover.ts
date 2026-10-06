@@ -13,6 +13,7 @@ import type { Collection } from '../lib/stac';
 import { LINE_KINDS } from '../lib/sources';
 import { MESH_SIZE_LABELS } from '../lib/mesh';
 import type { VectorOverlay } from '../lib/tiles';
+import { m } from '../i18n';
 
 type Props = Record<string, unknown>;
 /** [項目名, 値]。**項目名が空なら見出し**。値が null の行は出さない。 */
@@ -84,16 +85,16 @@ export function createHover(options: HoverOptions): HoverHandle {
   const buildingRows = (props: Props): HoverRows => {
     const origin = originOf(props);
     return [
-      ['', text(props.name) ?? '(名称なし)'],
-      ['用途', text(props.category)],
-      ['高さ', props.height ? `${props.height as number} m` : null],
-      ['重要度', (props.tierRank as number | undefined) !== -1 ? text(props.tier) : null],
-      ['出所', origin?.group?.title ?? origin?.title ?? null],
+      ['', text(props.name) ?? m.unnamed],
+      [m.hoverUsage, text(props.category)],
+      [m.hoverHeight, props.height ? `${props.height as number} m` : null],
+      [m.hoverTier, (props.tierRank as number | undefined) !== -1 ? text(props.tier) : null],
+      [m.hoverSource, origin?.group?.title ?? origin?.title ?? null],
     ];
   };
 
   /** 周辺検索で当たったもの、と分かる1行。 */
-  const nearbyRow = (): [string, string] => ['周辺検索', `起点から ${options.nearbyDistance()} m 以内`];
+  const nearbyRow = (): [string, string] => [m.hoverNearby, m.withinDistance(options.nearbyDistance())];
 
   const railwayHover = (p: Props): Hover => {
     const station = text(p.stationName);
@@ -102,11 +103,11 @@ export function createHover(options: HoverOptions): HoverHandle {
       rows: [
         // 駅なら駅名を見出しにする。路線には駅名が入っていない。
         ['', station ? `${station}駅` : text(p.lineName)],
-        ['路線', station ? text(p.lineName) : null],
-        ['事業者', text(p.operator)],
-        ['種別', text(p.institutionType)],
-        ['区分', text(p.railwayClass)],
-        ['時点', railwayVintage ?? null],
+        [m.hoverLine, station ? text(p.lineName) : null],
+        [m.hoverOperator, text(p.operator)],
+        [m.hoverType, text(p.institutionType)],
+        [m.hoverRailwayClass, text(p.railwayClass)],
+        [m.hoverVintage, railwayVintage ?? null],
       ],
     };
   };
@@ -121,10 +122,10 @@ export function createHover(options: HoverOptions): HoverHandle {
       return {
         key: `nearby-line|${p.kind}|${p.name}`,
         rows: [
-          ['', text(p.name) ?? '(名前なし)'],
-          ['種類', text(p.kind)],
-          ['出所', origin?.group?.title ?? null],
-          ['時点', origin?.vintage ?? null],
+          ['', text(p.name) ?? m.unnamed],
+          [m.hoverKind, m.nearbyKinds[p.kind as string] ?? text(p.kind)],
+          [m.hoverSource, origin?.group?.title ?? null],
+          [m.hoverVintage, origin?.vintage ?? null],
           nearbyRow(),
         ],
       };
@@ -137,24 +138,24 @@ export function createHover(options: HoverOptions): HoverHandle {
     // 塗りの濃さは埋まり具合しか表さないので、中身はここでしか分からない。
     'buildings-coverage-fill': (p) => {
       const code = p.code as string;
-      const cities = (p.cities as string) || '(不明)';
+      const cities = (p.cities as string) || m.unknown;
       const filled = p.filled as number;
       const total = p.total as number;
       return {
         key: `cell|${code}`,
         rows: [
-          ['', `${MESH_SIZE_LABELS[code.length] ?? `${code.length}桁`}メッシュ`],
-          ['メッシュコード', code],
+          ['', m.meshCell(MESH_SIZE_LABELS[code.length] ?? m.meshDigits(code.length))],
+          [m.hoverMeshCode, code],
           // **束ねると自治体が増える。** 80kmまで引くと何十も並ぶので、多いときは数だけにする。
-          ['自治体', cities.split('、').length > 6 ? `${cities.split('、').length} 市区町村` : cities],
+          [m.hoverMunicipalities, cities.split('、').length > 6 ? m.municipalityCount(cities.split('、').length) : cities],
           // **濃淡を数で裏付ける。** 1kmで見ているときは必ず1/1なので出さない。
           [
-            'データのある1kmセル',
+            m.hoverFilledCells,
             total > 1
               ? `${filled.toLocaleString()} / ${total.toLocaleString()} (${Math.round((filled / total) * 100)}%)`
               : null,
           ],
-          ['建物', `${(p.buildings as number).toLocaleString()} 棟`],
+          [m.hoverBuildings, m.buildingCount(p.buildings as number)],
         ],
       };
     },
@@ -168,11 +169,11 @@ export function createHover(options: HoverOptions): HoverHandle {
         key: `road|${name ?? ''}|${routes}|${p.roadClass}`,
         rows: [
           // 名前が無い区間もある。その場合は路線名を見出しに繰り上げる。
-          ['', name || routes || '(名前なし)'],
+          ['', name || routes || m.unnamed],
           // **路線は複数あることがある。** 見出しに使ったものと同じなら繰り返さない。
-          ['路線', routes && routes !== name ? routes : null],
-          ['種別', text(p.roadClass)],
-          ['時点', roadVintage ?? null],
+          [m.hoverLine, routes && routes !== name ? routes : null],
+          [m.hoverType, text(p.roadClass)],
+          [m.hoverVintage, roadVintage ?? null],
         ],
       };
     },
@@ -184,10 +185,10 @@ export function createHover(options: HoverOptions): HoverHandle {
           return {
             key: `line|${kind}|${p.name ?? ''}|${p.lineClass}`,
             rows: [
-              ['', text(p.name) ?? '(名前なし)'],
-              ['種別', text(p.lineClass)],
-              ['出所', origin?.group?.title ?? null],
-              ['時点', origin?.vintage ?? null],
+              ['', text(p.name) ?? m.unnamed],
+              [m.hoverType, text(p.lineClass)],
+              [m.hoverSource, origin?.group?.title ?? null],
+              [m.hoverVintage, origin?.vintage ?? null],
             ],
           };
         },
@@ -219,11 +220,11 @@ export function createHover(options: HoverOptions): HoverHandle {
         key: `vector|${sourceLayer}|${props.vt_code ?? ''}|${props.vt_text ?? ''}`,
         rows: [
           ['', text(props.vt_text) ?? `${theme?.title ?? ''} › ${layer?.title ?? sourceLayer}`],
-          ['層', `${layer?.title ?? sourceLayer} (${sourceLayer})`],
+          [m.hoverLayer, `${layer?.title ?? sourceLayer} (${sourceLayer})`],
           // 地物の種別のコード。意味は配布元の「地物種別コード一覧」にある。
-          ['種別コード', text(props.vt_code)],
-          ['出所', `${overlay.collection.group?.title ?? ''} ${overlay.collection.title}`.trim()],
-          ['時点', overlay.collection.vintage ?? null],
+          [m.hoverTypeCode, text(props.vt_code)],
+          [m.hoverSource, `${overlay.collection.group?.title ?? ''} ${overlay.collection.title}`.trim()],
+          [m.hoverVintage, overlay.collection.vintage ?? null],
         ],
       };
     }

@@ -37,6 +37,7 @@ import { createNearbyPanel } from './ui/nearby-panel';
 import { createCollectionCards } from './ui/collection-card';
 import { createSearchBox } from './ui/search-box';
 import { createTerrainRow } from './ui/terrain-row';
+import { applyHtmlText, lang, m, urlWithLang } from './i18n';
 // MapLibreは既定では new URL(`./${名前}`, import.meta.url) でワーカーを探すが、
 // 名前が変数なのでバンドラが静的に検出できず、ビルド成果物に出力されない。
 // 結果、本番だけGeoJSONソースが一切描画されなくなる (地図タイルもポップアップも
@@ -67,6 +68,14 @@ interface TestHooks {
 (window as unknown as TestHooks).__dataUrl = dataUrl;
 
 async function main() {
+  // **画面の言語を先に当てる** (src/i18n)。中身を作り直す要素があるので、要素を引くより前に。
+  applyHtmlText();
+  const langSwitch = document.querySelector<HTMLAnchorElement>('#lang-switch')!;
+  const other = lang === 'ja' ? 'en' : 'ja';
+  langSwitch.href = urlWithLang(window.location.href, other);
+  langSwitch.lang = other;
+  langSwitch.textContent = other === 'en' ? 'English' : '日本語';
+
   const input = document.querySelector<HTMLInputElement>('#search-input')!;
   const pickButton = document.querySelector<HTMLButtonElement>('#pick-location')!;
   const nearbyButton = document.querySelector<HTMLButtonElement>('#nearby-button')!;
@@ -117,7 +126,7 @@ async function main() {
 
   // 出典・使っている技術のダイアログ。右下のパネルは幅が狭く、長い文言が細切れに
   // 折り返して読めないので、押したらダイアログで広く出す。
-  for (const button of document.querySelectorAll<HTMLButtonElement>('.info-open')) {
+  for (const button of document.querySelectorAll<HTMLButtonElement>('.info-open[data-dialog]')) {
     const dialog = document.getElementById(button.dataset.dialog!) as HTMLDialogElement;
     button.addEventListener('click', () => {
       setInfoMenuOpen(false);
@@ -134,7 +143,7 @@ async function main() {
 
   // DuckDB-WASMの初期化とParquetの読み込みには数秒かかるので、
   // 準備が終わるまでは操作できないことが分かるようにしておく。
-  loadingMessageEl.textContent = '地図とデータベースを準備中…';
+  loadingMessageEl.textContent = m.preparing;
   let conn: duckdb.AsyncDuckDBConnection;
   let exportParquet: (select: string, kv: Record<string, string>) => Promise<Uint8Array>;
   let registerFiles: (files: string[]) => Promise<void>;
@@ -179,7 +188,7 @@ async function main() {
     renderTermsSummary(document.querySelector<HTMLDivElement>('#terms-summary')!, collections);
   } catch (e) {
     console.error('[init] failed', e);
-    loadingEl.innerHTML = '<p>初期化に失敗しました。コンソールを確認してください。</p>';
+    loadingEl.replaceChildren(Object.assign(document.createElement('p'), { textContent: m.initFailed }));
     return;
   }
   // E2Eテストから地図の状態 (ハイライトされている地物など) を検証したり、
@@ -468,7 +477,7 @@ async function main() {
           visible: collection === first,
           // 何のソースかを行で言う (出所の名前は一覧が前に足す)。
           vintage: `地図タイル (XYZ) · ズーム${collection.zoom?.join('〜') ?? ''}`,
-          settings: sliderSettings('不透明度', 0, 100, 5, 100, (v) => `${v}%`, (v) =>
+          settings: sliderSettings(m.opacity, 0, 100, 5, 100, (v) => `${v}%`, (v) =>
             map.setPaintProperty(id, 'raster-opacity', v / 100),
           ),
           refresh: () => {
@@ -492,7 +501,7 @@ async function main() {
           settings: document.createElement('div'),
           refresh: () => {},
           mapLayerIds: () => [],
-          viewOnly: 'この地図では描けません (3D Tiles)。ⓘ から公式のビューアで見られます',
+          viewOnly: m.viewOnly3dTiles,
         });
         break;
       case 'reference':
@@ -500,11 +509,11 @@ async function main() {
         // 見せて足せなくする。ⓘ から配布元 (と公開元の STAC) へ辿れる。
         layers.push({
           ...tileBase,
-          vintage: '元データ',
+          vintage: m.sourceData,
           settings: document.createElement('div'),
           refresh: () => {},
           mapLayerIds: () => [],
-          viewOnly: 'このカタログからは配っていません。ⓘ から公開元へ辿れます',
+          viewOnly: m.viewOnlyReference,
         });
         break;
       case 'vector_tiles': {
@@ -530,7 +539,7 @@ async function main() {
                 .then(applyLayerOrder)
                 .catch((e: unknown) => {
                   console.error('[vector] apply failed', e);
-                  setLayerStatus(rowId, '読めませんでした');
+                  setLayerStatus(rowId, m.couldNotRead);
                 });
             },
             parts: { overlay, layers: theme.layers },
@@ -598,7 +607,7 @@ async function main() {
     map,
     collections: terrainCollections,
     openDetails: (collection) => {
-      layerDetailTitleEl.textContent = `地形 › ${collection.group?.title ?? ''} › ${collection.title}`;
+      layerDetailTitleEl.textContent = `${m.terrain} › ${collection.group?.title ?? ''} › ${collection.title}`;
       layerCatalogEl.replaceChildren(collectionCard(collection));
       layerDetailDialog.showModal();
     },
@@ -617,7 +626,7 @@ async function main() {
     name.textContent = title;
     const exampleEl = document.createElement('span');
     exampleEl.className = 'search-item-example';
-    exampleEl.textContent = `例: ${example}`;
+    exampleEl.textContent = m.example(example);
     const sourceEl = document.createElement('span');
     sourceEl.className = 'search-item-source';
     sourceEl.textContent = source;
@@ -734,11 +743,12 @@ async function main() {
   // **打つ言葉で書く。** データセット名 (「位置参照情報」) では、何を打てば当たるのかが分からない。
   // 街区 (〜番) は検索には使っていないので載せない (以前は載せていた)。
   const searchKinds: [DatasetKind, string, string][] = [
-    ['admin', '市区町村', '港区、札幌市'],
-    ['oaza', '町名・丁目', '六本木、銀座四丁目'],
-    ['railway_station', '駅', '東京駅、新宿'],
-    ['railway_station', '鉄道の路線', '山手線'],
-    ['road_route', '道路の路線', '国道13号'],
+    // 例は**打つ言葉そのもの**なので、英語の画面でも日本語のまま (データが日本語)。
+    ['admin', m.searchMunicipality, '港区、札幌市'],
+    ['oaza', m.searchTown, '六本木、銀座四丁目'],
+    ['railway_station', m.searchStation, '東京駅、新宿'],
+    ['railway_station', m.searchRailwayLine, '山手線'],
+    ['road_route', m.searchRoad, '国道13号'],
   ];
   const supportRows = searchKinds.flatMap(([kind, title, example]) => {
     const collection = byKind(kind)[0];

@@ -66,6 +66,9 @@ export default defineConfig({
   use: {
     baseURL: remoteURL ?? local.url,
     trace: 'on-first-retry',
+    // **画面の言語はブラウザの言語で決まる** (src/i18n)。テストは日本語の画面を前提に
+    // 書いているので固定する (Playwright の既定は en-US)。英語の画面は ?lang=en で確かめる。
+    locale: 'ja-JP',
   },
   webServer: remoteURL ? undefined : local,
 });

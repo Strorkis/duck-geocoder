@@ -8,6 +8,7 @@
 import type * as duckdb from '@duckdb/duckdb-wasm';
 import type { Bbox } from './stac';
 import { geometryOf } from './wkb';
+import { m } from '../i18n';
 
 /**
  * 検索結果。
@@ -220,7 +221,7 @@ export async function searchRoutes(
     return {
       kind: 'route' as const,
       label: r.route_name,
-      detail: `${classLabel(r.class)} · ${Number(r.segments).toLocaleString()} 区間`,
+      detail: `${classLabel(r.class)} · ${m.segmentCount(Number(r.segments))}`,
       bbox: [r.bbox.xmin, r.bbox.ymin, r.bbox.xmax, r.bbox.ymax] as Bbox,
       routeName: r.route_name,
     };

@@ -9,6 +9,7 @@ import { COARSE_LOD, lodForZoom, lodNote, type LineSource } from '../../lib/sour
 import { fetchLinesInView } from '../../lib/queries';
 import { EMPTY_FEATURE_COLLECTION, LINE_CLASS_LABELS } from '../map';
 import { requester, type DrawContext } from './context';
+import { m } from '../../i18n';
 
 /** 出所ごとに、描き直しを頼む関数を返す。地図を動かすたびにも描き直す。 */
 export function createLineLayers(ctx: DrawContext, sources: LineSource[]): Map<string, () => void> {
@@ -32,7 +33,7 @@ export function createLineLayers(ctx: DrawContext, sources: LineSource[]): Map<s
     }
     const limit = ctx.detail().roadLimit;
     const lod = lodForZoom(source, map.getZoom());
-    const features = await ctx.busy(`${source.title}を読み込み中…`, async () => {
+    const features = await ctx.busy(m.loadingNamed(source.title), async () => {
       await source.ensure();
       return fetchLinesInView(ctx.conn, source, ctx.currentBounds(), limit, lod);
     });
@@ -54,10 +55,10 @@ export function createLineLayers(ctx: DrawContext, sources: LineSource[]): Map<s
     ctx.setStatus(
       source.id,
       features.length === 0
-        ? 'この範囲にありません'
-        : `${features.length.toLocaleString()} ${lod === COARSE_LOD ? '本' : '区間'}` +
+        ? m.noneInView
+        : (lod === COARSE_LOD ? m.lineCount(features.length) : m.segmentCount(features.length)) +
             lodNote(source, lod) +
-            (features.length >= limit ? ' (表示上限)' : ''),
+            (features.length >= limit ? m.displayLimit : ''),
     );
   };
 
