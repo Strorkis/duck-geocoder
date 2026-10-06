@@ -1529,17 +1529,30 @@ body,
 }
 
 /* 言語の切り替え。ダイアログを開くボタンと区別して、控えめなリンクにする。 */
+/* 言語: 🌐 日本語 | English。いまの言語は太字、もう一方は押せるリンク。 */
 #lang-switch {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
   padding: 0.4rem 0 0;
   border-top: 1px solid #eee;
-  font-size: 0.8rem;
-  color: #14508c;
-  text-decoration: none;
+  font-size: 0.85rem;
 }
 
-#lang-switch:hover {
+.lang-option {
+  color: #14508c;
+}
+
+strong.lang-option {
+  color: inherit;
+}
+
+a.lang-option {
   text-decoration: underline;
+}
+
+.lang-sep {
+  color: #bbb;
 }
 
 /* 出典・使っている技術のダイアログ。**中身は内側の要素に入れ、dialog自身の余白は0**

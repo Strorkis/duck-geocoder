@@ -401,13 +401,16 @@ test('英語の画面に切り替えられ、日本語へ戻れる', async ({ pa
   await expect(page.locator('[data-catalog-layer] .catalog-add').first()).toHaveText(/Add|Added/);
   await closeCatalog(page);
 
-  // 切り替えのリンクは「日本語」を指し、押すと日本語の画面に戻る。
-  const toJapanese = page.locator('#lang-switch');
-  await expect(toJapanese).toHaveText('日本語');
+  // **いまの言語が分かる。** English は太字の文字 (押せない)、日本語は押せるリンク。
+  const switcher = page.locator('#lang-switch');
+  await expect(switcher.locator('[aria-current="true"]')).toHaveText('English');
+  const toJapanese = switcher.locator('a', { hasText: '日本語' });
+  await expect(toJapanese).toBeVisible();
   await toJapanese.click();
   await waitForReady(page);
   await expect(page.locator('html')).toHaveAttribute('lang', 'ja');
   await expect(page.locator('.layer-add-button[data-section="data"]')).toHaveText('＋ 追加');
+  await expect(switcher.locator('[aria-current="true"]')).toHaveText('日本語');
 });
 
 test('地名を入力すると候補が表示される', async ({ page }) => {

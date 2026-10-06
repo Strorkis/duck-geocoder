@@ -70,11 +70,23 @@ interface TestHooks {
 async function main() {
   // **画面の言語を先に当てる** (src/i18n)。中身を作り直す要素があるので、要素を引くより前に。
   applyHtmlText();
-  const langSwitch = document.querySelector<HTMLAnchorElement>('#lang-switch')!;
-  const other = lang === 'ja' ? 'en' : 'ja';
-  langSwitch.href = urlWithLang(window.location.href, other);
-  langSwitch.lang = other;
-  langSwitch.textContent = other === 'en' ? 'English' : '日本語';
+  // 言語: 🌐 日本語 | English。いまの言語は太字の文字、もう一方はリンク。
+  const langSwitch = document.querySelector<HTMLDivElement>('#lang-switch')!;
+  const icon = document.createElement('span');
+  icon.className = 'lang-icon';
+  icon.setAttribute('aria-hidden', 'true');
+  icon.textContent = '🌐';
+  langSwitch.append(icon);
+  for (const [index, [code, name]] of ([['ja', '日本語'], ['en', 'English']] as const).entries()) {
+    if (index > 0) langSwitch.append(Object.assign(document.createElement('span'), { className: 'lang-sep', textContent: '|' }));
+    const option = code === lang ? document.createElement('strong') : document.createElement('a');
+    option.className = 'lang-option';
+    option.lang = code;
+    option.textContent = name;
+    if (option instanceof HTMLAnchorElement) option.href = urlWithLang(window.location.href, code);
+    else option.setAttribute('aria-current', 'true');
+    langSwitch.append(option);
+  }
 
   const input = document.querySelector<HTMLInputElement>('#search-input')!;
   const pickButton = document.querySelector<HTMLButtonElement>('#pick-location')!;

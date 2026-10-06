@@ -240,9 +240,10 @@
         </button>
         <button type="button" class="info-open" data-dialog="credits-dialog" data-i18n="credits">出典</button>
         <button type="button" class="info-open" data-dialog="tech-dialog" data-i18n="tech">使っている技術</button>
-        <!-- 言語の切り替え。**いまと違う方の言語を、その言語の名前で**出す (読めない人にも分かるように)。
-             押すと ?lang= を変えて読み直す (src/i18n)。 -->
-        <a id="lang-switch" href="?lang=en" lang="en">English</a>
+        <!-- 言語。**いまの言語を見せ、もう一方を押せる形で並べる** (リンク1つだと、何の切り替えか、
+             いまどちらなのかが分からなかった)。言語の名前はその言語で書く (読めない人にも分かるように)。
+             押すと ?lang= を変えて読み直す (src/i18n)。中身は main.ts が作る。 -->
+        <div id="lang-switch" role="group" aria-label="Language / 言語"></div>
       </div>
       <!-- 周辺検索の結果。地図を隠さないよう右上に寄せる。 -->
       <div id="nearby-panel" hidden>
