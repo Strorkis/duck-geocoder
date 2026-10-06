@@ -13,9 +13,11 @@
 //!
 //! ```text
 //! catalog.json                         ← Catalog。出所ごとのサブカタログへの child リンク
+//! catalog.en.json                      ← その英語版 (文書ごとに `*.en.json`。crate::stac_i18n)
+//! collections.json                     ← 全 Collection のまとめ (アプリが起動時に読む)
+//! items.parquet                        ← 全 Item (stac-geoparquet。crate::stac_geoparquet)
 //! estat/catalog.json                   ← Catalog (サブカタログ)。「国勢調査」
 //! estat/estat-mesh-pop.json            ← Collection
-//! estat/estat-mesh-pop-items.json      ← ItemCollection (Itemをまとめたもの)
 //! estat/mesh_pop_13.parquet            ← 実データ
 //! ```
 //!
@@ -31,13 +33,14 @@
 //!
 //! Itemを1件1ファイルにするのが静的STACの標準的な置き方だが、**採らない**。
 //! 人口メッシュ47件 + PLATEAU306都市で350ファイルを超え、
-//! 1つ読むたびに1往復する形になるため。代わりにCollectionごとに
-//! ItemCollection (STAC APIの `/items` が返すのと同じ形) を1つ置く。
+//! 1つ読むたびに1往復する形になるため。**全 Item を stac-geoparquet 1つにまとめ**、
+//! Collection ごとに行グループを分ける (使う Collection の分だけを Range で読める)。
+//! 以前は Collection ごとに ItemCollection の JSON を置いていた (合わせて約1.4MB)。
 //!
 //! **相対リンクはその文書からの相対**として解決される。平置きの間は
 //! 「起点からの相対」と一致していてずれが表に出なかったが、階層を作ると出る。
-//! `root` は `../catalog.json`、`items` は兄弟なのでファイル名だけ、
-//! アセットも同じディレクトリにあるのでファイル名だけになる。
+//! `root` は `../catalog.json`、stac-geoparquet は `../items.parquet` になる。
+//! **stac-geoparquet の中の Item のリンクとアセットは、その Parquet (起点) からの相対。**
 
 use crate::catalog::{ColumnEntry, DatasetEntry, DatasetKind};
 use crate::external::{ExternalRaster, ExternalTileset, RasterRole, TileLink};
@@ -52,7 +55,6 @@ const TABLE_EXTENSION: &str = "https://stac-extensions.github.io/table/v1.2.0/sc
 const FILE_EXTENSION: &str = "https://stac-extensions.github.io/file/v2.1.0/schema.json";
 const PARQUET_MEDIA_TYPE: &str = "application/vnd.apache.parquet";
 const JSON_MEDIA_TYPE: &str = "application/json";
-const GEOJSON_MEDIA_TYPE: &str = "application/geo+json";
 
 /// このカタログ自身のID。
 const CATALOG_ID: &str = "duck-geocoder";
@@ -105,9 +107,17 @@ fn collection_file(id: &str) -> String {
     format!("{id}.json")
 }
 
-/// ItemCollectionのファイル名 (ディレクトリを含まない)。
-fn items_file(id: &str) -> String {
-    format!("{id}-items.json")
+/// `dir` にある Collection から、Item をまとめた stac-geoparquet への相対リンク。
+///
+/// **Item は全 Collection 分を1つの Parquet にまとめる** ([`crate::stac_geoparquet`])。
+/// 以前は Collection ごとに ItemCollection の JSON (`*-items.json`) を置いていた。
+fn items_href(dir: &str) -> String {
+    let file = crate::stac_geoparquet::ITEMS_FILE;
+    if dir.is_empty() {
+        file.to_string()
+    } else {
+        format!("../{file}")
+    }
 }
 
 /// `dir` にある文書から `catalog.json` への相対リンク。
@@ -205,17 +215,6 @@ fn sub_catalog(dir: &str) -> Result<&'static SubCatalog> {
     }
 }
 
-/// 実データへのリンク。**ファイル名だけ**を返す。
-///
-/// ItemCollectionを実データと同じディレクトリに置いているので、
-/// 文書からの相対はファイル名そのものになる。
-fn asset_href(file: &str) -> String {
-    match file.rsplit_once('/') {
-        Some((_, name)) => name.to_string(),
-        None => file.to_string(),
-    }
-}
-
 /// bboxから矩形のGeoJSONを作る。
 ///
 /// STACのItemは `geometry` を必須にしている。中身のジオメトリを全部書くわけには
@@ -297,18 +296,13 @@ fn item(entry: &DatasetEntry, dir: &str) -> Value {
         properties["duck:source_lod"] = json!(source_lod);
     }
 
+    // **Item は stac-geoparquet (配信の起点に置く1ファイル) に入るので、リンクとアセットは
+    // 起点からの相対で書く** (Collection の文書の隣ではない)。
+    let collection_path = in_dir(dir, &collection_file(entry.collection));
     let mut links = vec![
-        json!({ "rel": "root", "href": root_href(dir), "type": JSON_MEDIA_TYPE }),
-        json!({
-            "rel": "collection",
-            "href": collection_file(entry.collection),
-            "type": JSON_MEDIA_TYPE,
-        }),
-        json!({
-            "rel": "parent",
-            "href": collection_file(entry.collection),
-            "type": JSON_MEDIA_TYPE,
-        }),
+        json!({ "rel": "root", "href": CATALOG_FILE, "type": JSON_MEDIA_TYPE }),
+        json!({ "rel": "collection", "href": collection_path, "type": JSON_MEDIA_TYPE }),
+        json!({ "rel": "parent", "href": collection_path, "type": JSON_MEDIA_TYPE }),
     ];
     // ファイルごとに配布元が違うもの (PLATEAUの都市ごとのzip) だけが持つ。
     if let Some(via) = &entry.via {
@@ -326,8 +320,8 @@ fn item(entry: &DatasetEntry, dir: &str) -> Value {
         "properties": properties,
         "assets": {
             "data": {
-                // **ファイル名だけ。** 実データはこの文書と同じディレクトリにある。
-                "href": asset_href(&entry.file),
+                // 起点からのパス (`plateau/plateau_bldg_13101.parquet`)。
+                "href": entry.file,
                 "type": PARQUET_MEDIA_TYPE,
                 "title": entry.title,
                 "roles": ["data"],
@@ -398,13 +392,23 @@ fn collection(id: &str, entries: &[&DatasetEntry], dir: &str) -> Result<Value> {
                 "table:columns": columns_json(&first.columns),
             }
         },
+        // **Item の一覧は stac-geoparquet のアセットで指す** (全 Collection 分を1ファイルに
+        // まとめたもの。この Collection の行は `collection` 列で引く)。役割の `stac-items` は
+        // Planetary Computer などが stac-geoparquet を指すときの書き方に合わせた。
+        "assets": {
+            "items": {
+                "href": items_href(dir),
+                "type": PARQUET_MEDIA_TYPE,
+                "title": "Item の一覧 (stac-geoparquet。全 Collection 分をまとめたもの)",
+                "roles": ["stac-items"],
+            }
+        },
         "links": [
             { "rel": "root", "href": root_href(dir), "type": JSON_MEDIA_TYPE },
             // 親は同じディレクトリのサブカタログ。起点直下に置いたときはルートが
             // 親になるが、どちらもこの文書からは `catalog.json` で届く。
             { "rel": "parent", "href": CATALOG_FILE, "type": JSON_MEDIA_TYPE },
             { "rel": "self", "href": collection_file(id), "type": JSON_MEDIA_TYPE },
-            { "rel": "items", "href": items_file(id), "type": GEOJSON_MEDIA_TYPE },
             via_link(first.collection_via),
         ],
     });
@@ -668,7 +672,16 @@ fn raster_collection(
     Ok(body)
 }
 
-/// カタログをSTACの文書一式にする。
+/// カタログ一式。文書 (JSON) と、stac-geoparquet にまとめる Item。
+pub struct Built {
+    /// 文書。[`build`] では日本語・英語・アプリ用のまとめ ([`crate::stac_i18n`])、
+    /// [`build_japanese`] では日本語だけ。
+    pub documents: Vec<Document>,
+    /// Item (STAC の JSON)。**Collection ごとにまとまった順**で並ぶ。
+    pub items: Vec<Value>,
+}
+
+/// カタログをSTACの文書一式にする (日本語・英語・アプリ用のまとめ)。
 ///
 /// 返るのは「配信の起点からの相対パス」と中身の組。書き出しは呼び出し側の仕事。
 /// `externals` と `rasters` は外部で公開されている配信物 ([`crate::external`])。
@@ -676,7 +689,20 @@ pub fn build(
     datasets: &[DatasetEntry],
     externals: &[ExternalTileset],
     rasters: &[ExternalRaster],
-) -> Result<Vec<Document>> {
+) -> Result<Built> {
+    let japanese = build_japanese(datasets, externals, rasters)?;
+    Ok(Built {
+        documents: crate::stac_i18n::localize(japanese.documents)?,
+        items: japanese.items,
+    })
+}
+
+/// 日本語の文書だけを作る (英語版とまとめは [`build`] が足す)。
+pub fn build_japanese(
+    datasets: &[DatasetEntry],
+    externals: &[ExternalTileset],
+    rasters: &[ExternalRaster],
+) -> Result<Built> {
     // BTreeMapなので、Collectionの並びはIDの順で安定する
     // (作り直すたびに差分が出ないように)。
     let mut grouped: BTreeMap<&str, Vec<&DatasetEntry>> = BTreeMap::new();
@@ -688,6 +714,7 @@ pub fn build(
     }
 
     let mut documents = Vec::new();
+    let mut items = Vec::new();
     // ディレクトリ → そこに置くCollectionへの child リンク。
     let mut by_dir: BTreeMap<String, Vec<Value>> = BTreeMap::new();
 
@@ -707,22 +734,8 @@ pub fn build(
             path: in_dir(&dir, &collection_file(id)),
             body: collection(id, entries, &dir)?,
         });
-        documents.push(Document {
-            path: in_dir(&dir, &items_file(id)),
-            body: json!({
-                "type": "FeatureCollection",
-                "features": entries
-                    .iter()
-                    .map(|entry| item(entry, &dir))
-                    .collect::<Vec<_>>(),
-                "links": [
-                    // **この文書からの相対。** 以前は "catalog.json" と書いていて、
-                    // サブディレクトリから引くと同じ階層の (無い) ファイルを指していた。
-                    { "rel": "root", "href": root_href(&dir), "type": JSON_MEDIA_TYPE },
-                    { "rel": "collection", "href": collection_file(id), "type": JSON_MEDIA_TYPE },
-                ],
-            }),
-        });
+        // Item は文書にせず、stac-geoparquet にまとめる (Collection ごとに並べる)。
+        items.extend(entries.iter().map(|entry| item(entry, &dir)));
     }
 
     // 背景地図を先に並べる (一覧でも、国土地理院の見出しの下で地図が先に来る)。
@@ -772,6 +785,13 @@ pub fn build(
     let mut links = vec![
         json!({ "rel": "root", "href": CATALOG_FILE, "type": JSON_MEDIA_TYPE }),
         json!({ "rel": "self", "href": CATALOG_FILE, "type": JSON_MEDIA_TYPE }),
+        // アプリが起動時に読むまとめ ([`crate::stac_i18n`])。文書ごとに辿ると3段・43回になる。
+        json!({
+            "rel": "duck:collections",
+            "href": crate::stac_i18n::BUNDLE_FILE,
+            "type": JSON_MEDIA_TYPE,
+            "title": "全 Collection を1つにまとめたもの (アプリが起動時に読みます)",
+        }),
     ];
 
     // 起点直下に置いたCollectionはサブカタログを挟まず、ルートから直接指す。
@@ -831,7 +851,7 @@ pub fn build(
         }),
     });
 
-    Ok(documents)
+    Ok(Built { documents, items })
 }
 
 #[cfg(test)]
@@ -840,9 +860,20 @@ mod tests {
     use crate::catalog::Attribution;
     use crate::external::GSI_OPTIMAL_BVMAP;
 
-    /// 外部のタイルセット無しで組み立てる。ほとんどのテストは GeoParquet 側だけを見る。
+    /// 外部のタイルセット無しで、日本語の文書だけを組み立てる。ほとんどのテストは
+    /// GeoParquet 側だけを見る (仮の日本語には英語の訳が無いので、英語版は作らない)。
     fn build(datasets: &[DatasetEntry]) -> Result<Vec<Document>> {
-        super::build(datasets, &[], &[])
+        super::build_japanese(datasets, &[], &[]).map(|built| built.documents)
+    }
+
+    /// 1つの Collection の Item (stac-geoparquet にまとめる前の JSON)。
+    fn items_of(datasets: &[DatasetEntry], collection: &str) -> Vec<Value> {
+        super::build_japanese(datasets, &[], &[])
+            .unwrap()
+            .items
+            .into_iter()
+            .filter(|item| item["collection"] == collection)
+            .collect()
     }
 
     /// **外部のタイルセットは公開元を直接指す。** Item は無く、層はテーマに束ねて載る。
@@ -860,7 +891,9 @@ mod tests {
             entry("mesh_pop_13", "estat/mesh_pop_13.parquet", None),
             overture,
         ];
-        let documents = super::build(&datasets, &[GSI_OPTIMAL_BVMAP], EXTERNAL_RASTERS).unwrap();
+        let documents = super::build_japanese(&datasets, &[GSI_OPTIMAL_BVMAP], EXTERNAL_RASTERS)
+            .unwrap()
+            .documents;
 
         // **何から作られたか**を辿れる。別のサブカタログへは `../` で。
         let derived = |document: &Value| -> Vec<String> {
@@ -1004,7 +1037,8 @@ mod tests {
         use crate::external::EXTERNAL_RASTERS;
         let datasets = vec![entry("mesh_pop_13", "estat/mesh_pop_13.parquet", None)];
         // overture-buildings が無いので、Re:Earth Buildings の derived_from が解決できない。
-        let Err(error) = super::build(&datasets, &[GSI_OPTIMAL_BVMAP], EXTERNAL_RASTERS) else {
+        let Err(error) = super::build_japanese(&datasets, &[GSI_OPTIMAL_BVMAP], EXTERNAL_RASTERS)
+        else {
             panic!("通ってしまった");
         };
         assert!(error.to_string().contains("overture-buildings"), "{error}");
@@ -1013,7 +1047,8 @@ mod tests {
     #[test]
     fn external_tilesets_point_at_the_publisher() {
         let datasets = vec![entry("mesh_pop_13", "estat/mesh_pop_13.parquet", None)];
-        let documents = super::build(&datasets, &[GSI_OPTIMAL_BVMAP], &[]).unwrap();
+        let built = super::build_japanese(&datasets, &[GSI_OPTIMAL_BVMAP], &[]).unwrap();
+        let documents = built.documents;
 
         let root = find(&documents, "catalog.json");
         let children: Vec<&str> = root["links"]
@@ -1036,19 +1071,13 @@ mod tests {
         assert_eq!(collection["assets"]["data"]["type"], PMTILES_MEDIA_TYPE);
         // 配布元の描き方 (スタイル) は載せない。描き方は形の種類から決める。
         assert!(collection["assets"]["style"].is_null());
-        // Item は無い。
+        // Item は無い (stac-geoparquet にも入らない)。
+        assert!(collection["assets"]["items"].is_null());
         assert!(
-            collection["links"]
-                .as_array()
-                .unwrap()
+            !built
+                .items
                 .iter()
-                .all(|link| link["rel"] != "items")
-        );
-        assert!(
-            !documents
-                .iter()
-                .any(|document| document.path.starts_with("gsi/")
-                    && document.path.ends_with("-items.json"))
+                .any(|item| item["collection"] == "gsi-optimal-bvmap")
         );
         // 層はテーマに束ね、出るズームを添える (建物はズーム14から)。
         let themes = collection["duck:themes"].as_array().unwrap();
@@ -1168,9 +1197,14 @@ mod tests {
         assert_eq!(collection["type"], "Collection");
         assert_eq!(collection["duck:kind"], "population_mesh");
 
-        let items = find(&documents, "estat/estat-mesh-pop-items.json");
-        assert_eq!(items["type"], "FeatureCollection");
-        assert_eq!(items["features"].as_array().unwrap().len(), 2);
+        // Item は文書にせず、stac-geoparquet にまとめる。Collection はそれをアセットで指す。
+        assert_eq!(collection["assets"]["items"]["href"], "../items.parquet");
+        assert_eq!(
+            collection["assets"]["items"]["roles"],
+            json!(["stac-items"])
+        );
+        assert!(!documents.iter().any(|d| d.path.ends_with("-items.json")));
+        assert_eq!(items_of(&datasets, "estat-mesh-pop").len(), 2);
     }
 
     /// **STACの相対リンクはその文書からの相対。**
@@ -1187,11 +1221,11 @@ mod tests {
         )];
         let documents = build(&datasets).unwrap();
 
-        // アセットは同じディレクトリにあるので、ファイル名だけ。
-        let items = find(&documents, "estat/estat-mesh-pop-items.json");
+        // **Item は stac-geoparquet (起点に置く1ファイル) に入るので、起点からのパス。**
+        let items = items_of(&datasets, "estat-mesh-pop");
         assert_eq!(
-            items["features"][0]["assets"]["data"]["href"],
-            "mesh_pop_13.parquet"
+            items[0]["assets"]["data"]["href"],
+            "estat/mesh_pop_13.parquet"
         );
 
         let href = |document: &Value, rel: &str| -> String {
@@ -1212,17 +1246,13 @@ mod tests {
         // 親は同じディレクトリのサブカタログ。
         assert_eq!(href(collection, "parent"), "catalog.json");
         // 兄弟なのでファイル名だけ。
-        assert_eq!(href(collection, "items"), "estat-mesh-pop-items.json");
         assert_eq!(href(collection, "self"), "estat-mesh-pop.json");
+        // stac-geoparquet は起点にあるので、1つ上。
+        assert_eq!(collection["assets"]["items"]["href"], "../items.parquet");
 
-        assert_eq!(href(&items["features"][0], "root"), "../catalog.json");
-        assert_eq!(
-            href(&items["features"][0], "collection"),
-            "estat-mesh-pop.json"
-        );
-        // **ItemCollection自身の root も文書からの相対。** 以前は "catalog.json" と
-        // 書いていて、同じ階層の (存在しない) ファイルを指していた。
-        assert_eq!(href(items, "root"), "../catalog.json");
+        // Item のリンクも起点からのパス (stac-geoparquet の置き場所からの相対)。
+        assert_eq!(href(&items[0], "root"), "catalog.json");
+        assert_eq!(href(&items[0], "collection"), "estat/estat-mesh-pop.json");
 
         // サブカタログから見ると、ルートは1つ上。
         let sub = find(&documents, "estat/catalog.json");
@@ -1390,8 +1420,8 @@ mod tests {
             collection["extent"]["spatial"]["bbox"],
             json!([[null, null, null, null]])
         );
-        let items = find(&documents, "estat-mesh-pop-items.json");
-        assert_eq!(items["features"][0]["geometry"], Value::Null);
+        let items = items_of(&datasets, "estat-mesh-pop");
+        assert_eq!(items[0]["geometry"], Value::Null);
     }
 
     // 語彙は Collection の summaries に入る。UIの絞り込みの選択肢がここから
@@ -1427,15 +1457,14 @@ mod tests {
     // ファイルが増えたぶんだけ同じ内容が並ぶ (独自形式でそうなっていた)。
     #[test]
     fn columns_live_on_the_collection_not_on_every_item() {
-        let documents =
-            build(&[entry("a", "a.parquet", None), entry("b", "b.parquet", None)]).unwrap();
+        let datasets = [entry("a", "a.parquet", None), entry("b", "b.parquet", None)];
+        let documents = build(&datasets).unwrap();
         let collection = find(&documents, "estat-mesh-pop.json");
         assert_eq!(
             collection["item_assets"]["data"]["table:columns"][0]["name"],
             "population"
         );
-        let items = find(&documents, "estat-mesh-pop-items.json");
-        for feature in items["features"].as_array().unwrap() {
+        for feature in &items_of(&datasets, "estat-mesh-pop") {
             assert!(
                 feature["properties"].get("table:columns").is_none(),
                 "Itemに列構成が入っている: {feature}"
@@ -1472,11 +1501,7 @@ mod tests {
         with_source.via = Some("https://example.invalid/13103.zip".to_string());
         let plain = entry("b", "b.parquet", None);
 
-        let documents = build(&[with_source, plain]).unwrap();
-        let features = find(&documents, "estat-mesh-pop-items.json")["features"]
-            .as_array()
-            .unwrap()
-            .clone();
+        let features = items_of(&[with_source, plain], "estat-mesh-pop");
 
         assert_eq!(
             via_hrefs(&features[0]),
@@ -1496,11 +1521,9 @@ mod tests {
         with_lod.source_lod = Some("1,2,3".to_string());
         let plain = entry("b", "b.parquet", None);
 
-        let documents = build(&[with_lod, plain]).unwrap();
-        let features = find(&documents, "estat-mesh-pop-items.json")["features"]
-            .as_array()
-            .unwrap()
-            .clone();
+        let datasets = [with_lod, plain];
+        let documents = build(&datasets).unwrap();
+        let features = items_of(&datasets, "estat-mesh-pop");
 
         assert_eq!(features[0]["properties"]["duck:source_lod"], "1,2,3");
         // LODの概念が無いデータセットには出さない。

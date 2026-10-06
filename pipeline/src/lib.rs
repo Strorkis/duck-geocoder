@@ -27,6 +27,8 @@ pub use remote_zip;
 pub mod repack;
 pub mod spatial_pack;
 pub mod stac;
+pub mod stac_geoparquet;
+pub mod stac_i18n;
 
 /// 指定したEPSGコードからWGS84 (EPSG:4326) への変換器を作る。
 /// `bbox` (west, south, east, north) は変換対象データの範囲で、

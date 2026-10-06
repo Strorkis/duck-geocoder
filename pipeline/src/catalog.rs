@@ -1108,6 +1108,9 @@ fn collect_parquet(dir: &Path, found: &mut Vec<std::path::PathBuf>) -> Result<()
 pub fn build_catalog(dir: &Path) -> Result<Vec<DatasetEntry>> {
     let mut paths = Vec::new();
     collect_parquet(dir, &mut paths)?;
+    // **カタログ自身が書いた Item の一覧 (stac-geoparquet) はデータセットではない。**
+    let items = dir.join(crate::stac_geoparquet::ITEMS_FILE);
+    paths.retain(|path| path != &items);
     paths.sort();
 
     if paths.is_empty() {
