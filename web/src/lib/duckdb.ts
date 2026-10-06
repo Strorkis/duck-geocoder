@@ -175,18 +175,61 @@ export async function initDuckDb(collections: Collection[]): Promise<Database> {
     );
   };
 
-  // Item は stac-geoparquet から読む。**Collection で絞ると、その行グループだけを Range で読む**
-  // (パイプラインが Collection ごとに行グループを分け、`collection` 列の最小・最大で読み飛ばせる)。
+  /**
+   * stac-geoparquet の、Collection → 行番号の範囲 [始め, 終わり) (ファイルごとに1回だけ求める)。
+   *
+   * パイプラインは Collection ごとに行グループを分けている。**`WHERE collection = …` だけでは
+   * 読み飛ばしきれない** — DuckDB は文字列の統計を頭の部分でしか比べないので、ID が別の ID の
+   * 頭と同じもの (`plateau-buildings` と `plateau-buildings-coverage`) は、相手の行グループの
+   * `collection` 列を確かめに行く。WASM は 16KB 単位で取るので、それがブロック1つになる。
+   * 行番号 (`file_row_number`) で絞れば、その行グループだけを読む。範囲はフッターの統計から
+   * 求める (フッターは Item を読むときに必ず読むので、読み足しは無い)。
+   */
+  const rowRanges = new Map<string, Promise<Map<string, [number, number]>>>();
+  const collectionRows = (file: string) => {
+    let ranges = rowRanges.get(file);
+    if (!ranges) {
+      ranges = conn
+        .query(
+          `SELECT row_group_id, row_group_num_rows AS n, stats_min_value AS lo, stats_max_value AS hi
+           FROM parquet_metadata('${file}') WHERE path_in_schema = 'collection' ORDER BY row_group_id;`,
+        )
+        .then((result) => {
+          const found = new Map<string, [number, number]>();
+          let start = 0;
+          for (const row of result.toArray()) {
+            const end = start + Number(row.n);
+            // 1つの行グループに1つの Collection だけのときに使う (混ざっていれば使わない)。
+            if (row.lo !== null && row.lo === row.hi) {
+              const known = found.get(row.lo);
+              // 行グループの上限を超えて2つに分かれた Collection は、続きとしてつなぐ。
+              found.set(row.lo, known && known[1] === start ? [known[0], end] : [start, end]);
+            }
+            start = end;
+          }
+          return found;
+        });
+      rowRanges.set(file, ranges);
+    }
+    return ranges;
+  };
+
+  // Item は stac-geoparquet から読む。**Collection で絞ると、その行グループだけを Range で読む。**
   // 値は文字列で埋め込む — 準備した問い合わせの引数だと、行グループの読み飛ばしに使われないことがある。
   setItemReader(async (file, collection) => {
     await register([file]);
-    const where =
-      collection === undefined ? '' : `WHERE collection = '${collection.replace(/'/g, "''")}'`;
+    let where = '';
+    if (collection !== undefined) {
+      // collection の条件は残す (行番号の範囲が求められなかったときと、念のため)。
+      where = `WHERE collection = '${collection.replace(/'/g, "''")}'`;
+      const range = (await collectionRows(file)).get(collection);
+      if (range) where += ` AND file_row_number >= ${range[0]} AND file_row_number < ${range[1]}`;
+    }
     const result = await conn.query(`
       SELECT id, collection, bbox, links,
              "table:row_count" AS row_count, "duck:source_lod" AS source_lod,
              assets.data.href AS href
-      FROM read_parquet('${file}') ${where};
+      FROM read_parquet('${file}', file_row_number = true) ${where};
     `);
     return result.toArray().map((row) => {
       const bbox = row.bbox?.toJSON() as { xmin: number; ymin: number; xmax: number; ymax: number } | null;
