@@ -7,7 +7,8 @@
 //!   `collection` 列の統計で行グループを読み飛ばせるので、DuckDB の `WHERE collection = …` は
 //!   その Collection の行グループだけを Range で取る。JSON のときの「使わないデータの Item は
 //!   起動時に読まない」(E2E のテスト) がそのまま保てる
-//! - **小さい。** 同じ文字列 (リンク・型・拡張の URL) が並ぶので、辞書符号化と圧縮がよく効く
+//! - **小さい。** 同じ文字列 (リンク・型・拡張の URL) が並ぶので、圧縮がよく効く。
+//!   フッターも削る (統計は読み飛ばしに使う列だけ。`write` のコメント)
 //!
 //! 仕様: <https://github.com/radiantearth/stac-geoparquet-spec>。`properties` の中身は
 //! 最上位の列に出し、`datetime` はタイムスタンプ、ジオメトリは WKB (GeoParquet 1.1)。
@@ -24,10 +25,11 @@ use anyhow::{Context, Result, bail};
 use arrow::array::{ArrayRef, BinaryArray, Float64Array, RecordBatch, StructArray};
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
-use parquet::arrow::arrow_writer::ArrowWriter;
+use parquet::arrow::arrow_writer::{ArrowWriter, ArrowWriterOptions};
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::metadata::KeyValue;
-use parquet::file::properties::WriterProperties;
+use parquet::file::properties::{EnabledStatistics, WriterProperties};
+use parquet::schema::types::ColumnPath;
 use serde_json::{Value, json};
 use std::fs::File;
 use std::path::Path;
@@ -189,7 +191,12 @@ fn bbox_fields() -> Fields {
     )
 }
 
-/// Item を stac-geoparquet にして書く。**Collection ごとに行グループを分ける** (並びは渡された順)。
+/// Item を stac-geoparquet にして書く。**Collection ごとに行グループを分ける。**
+///
+/// **Item の多い Collection を前に、少ないものを後ろ (フッターの隣) に置く。** 読む側
+/// (DuckDB-WASM) は 16KB のブロック単位で取り、取ったブロックは使い回す。起動時に要るのは
+/// 行政区域や整備範囲のような1〜2件の Collection なので、フッターと同じブロックに入れておけば
+/// 読み足さずに済む。件数が同じなら渡された順。
 pub fn write(path: &Path, items: &[Value]) -> Result<()> {
     let mut fields = json_fields();
     fields.push(Field::new("geometry", DataType::Binary, true));
@@ -214,6 +221,8 @@ pub fn write(path: &Path, items: &[Value]) -> Result<()> {
             }
         }
     }
+    // 安定な並べ替えなので、件数が同じものは渡された順のまま。
+    groups.sort_by_key(|(_, members)| std::cmp::Reverse(members.len()));
 
     let mut file_bbox = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
     for [west, south, east, north] in items.iter().filter_map(item_bbox) {
@@ -234,10 +243,33 @@ pub fn write(path: &Path, items: &[Value]) -> Result<()> {
     let geo = geo_metadata_json("geometry", &covering, &["Polygon".to_string()], file_bbox)?;
 
     let file = File::create(path).with_context(|| format!("作れません: {}", path.display()))?;
-    let properties = WriterProperties::builder()
+    let mut properties = WriterProperties::builder()
         .set_compression(Compression::ZSTD(ZstdLevel::try_new(3)?))
-        .build();
-    let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(properties))?;
+        // **フッターを小さくする。** 行グループ15 × 列21 で列の情報が300を超え、
+        // 何もしないとフッターだけで44KB (ファイルの3分の1) あった。起動時はフッターを必ず読む。
+        // - 統計は読み飛ばしに使う列 (collection と bbox) にだけ付ける。href などの長い文字列の
+        //   最小・最大は使い道がないのに、行グループごとに2つずつ並ぶ
+        // - 辞書は付けない。行グループが数件しかなく、辞書のページの分だけ大きくなる
+        // - ページの索引 (offset index) は書かない。行グループに1ページしかないので使い道がない
+        .set_statistics_enabled(EnabledStatistics::None)
+        .set_dictionary_enabled(false)
+        .set_offset_index_disabled(true);
+    // 列の道筋は要素ごとに分けて渡す (`"bbox.xmin"` と書くと、その名前の1つの列と読まれる)。
+    let mut stats_columns = vec![ColumnPath::new(vec!["collection".to_string()])];
+    for corner in ["xmin", "ymin", "xmax", "ymax"] {
+        stats_columns.push(ColumnPath::new(vec![
+            "bbox".to_string(),
+            corner.to_string(),
+        ]));
+    }
+    for column in stats_columns {
+        properties = properties.set_column_statistics_enabled(column, EnabledStatistics::Chunk);
+    }
+    // arrow の型 (ARROW:schema, 2KB) もフッターに入るが、読む側は Parquet の型で足りる。
+    let options = ArrowWriterOptions::new()
+        .with_properties(properties.build())
+        .with_skip_arrow_metadata(true);
+    let mut writer = ArrowWriter::try_new_with_options(file, schema.clone(), options)?;
     for (_, members) in &groups {
         writer.write(&batch(members, &schema)?)?;
         // **ここで行グループを閉じる。** 1つの行グループに1つの Collection だけが入るので、
@@ -274,15 +306,16 @@ mod tests {
     }
 
     /// **Collection ごとに行グループが分かれる。** 読み飛ばしはこれで効く。
+    /// Item の多いものが前、少ないものが後ろ (フッターの隣)。
     #[test]
     fn writes_one_row_group_per_collection() {
         let dir = std::env::temp_dir().join(format!("stac-geoparquet-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("items.parquet");
         let items = vec![
+            item("s1", "small", None),
             item("a1", "a", Some([139.0, 35.0, 140.0, 36.0])),
             item("a2", "a", Some([140.0, 35.0, 141.0, 36.0])),
-            item("b1", "b", None),
         ];
         write(&path, &items).unwrap();
 
@@ -291,6 +324,22 @@ mod tests {
         assert_eq!(metadata.num_row_groups(), 2);
         assert_eq!(metadata.row_group(0).num_rows(), 2);
         assert_eq!(metadata.row_group(1).num_rows(), 1);
+
+        // 統計は読み飛ばしに使う列にだけ (フッターを小さくするため)。
+        let stats = |group: usize, path: &str| {
+            metadata
+                .row_group(group)
+                .columns()
+                .iter()
+                .find(|column| column.column_path().string() == path)
+                .unwrap_or_else(|| panic!("{path} がありません"))
+                .statistics()
+                .is_some()
+        };
+        assert!(stats(0, "collection") && stats(1, "collection"));
+        assert!(stats(0, "bbox.xmin"));
+        assert!(!stats(0, "id") && !stats(0, "assets.data.href"));
+
         let keys: Vec<&str> = metadata
             .file_metadata()
             .key_value_metadata()
@@ -298,10 +347,7 @@ mod tests {
             .iter()
             .map(|entry| entry.key.as_str())
             .collect();
-        assert!(
-            keys.contains(&"geo") && keys.contains(&"stac-geoparquet"),
-            "{keys:?}"
-        );
+        assert_eq!(keys, ["geo", "stac-geoparquet"]);
         std::fs::remove_dir_all(&dir).ok();
     }
 
