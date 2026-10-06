@@ -46,9 +46,31 @@ async function datasetUrl(page: Page, id: string): Promise<string | null> {
   return path === undefined ? null : resolveDataUrl(page, path);
 }
 
-interface StacLink {
-  rel: string;
-  href: string;
+/** アプリが起動時に読むまとめ (`collections.json` / `collections.en.json`) の中身。 */
+interface Bundle {
+  collections: Record<string, unknown>[];
+  'duck:catalogs': { id: string; title?: string }[];
+}
+
+/**
+ * まとめを読む。**画面と突き合わせるときは、文書ごとの JSON ではなくこれを読む** —
+ * アプリが読んでいるのはこちらで、公開の途中 (新しいアプリを先に出し、文書を後から
+ * 上げ直す間) は文書ごとの JSON が古いことがある。
+ */
+async function readBundle(page: Page, file = 'collections.json'): Promise<Bundle> {
+  const response = await page.request.get(await resolveDataUrl(page, file));
+  // 開発サーバーは無いファイルに index.html を200で返すので、JSON として読めるかで確かめる。
+  const body = response.ok() ? await response.text() : '';
+  try {
+    return JSON.parse(body) as Bundle;
+  } catch {
+    return { collections: [], 'duck:catalogs': [] };
+  }
+}
+
+/** まとめから Collection を1つ引く。無ければ undefined。 */
+async function bundledCollection<T>(page: Page, id: string): Promise<T | undefined> {
+  return (await readBundle(page)).collections.find((collection) => collection.id === id) as T | undefined;
 }
 
 /**
@@ -60,13 +82,7 @@ interface StacLink {
  * あれば港区も入っている。
  */
 async function hasBuildings(page: Page): Promise<boolean> {
-  const response = await page.request.get(
-    await resolveDataUrl(page, `overture/${BUILDINGS_COLLECTION}.json`),
-  );
-  if (!response.ok()) return false;
-  // 開発サーバーは無いファイルに index.html を200で返すので、中身で確かめる。
-  const body = await response.text();
-  return body.includes(`"id": "${BUILDINGS_COLLECTION}"`) || body.includes(`"id":"${BUILDINGS_COLLECTION}"`);
+  return (await bundledCollection(page, BUILDINGS_COLLECTION)) !== undefined;
 }
 
 async function hasPlateau(page: Page): Promise<boolean> {
@@ -106,10 +122,9 @@ function resolveDataUrl(page: Page, file: string): Promise<string> {
 async function skipIfDataMissing(page: Page) {
   // アプリが起動時に読むまとめで見る (起動が済む前に呼ばれるので、Item は引けない)。
   // 開発サーバーは無いファイルに index.html を200で返すので、中身で確かめる。
-  const response = await page.request.get(await resolveDataUrl(page, 'collections.json'));
-  const body = response.ok() ? await response.text() : '';
+  const { collections } = await readBundle(page);
   test.skip(
-    !body.includes('"duck:kind":"admin"'),
+    !collections.some((collection) => collection['duck:kind'] === 'admin'),
     '行政区域がカタログに無い (READMEの手順で用意してください)',
   );
 }
@@ -351,10 +366,7 @@ test('英語の画面に切り替えられ、日本語へ戻れる', async ({ pa
   await expect(page.locator('.catalog-tab[data-section="view"]')).toContainText('View only');
   await expect(page.locator('[data-catalog-layer] .catalog-add').first()).toHaveText(/Add|Added/);
   // 見出しは英語版のカタログの題名 (「国土数値情報」ではなく National Land Numerical Information)。
-  const english = (await (
-    await page.request.get(await resolveDataUrl(page, 'catalog.en.json'))
-  ).json()) as { links: (StacLink & { title?: string })[] };
-  const groups = english.links.filter((l) => l.rel === 'child').map((l) => l.title);
+  const groups = (await readBundle(page, 'collections.en.json'))['duck:catalogs'].map((c) => c.title);
   const headings = await page.locator('#layer-catalog-dialog .catalog-group-title').allTextContents();
   expect(headings.length).toBeGreaterThan(0);
   expect(groups).toEqual(expect.arrayContaining(headings));
@@ -759,9 +771,9 @@ test('使うときの条件が一覧表とバッジで出る', async ({ page }) 
 
   // ⚙ のカードにもバッジ。カタログの duck:terms と一致すること。
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
-  const collection = (await (
-    await page.request.get(await resolveDataUrl(page, 'plateau/plateau-buildings.json'))
-  ).json()) as { 'duck:terms': { commercial: string; share_alike: boolean } };
+  const collection = (await bundledCollection<{
+    'duck:terms': { commercial: string; share_alike: boolean };
+  }>(page, LAYER.plateauBuildings))!;
   expect(collection['duck:terms'].commercial).toBe('allowed');
   await openLayerDetails(page, LAYER.plateauBuildings);
   const card = page.locator(`.collection-card[data-collection="${LAYER.plateauBuildings}"]`);
@@ -1731,9 +1743,9 @@ test('重要度の段で絞り込めて、色分けできる', async ({ page }) 
   await showPlateauBuildings(page);
 
   // 段の題名はカタログのとおりに並ぶ。
-  const collection = (await (
-    await page.request.get(await resolveDataUrl(page, 'plateau/plateau-buildings.json'))
-  ).json()) as { 'duck:tiers': { tiers: { id: string; title: string }[] } };
+  const collection = (await bundledCollection<{
+    'duck:tiers': { tiers: { id: string; title: string }[] };
+  }>(page, LAYER.plateauBuildings))!;
   const titles = collection['duck:tiers'].tiers.map((t) => t.title);
   await expect(page.locator('#tier-options label')).toHaveText(titles);
 
@@ -2217,11 +2229,9 @@ test('鉄道はホバーで路線名と事業者が出る', async ({ page }) => 
 test('カタログのダイアログはカタログの階層で並ぶ', async ({ page }) => {
   await expect(page.locator('#layer-list')).toBeVisible();
 
-  // ルートの子 (サブカタログ) の題名。
-  const catalog = (await (
-    await page.request.get(await resolveDataUrl(page, 'catalog.json'))
-  ).json()) as { links: (StacLink & { title?: string })[] };
-  const groups = catalog.links.filter((l) => l.rel === 'child').map((l) => l.title);
+  // サブカタログの題名 (カタログの順)。まとめに入っている順はルートの child の順と同じ
+  // (パイプラインの stac_i18n のテストが確かめている)。
+  const groups = (await readBundle(page))['duck:catalogs'].map((c) => c.title);
   expect(groups.length, 'サブカタログが無い (平らなカタログのまま?)').toBeGreaterThan(0);
 
   // 見出しは**カタログの順に**、**カタログの題名で**並ぶ。行を持たない
@@ -2293,12 +2303,13 @@ test('STACの文書はページの中で開いて、リンクを辿れる', asyn
   await expect(json).toContainText(`"id": "${LAYER.plateauBuildings}"`);
 
   // Item (ファイル) の一覧へ進む。stac-geoparquet (アセット) から、この Collection の行だけを読む。
-  // 306件あるので、全部は整形して出さない。保存のリンクは Parquet そのもの。
+  // 306件あるので、全部は整形して出さない。
+  // **ファイルの形 (Parquet か JSON か) までは見ない** — 公開時は新しいアプリを先に出し、
+  // 文書を後から上げ直すので、その間は古い ItemCollection (rel: items) を辿ることになる。
   await follow('items');
   await expect(type).toHaveText('FeatureCollection');
   await expect(page.locator('#stac-note')).toContainText('件のうち先頭');
   await expect(json).toContainText(`"collection": "${LAYER.plateauBuildings}"`);
-  await expect(page.locator('#stac-raw')).toHaveAttribute('href', /items\.parquet$/);
 
   // 戻って、親 (サブカタログ) へ。**見出しと同じ題名**であること。
   await page.locator('#stac-back').click();
@@ -3173,9 +3184,9 @@ for (const [layer, label] of [
  */
 test('引いた表示では重要な段の建物だけが出る (間引き)', async ({ page }) => {
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
-  const collection = (await (
-    await page.request.get(await resolveDataUrl(page, 'plateau/plateau-buildings.json'))
-  ).json()) as { 'duck:tiers': { lod_column?: string; tiers: { title: string }[] } };
+  const collection = (await bundledCollection<{
+    'duck:tiers': { lod_column?: string; tiers: { title: string }[] };
+  }>(page, LAYER.plateauBuildings))!;
   test.skip(!collection['duck:tiers'].lod_column, '段の列 (lod) がまだ無いカタログ');
   const titles = collection['duck:tiers'].tiers.map((t) => t.title);
 
@@ -3620,8 +3631,7 @@ const gsiRow = (theme: string) => `${GSI_VECTOR}--${theme}`;
 
 /** カタログに地理院のベクトルタイルが載っているか。 */
 async function hasGsiVector(page: Page): Promise<boolean> {
-  const response = await page.request.get(await resolveDataUrl(page, `gsi/${GSI_VECTOR}.json`));
-  return response.ok();
+  return (await bundledCollection(page, GSI_VECTOR)) !== undefined;
 }
 
 /** 地理院の描画の層のうち、タイルの層 `sourceLayer` を描くものの visibility (重複なし)。 */
