@@ -73,9 +73,11 @@
 
 配信するデータの目録は [STAC](https://github.com/radiantearth/stac-spec) で書いている。
 `catalog.json` (Catalog) → `<出所>/catalog.json` (サブカタログ) →
-`<出所>/<collection>.json` (Collection) → `<出所>/<collection>-items.json`
-(ItemCollection) の4階層。**JSONは実データと同じ出所ごとのディレクトリに置き**、
-ルートは `catalog.json` 1つだけ。リンクは**その文書からの相対**として解決する。
+`<出所>/<collection>.json` (Collection) の3階層と、全 Collection の Item をまとめた
+`items.parquet` (stac-geoparquet)。**JSONは実データと同じ出所ごとのディレクトリに置き**、
+ルートは `catalog.json`。リンクは**その文書からの相対**として解決する。
+英語版は文書ごとの `*.en.json` (Language extension で結ぶ)。アプリは起動時に
+まとめ (`collections.json` / `collections.en.json`) を1回だけ読む。
 
 - **出所のまとまりはサブカタログで表す。** UIの一覧の見出しはここから来る
   (画面を読むことがカタログを歩くことになるように)。`providers[].name` は組織名で、
@@ -83,8 +85,11 @@
   題名は `pipeline/src/stac.rs` の `SUB_CATALOGS` にしか書かない
 - **Collectionはファイル数で増やさない。** 空間範囲は全体の1件だけにして、
   ファイルごとの範囲はItemに置く。Collectionは起動時に読むので小さく保つ
-- **Itemは1件1ファイルにしない。** 350ファイルを超えるので、
-  Collectionごとに1つのItemCollectionにまとめる
+- **Itemは1件1ファイルにしない。** 761件あるので、stac-geoparquet 1つにまとめ、
+  Collection ごとに行グループを分ける (使う Collection の分だけを Range で読む)。
+  理由と実測は [docs/roadmap.md](docs/roadmap.md) の「JSON をまとめる」
+- **カタログの文言に日本語を足したら、`pipeline/src/stac_i18n.rs` の `EN` に訳も足す。**
+  無ければ書き出しがエラーになる
 - **独自項目には `duck:` を付ける** (`duck:kind` / `duck:attribution`)。
   種別も出典の文言もSTACに専用の場所が無い
 - 詳細と既知の穴 (`datetime` を埋めていない) は [docs/pipeline.md](docs/pipeline.md)

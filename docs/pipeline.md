@@ -1008,16 +1008,18 @@ Webアプリはこれを読んでどのデータセットを使うかを決め�
 独自形式をやめて [STAC](https://github.com/radiantearth/stac-spec) に寄せた。
 
 ```text
-catalog.json                      ← Catalog。出所ごとのサブカタログへの child リンク
-estat/catalog.json                ← Catalog (サブカタログ)。「国勢調査」
-estat/estat-mesh-pop.json         ← Collection。何があるか。ファイル数で増えない
-estat/estat-mesh-pop-items.json   ← ItemCollection。ファイル1つずつの href と bbox
-estat/mesh_pop_13.parquet         ← 実データ
+catalog.json                ← Catalog。出所ごとのサブカタログへの child リンク
+estat/catalog.json          ← Catalog (サブカタログ)。「国勢調査」
+estat/estat-mesh-pop.json   ← Collection。何があるか。ファイル数で増えない
+estat/mesh_pop_13.parquet   ← 実データ
+items.parquet               ← 全 Collection の Item (stac-geoparquet)。ファイル1つずつの href と bbox
+collections.json            ← アプリ用のまとめ (Catalog と Collection)。英語版は collections.en.json
+*.en.json                   ← 文書ごとの英語版
 ```
 
-**起動時に読むのは Catalog と Collection だけ。** Item は使う段になって読む。
-サブカタログもCatalogなので起動時に読む (5つ、各1KB前後)。1段の中は並列に
-取るので、往復が1段増えるだけで済む。
+**アプリが起動時に読むのはまとめ1つだけ。** Item は使う段になって、その Collection の
+行グループだけを読む。まとめ方の判断と実測は [roadmap.md](roadmap.md) の「JSON をまとめる」。
+STAC Browser などの道具は、文書ごとの JSON を `catalog.json` から辿る。
 
 #### 出所ごとにサブカタログを挟む
 
@@ -1045,14 +1047,15 @@ estat/mesh_pop_13.parquet         ← 実データ
 - **Collectionの題名から出所を外した** (「建物 (PLATEAU)」→「建物」)。
   平らな一覧のために付けていたもので、親のサブカタログが言うようになった
 
-UIはリンク先の文書の `type` で降りるかどうかを決める (`Catalog` なら降り、
-`Collection` なら止まる)。STACはどちらも子にできる。平らなカタログも読めるので、
-サブカタログを挟む前のデータでも一覧が見出しなしで出るだけで動く。
+UIは文書を辿らず、まとめ (`collections.json`) の `duck:catalogs` と、Collection の
+`parent` リンクで見出しを結ぶ。まとめは `catalog.json` から辿った順に並んでいる
+(`stac_i18n.rs` の `bundle`)。
 
 | | 起動時に読む量 |
 | --- | ---: |
 | 独自形式 (1ファイル) | 72 KB |
-| **STAC** | **9.2 KB** (5ファイル) |
+| STAC (文書を辿る) | 9.2 KB (5ファイル。2026-09 の頃) → 43ファイル (2026-10) |
+| **STAC + まとめ** | **88 KB** (1ファイル。gzip なら約12KB) |
 
 Collectionが件数で増えないようにしてある。**空間範囲は全体の1件だけ**で、
 ファイルごとの範囲はItemに置く。両方に書くとCollectionがファイル数に比例して
@@ -1060,13 +1063,19 @@ Collectionが件数で増えないようにしてある。**空間範囲は全�
 
 **Itemは1件1ファイルにしない。** 静的STACの標準的な置き方だが、人口メッシュ47件 +
 PLATEAU306都市で350ファイルを超え、1つ読むたびに1往復することになる。
-代わりにCollectionごとにItemCollection (STAC APIの `/items` が返すのと同じ形) を1つ置く。
+はじめはCollectionごとにItemCollectionを1つ置いていたが、2026-10-07 に
+**stac-geoparquet 1つ** (`stac_geoparquet.rs`) にまとめた。Collection はアセット
+(`roles: ["stac-items"]`) でこれを指す。アセットとリンクの href は**この Parquet の置き場所
+(配信の起点) からの相対**。
 
 **JSONは実データと同じ出所ごとのディレクトリに置く。** リンクは**その文書からの相対**
 (STACの規則)。平置きしていた頃は「起点からの相対」と一致していてずれが表に
 出なかったが、階層を作ると出る — ItemCollectionの `root` が `catalog.json` のまま
 になっていて、サブディレクトリから引くと存在しないファイルを指していた
 (サブカタログを挟むときに見つけて `../catalog.json` に直した)。
+
+**書き出しは古い JSON を消してから書く** (起点と、その直下のディレクトリの `*.json`)。
+items.parquet を先に書くので、そこで失敗しても手元の一式は前のまま残る。
 
 独自項目には接頭辞を付ける (STACの作法)。
 

@@ -646,10 +646,58 @@ JAXA の条件は「商用は事前に連絡」なので、`duck:terms` の `com
   周辺検索や地図の絞り込みで鍵として使っている日本語 (「建物」「駅」… 見せるときだけ訳す)
 - E2E は日本語に固定した (`locale: 'ja-JP'`)。英語の画面は1件で確かめる
 
-**2. カタログの英語版 (これから)。** カタログの題名・説明・条件の名前は日本語のまま
-(ⓘ のカード、一覧の行の名前、STAC Browser)。STAC の Language extension で英語版の文書を
-`rel: alternate` + `hreflang: en` で結ぶ。STAC Browser は画面の言語を変えるとこの形の文書へ移る
-(参考リポジトリで確かめた)。JSON は約2倍になる (58 → 約116)。
+**2. カタログの英語版 (入れた, 2026-10-07)。** 文書ごとに `*.en.json` を置き、STAC の
+Language extension (`language` / `languages`) と `rel: alternate` + `hreflang` で日英を結ぶ。
+STAC Browser は画面の言語を変えるとこの形の文書へ移る (参考リポジトリで確かめた)。
+
+- 訳は `pipeline/src/stac_i18n.rs` の表に**日本語の文字列で引く**形で持つ。訳の無い日本語が
+  残ればカタログの書き出しがエラーになる (黙って日本語のまま出さない)
+- **訳さないもの:** 出典の文言 (`duck:attribution`。規約が書き方を指定している)、
+  `summaries` (データの中身の語彙)
+- アプリは英語の画面なら英語版のまとめ (`collections.en.json`) を読む (次の節)
+
+## JSON をまとめる (2026-10-07)
+
+利用者の希望: 「JSON を何かしらの方法でまとめたい。できるだけ効率が落ちない方法で」。
+英語版で文書が約2倍 (43 → 86) になるのもあって、読む側の往復を減らしたい。
+
+**読むものが2種類あり、まとめ方を分けた。**
+
+| 何を | どうした | 理由 |
+| --- | --- | --- |
+| **Item** (ファイル1つずつの href と bbox。761件) | **stac-geoparquet 1つ** (`items.parquet`)。Collection ごとに行グループを分ける | 使う Collection の分だけを Range で読める。JSON の15個 (約1.4MB) → 80KB |
+| **Catalog と Collection** (起動時に全部読む) | 文書ごとの JSON は**残し**、アプリ用に**まとめ** (`collections.json` / `.en.json`) を足す | STAC (と STAC Browser) は1文書1ファイルが前提。アプリは起動時に1回読めば済む |
+
+比べた案:
+
+| 案 | 良いところ | 困るところ |
+| --- | --- | --- |
+| ItemCollection の JSON (前の形) | どの道具でも読める | PLATEAU に寄るだけで 607KB。Collection の数だけ往復 |
+| **stac-geoparquet (選んだ)** | 小さい・必要な行グループだけ読む・仕様がある (STAC GeoParquet 1.1.0)。DuckDB がもう手元にある | **STAC Browser が Item の一覧を出せなくなる** (Collection までは辿れる)。読むのに DuckDB が要る |
+| 全部を1つの JSON | 1回で済む | 使わない Item まで毎回読む (起動時に1.4MB) |
+| zip などに束ねて Range で読む (PMTiles のように) | JSON のまま | 読む仕組みを自前で持つことになり、STAC の道具はどれも読めない |
+
+**効率を落とさないために詰めたこと** (実測。開発サーバー):
+
+- 最初の形では、起動時に items.parquet (137KB) のほとんど (110KB・7回) を読んでいた。
+  DuckDB-WASM は **16KB のブロック単位**で取るので、行グループが1.6KBでもブロック1つになる
+- フッターを削った (統計は `collection` と `bbox` だけ、辞書・ページの索引・arrow の型は書かない):
+  ファイル 137KB → 80KB、フッター 44KB → 21KB
+- **Item の多い Collection を前、少ないものを後ろ**に並べた。起動時に要る1〜2件の Collection が
+  フッターと同じブロックに入る
+- **DuckDB は文字列の統計を頭の部分でしか比べない。** `WHERE collection = 'plateau-buildings-coverage'`
+  でも `plateau-buildings` の行グループを確かめに行く。フッターの統計から行番号の範囲を求め、
+  `file_row_number` で絞った
+- 結果: **起動時は 47KB・3回** (まとめ 88KB の JSON 1回とは別)。PLATEAU に寄って読み足すのは
+  **16KB** (前は 607KB の JSON)。起動時の JSON の読み込みは 3段・43回 → 1回
+- 起動時だけを見ると、以前の小さな ItemCollection 4つ (各数KB) より読む量は多い。
+  往復が減ったことと、建物を出したときの差 (約590KB) の方が大きいと判断した
+
+**仕様から外したところ:** stac-geoparquet はファイルのメタデータに Collection の JSON を入れることを
+勧めているが、入れない (フッターを読むたびに32個ぶんがついてくる。Collection は JSON にある)。
+
+**STAC Browser のパッチ** (`rel: items` の相対パスの解決) は、`rel: items` が無くなったので
+効く場面が無くなった。上流が直したら外す方針のまま残す。
 
 ## 配らずに変換する・カタログだけ持つ (2026-10-05、利用者の構想)
 

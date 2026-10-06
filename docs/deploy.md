@@ -126,8 +126,8 @@ CORSを設定する。
 本番ビルドのE2EをR2の実データに対して流すゲートなので、データが古いままだと
 テストが落ちてデプロイが止まる。
 
-catalog.jsonも忘れずに上げること。件数・収録範囲・列構成はここから読まれるので、
-parquetだけ差し替えると実データとずれる。
+カタログ (JSON と items.parquet) も忘れずに上げること。件数・収録範囲・列構成はここから
+読まれるので、parquetだけ差し替えると実データとずれる。
 
 ### 先に上げると壊れる場合がある
 
@@ -197,49 +197,56 @@ cd data/output && mise exec -- jq -r '.links[] | select(.rel=="child") | .href' 
   done; cd -
 ```
 
-**JSONは `--size-only` を付けずに上げる。** 中身だけが変わって大きさが揃うことが
-ある (サブカタログを挟んだときは全Collectionの `parent` が書き換わった)。
-JSONは31ファイル・合計1MB弱なので、毎回全部上げても安い。
+**アプリの入口はまとめ (`collections.json` / `collections.en.json`)** (2026-10-07 から)。
+アプリは起動時にこれだけを読み、Item は `items.parquet` から読む。文書ごとの JSON
+(`catalog.json` から辿るもの) は STAC Browser などの道具が読む。
+**まとめを最後に上げれば、その前に上げたものはアプリから見えない。**
+(それまでは `catalog.json` が入口で、これを最後に上げていた。)
+
+**JSON と `items.parquet` は `--size-only` を付けずに上げる。** 中身だけが変わって大きさが
+揃うことがある (サブカタログを挟んだときは全Collectionの `parent` が書き換わった)。
+`items.parquet` は `build_catalog` のたびに書き直される。JSONは88ファイル・合計430KB、
+`items.parquet` は80KBなので、毎回全部上げても安い。
 
 ```sh
-# 1. catalog.json 以外のJSONを上げる (大きさで比べない)
+# 1. 実データの parquet を上げる (大きさで比べる。全部を上げ直さないため)
+rclone copy data/output "$R2" --filter '- /items.parquet' --filter '+ *.parquet' --filter '- **' \
+  --size-only -P
+
+# 2. まとめ以外の JSON と items.parquet を上げる (大きさで比べない)
 rclone copy data/output "$R2" \
-  --filter '- /catalog.json' --filter '+ *.json' --filter '- **' -P
+  --filter '- /collections*.json' --filter '+ *.json' --filter '+ /items.parquet' --filter '- **' -P
 
-# 2. parquetを上げる (大きさで比べる。3.7GBを上げ直さないため)
-rclone copy data/output "$R2" --include '*.parquet' --size-only -P
-
-# 3. catalog.json を最後に上げる
-rclone copy data/output/catalog.json "$R2" -P
+# 3. まとめを最後に上げる
+rclone copy data/output "$R2" --filter '+ /collections*.json' --filter '- **' -P
 
 # 4. 続けて push する (壊れうる時間をここに収める)
 git push
 ```
 
-**1は `--filter` で書く。** `--include` と `--exclude` を混ぜると、rclone自身が
+**`--filter` で書く。** `--include` と `--exclude` を混ぜると、rclone自身が
 「解釈の順が不定」と警告する。`--filter` は**上から順に最初に当たった規則**が効く。
 
-- `- /catalog.json` — 先頭の `/` で**ルートのものだけ**を外す。付けないと
-  サブカタログ (`plateau/catalog.json` など) まで外れる
-- `+ *.json` — 残りのJSON (サブカタログ5・Collection 13・ItemCollection 13)
-- `- **` — それ以外 (parquet) は外す
+- `- /collections*.json` — 先頭の `/` で**ルートのものだけ**を外す
+- `+ *.json` — 残りのJSON (Catalog・サブカタログ・Collection と、その英語版)
+- `- **` — それ以外は外す
 
 選ばれるファイルは、**上げる前に手元で確かめられる** (`lsf` はリモートに触れない。
 暗号化した設定のパスワードを聞かれないよう、空の設定を渡す)。
 
 ```sh
 rclone --config /dev/null lsf -R data/output --files-only \
-  --filter '- /catalog.json' --filter '+ *.json' --filter '- **'
-# 31行。ルートの catalog.json が無く、*/catalog.json が5つあること
+  --filter '- /collections*.json' --filter '+ *.json' --filter '+ /items.parquet' --filter '- **'
+# 87行 (2026-10-07)。collections*.json が無く、items.parquet があること
 ```
 
 **`rclone` はループで回さない。** 設定を暗号化していると**起動ごとに
 パスワードを聞かれる**ので、出所ごとに5回回すと5回打つことになる。
-`data/output` を1回で渡せば済む (`--size-only` が無いと3.7GBを上げ直しに行く)。
+`data/output` を1回で渡せば済む (`--size-only` が無いと全部を上げ直しに行く)。
 
 上の手順は**3回呼ぶ** (3回聞かれる)。比べ方がそれぞれ違うため —
 JSONは大きさで比べると取りこぼし、parquetは大きさで比べないと全部上げ直し、
-`catalog.json` は最後でなければならない。
+まとめは最後でなければならない。
 
 初回は**306都市で3.6GB**あるので時間がかかる。`-P` で進捗が出る。
 2回目以降は `--size-only` が効いて差分だけになる。
@@ -252,43 +259,72 @@ JSONは大きさで比べると取りこぼし、parquetは大きさで比べな
 rclone --password-command "secret-tool lookup rclone config" copy …
 ```
 
-### 2026-10-03 の分 (段の間引き・Overtureの取り直しと全国化)
+### 2026-10-03 と 10-07 の分 (まとめて1回で上げる)
+
+10-03 の分 (段の間引き・Overtureの取り直しと全国化) と、10-07 の分 (Item を stac-geoparquet に・
+英語版・まとめ) を**1回で上げる**。**上の「いつもの手順」とは順が違う** — 入口が
+`catalog.json` からまとめに変わる切り替えなので、公開中の古いアプリを壊さない順にする。
+
+**公開中の古いアプリは、日本語の Collection の JSON にある `rel: items` を頼りに
+`*-items.json` を読む。** 新しい Collection の JSON にはこれが無い (Item は items.parquet へ移った)。
+**日本語の JSON を push より先に上げると、その瞬間から公開中のサイトが起動しなくなる。**
+新しいアプリは日本語の JSON を起動時に読まないので、push の後に上げれば壊れる時間が無い。
 
 **plateau/ と overture/ の parquet は全部書き換わっている** (建物に `lod` 列を足した・
 Overtureを 2026-09-23.1 で取り直した)。大きさで比べると偶然揃ったものを取りこぼすので、
 **この2つは `--size-only` を外して上げる** (plateau 3.8GB + overture 5.7GB、707ファイル。
-ほぼ全部が上げ直しになる)。
-ksj/ estat/ isj/ は変えていない。
+ほぼ全部が上げ直しになる)。ksj/ estat/ isj/ の parquet は変えていない。
 
 ```sh
-# 1. catalog.json 以外のJSON (いつもどおり)
-rclone copy data/output "$R2" \
-  --filter '- /catalog.json' --filter '+ *.json' --filter '- **' -P
-
-# 2. plateau/ と overture/ の parquet を、大きさで比べずに上げる
+# 1. plateau/ と overture/ の parquet を、大きさで比べずに上げる (古いアプリはそのまま動く)
 rclone copy data/output "$R2" \
   --filter '+ /plateau/*.parquet' --filter '+ /overture/*.parquet' --filter '- **' -P
 
-# 3. catalog.json を最後に上げ、続けて push
-rclone copy data/output/catalog.json "$R2" -P
+# 2. 新しく増えるものだけを上げる (items.parquet・まとめ・英語版。古いアプリは読まない)
+rclone copy data/output "$R2" \
+  --filter '+ /items.parquet' --filter '+ /collections*.json' --filter '+ *.en.json' --filter '- **' -P
+
+# 3. push する。CI の E2E は新しいアプリを、2で上げたまとめと items.parquet で確かめる
 git push
+
+# 4. 実サイトが新しいアプリを配り始めたら (下の「確かめる」)、日本語の JSON を上げる
+rclone copy data/output "$R2" \
+  --filter '- /collections*.json' --filter '- *.en.json' --filter '+ *.json' --filter '- **' -P
 ```
 
-- **R2の無料枠 (10GB) にほぼ届く。** 手元の `data/output` は9.6GB、R2には古い港区の
-  ファイル (下) なども残る。超えた分は払う方針 (上の節)
-- 新しいサブカタログ `gsi/` (地理院の地図タイル・ベクトルタイル・標高、JSON 8つ)・
-  `mapterhorn/` (2つ)・`reearth/` (3つ) は **JSON だけ**で、1のフィルタで一緒に上がる。
-  タイルは公開元が配信しているので、R2には何も置かない。
-  2026-10-05 に `jaxa/` (2つ)・`nasa/` (3つ) と、地理院の色別標高図・陰影起伏図、PLATEAU の公式の
-  3D Tiles、N03 の元データが増えた。**どれも JSON だけ**で、同じく1で上がる (JSON は全部で58)
-- 公開中の古いバンドルは、JAXA の条件 (`allowed_with_notice`) を知らないので、上げてから push が
-  終わるまでの間、出典の表で AW3D30 に「非商用のみ」と出る。数分のことなので待つ
-- 公開中の古いバンドルは、知らない種別 (送電線・川・`vector_tiles`・`raster_tiles`・
-  `terrain`・`3d_tiles`・`reference`) を読み飛ばすので、1でサブカタログが先に変わっても壊れない
-- **R2に残る古いファイル:** `overture/overture_buildings_minato.parquet` (港区だけだった頃)。
-  新しいカタログからは参照されない。実サイトが新しいバンドルを配り始めてから消してよい
+上げる前に、選ばれるファイルの数を手元で確かめられる。
 
 ```sh
+rclone --config /dev/null lsf -R data/output --files-only \
+  --filter '+ /items.parquet' --filter '+ /collections*.json' --filter '+ *.en.json' --filter '- **'
+# 2: 46行 (items.parquet 1・まとめ 2・英語版 43)
+rclone --config /dev/null lsf -R data/output --files-only \
+  --filter '- /collections*.json' --filter '- *.en.json' --filter '+ *.json' --filter '- **'
+# 4: 43行 (catalog.json を含む)
+```
+
+- **3と4の間は、文書ごとの日本語の JSON が古い。** 新しいアプリはまとめで動くので困らない。
+  STAC Browser (`/catalog/`) と、ⓘ から開く STAC の文書は古いものを見せる (4で揃う)。
+  E2E はこの間でも通るように書いてある (画面と比べるカタログはまとめから読む)
+- **新しいアプリが配られたかの確かめ方:** 実サイトを開き、開発者ツールのネットワークで
+  `collections.json` を読んでいること (古いアプリは `catalog.json` から辿る)
+- **R2の無料枠 (10GB) にほぼ届く。** 手元の `data/output` は9.6GB、R2には古いファイル (下) も残る。
+  超えた分は払う方針 (上の節)
+- 新しいサブカタログ (`gsi/` `mapterhorn/` `reearth/` `jaxa/` `nasa/`) は **JSON だけ**で、4で上がる。
+  タイルは公開元が配信しているので、R2には何も置かない
+
+**R2に残る古いファイル** (新しいカタログからは参照されない)。4のあと、実サイトが新しいアプリを
+配っていることを確かめてから消す (古いアプリは `*-items.json` を読むので、先に消すと壊れる)。
+
+| ファイル | 何か |
+| --- | --- |
+| `*/*-items.json` (15個) | Collection ごとの ItemCollection (items.parquet に移った) |
+| `overture/overture_buildings_minato.parquet` | 港区だけだった頃の建物 |
+
+```sh
+# 消すものを先に見る (--dry-run は何も消さない)
+rclone delete "$R2" --include '*-items.json' --dry-run
+rclone delete "$R2" --include '*-items.json'
 rclone delete "$R2/overture/overture_buildings_minato.parquet"
 ```
 
