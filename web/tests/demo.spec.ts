@@ -2827,10 +2827,11 @@ async function showRoads(page: Page, zoom = 13) {
 test('道路は切り替えで出せる', async ({ page }) => {
   test.skip(!(await hasRoads(page)), '道路のデータが無い');
 
-  // 出所 (Overture) は既定で閉じているので、開けば行が見える。
-  await revealLayer(page, LAYER.road);
-  // チェックするまで読みにも行かない。
+  // 一覧に足すまで読みにも行かない。
+  // **足した後では確かめない** — カタログから足すとその場で表示がオンになるので、
+  // 0件かどうかはデータが届く速さ次第になる (Item の読み込みが速くなって落ちた)。
   expect(await sourceFeatureCount(page, 'road')).toBe(0);
+  await revealLayer(page, LAYER.road);
 
   await showRoads(page);
 });
