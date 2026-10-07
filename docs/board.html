@@ -6,7 +6,7 @@
 
   数字は手で写している (file:// からは data/ を読めない)。出どころ:
   - 配信データの量: du -sb data/output/<出所>
-  - 建物の数: */…-buildings-items.json の table:row_count の合計
+  - 建物の数: items.parquet の "table:row_count" を collection ごとに合計 (duckdb)
   - 公開待ちのコミット: git rev-list --count origin/main..main
   - 更新の日時: 日付だけでなく時刻まで (日本時間)。同じ日に何度も更新するので
   色はカテゴリの3色 (青・橙・緑) を検証済み (明・暗とも。緑は明るい面で3:1未満なので、
@@ -313,7 +313,7 @@
   <body>
     <header>
       <h1>duck-geocoder ダッシュボード</h1>
-      <span class="meta">更新 2026-10-06 21:25 (日本時間)</span>
+      <span class="meta">更新 2026-10-07 09:05 (日本時間)</span>
       <span class="meta">
         <a href="https://strorkis.github.io/duck-geocoder/">公開サイト</a> ·
         <a href="roadmap.md">方針 (roadmap.md)</a> · STAC 配布形式の実験
@@ -332,7 +332,7 @@
       </div>
       <div class="card kpi">
         <div class="label">公開待ちのコミット</div>
-        <div class="value">48 <small>件</small></div>
+        <div class="value">57 <small>件</small></div>
         <span class="status you">R2へのアップロード → push 待ち</span>
       </div>
       <div class="card kpi">
@@ -344,7 +344,8 @@
         <div class="label">カタログ</div>
         <div class="value">10 <small>出所 · 32 Collection</small></div>
         <div class="sub">
-          GeoParquet 761 ファイル + 外部 17 (地図タイル6・ベクトルタイル1・標高3・3D Tiles 2・元データ5 (基盤地図情報・N03・AW3D30・NASA 2)。複製しない)
+          GeoParquet 761 ファイル + 外部 17 (地図タイル6・ベクトルタイル1・標高3・3D Tiles 2・元データ5 (基盤地図情報・N03・AW3D30・NASA 2)。複製しない)。
+          JSON 88 (日英) + Item の stac-geoparquet 1つ
         </div>
       </div>
     </section>
@@ -363,26 +364,29 @@
             AW3D30 (JAXA) を参照だけで・カタログの追加 (色別標高図・陰影起伏図・PLATEAU の 3D Tiles・N03 と NASA は参照だけ)・
             追加のダイアログを3タブと目次に・公開前の権利の確認 (deploy.md)・
             UI とカタログの文章を丁寧語に (使い方・検索できるもの・出典・使っている技術も見直し)・
-            英語の画面 (<code>?lang=en</code>。カタログの英語版はこれから)
+            英語の画面 (<code>?lang=en</code>。右下に「🌐 日本語 | English」)・カタログの英語版 (Language extension)・
+            JSON のまとめ (Item は stac-geoparquet 1つ・アプリは起動時にまとめを1回読む)
           </span>
         </li>
         <li>
           <b>テスト</b><span class="status done">済み</span>
           <span class="sub">
-            E2E 116件 (本番ビルド。STAC Browser のリンクがある状態で)、単体 18件 (WKB・言語)、パイプライン 191件、remote-zip 11件
+            E2E 118件 (本番ビルド。115件通過・2件は対象データなしで飛ばす。1件はテストの競合で落ち、直して単独で通過)、
+            単体 18件 (WKB・言語)、パイプライン 199件、remote-zip 11件
           </span>
         </li>
         <li class="current">
           <b>R2へアップロード</b><span class="status you">あなたの番</span>
           <span class="sub">
-            まとめて1回。手順は <a href="deploy.md">deploy.md</a> の「2026-10-03 の分」。
-            カタログの JSON は直したものと増えたもの (jaxa/・nasa/ ほか) があるが、どれも JSON の手順で一緒に上がる (全部で58)。
-            STAC Browser (<code>/catalog/</code>) は R2 のカタログを読むので、上げたあとの姿がそのまま見える
+            まとめて1回。手順は <a href="deploy.md">deploy.md</a> の「2026-10-03 と 10-07 の分」。
+            <b>いつもと順が違う:</b> ① plateau/・overture/ の parquet → ② 増えるもの (items.parquet・まとめ・英語版) →
+            ③ push → ④ 新しいサイトが配られてから日本語の JSON → ⑤ 古い <code>*-items.json</code> を消す。
+            日本語の JSON を先に上げると、公開中の古いサイトが起動しなくなる
           </span>
         </li>
         <li>
           <b>push</b><span class="status todo">まだ</span>
-          <span class="sub">アップロードの直後に (CIがR2の実データで確かめる)</span>
+          <span class="sub">②の直後に (CIがR2の実データで確かめる)。そのあと④⑤</span>
         </li>
         <li>
           <b>公開を確かめる</b><span class="status todo">まだ</span>
@@ -422,11 +426,12 @@
             <tr><td>Re:Earth</td><td class="num">0</td><td class="num">—</td><td>JSON 3つ (新規。標高と 3D Tiles は Re:Earth が配信)</td></tr>
             <tr><td>JAXA</td><td class="num">0</td><td class="num">—</td><td>JSON 2つ (新規。AW3D30 は JAXA Earth API が配信)</td></tr>
             <tr><td>NASA</td><td class="num">0</td><td class="num">—</td><td>JSON 3つ (新規。参照だけ)</td></tr>
+            <tr><td>カタログ (起点)</td><td class="num">1</td><td class="num">0.08 MB</td><td>items.parquet・まとめ 2つ・英語版の JSON (新規)</td></tr>
           </tbody>
         </table>
         <p class="sub">
           plateau/ と overture/ は全部書き換わったので <code>--size-only</code> を外す。
-          catalog.json は最後。R2に残る古い <code>*_minato.parquet</code> は、新しいサイトが配られてから消す。
+          日本語の JSON は push の後。R2に残る古い <code>*-items.json</code> (15個) と <code>*_minato.parquet</code> は、新しいサイトが配られてから消す。
         </p>
       </section>
 
@@ -466,13 +471,17 @@
               <td>STAC の置き方の判断 (サブカタログ、Item を1ファイルずつにしない、<code>duck:*</code> の独自項目)</td>
             </tr>
             <tr>
+              <td><a href="../pipeline/src/stac_geoparquet.rs">stac_geoparquet.rs</a> · <a href="../pipeline/src/stac_i18n.rs">stac_i18n.rs</a></td>
+              <td>Item を Collection ごとの行グループに。<b>フッターを削り、件数の少ないものをフッターの隣に</b>置く (16KB 単位で読まれるため) / 英語版とまとめ。訳の無い日本語はエラー</td>
+            </tr>
+            <tr>
               <td><a href="../pipeline/src/external.rs">external.rs</a> · <a href="../pipeline/src/pmtiles.rs">pmtiles.rs</a></td>
               <td>外部の PMTiles をスナップショット (追跡) からカタログへ。テーマが層をちょうど覆うことを検証</td>
             </tr>
             <tr class="group"><th colspan="2">使い方 (web/src/lib/ · ui/ と main.ts)</th></tr>
             <tr>
-              <td><a href="../web/src/lib/stac.ts">lib/stac.ts</a> の <code>walkCatalog</code></td>
-              <td>カタログを歩いて Collection を作る。相対リンクは<b>その文書からの相対</b>で解く</td>
+              <td><a href="../web/src/lib/stac.ts">lib/stac.ts</a> の <code>fetchCollections</code> · <a href="../web/src/lib/duckdb.ts">lib/duckdb.ts</a> の <code>collectionRows</code></td>
+              <td>まとめ1つから Collection を作る (相対リンクは<b>その文書からの相対</b>)。Item は stac-geoparquet を<b>行番号の範囲</b>で読む (DuckDB は文字列の統計を頭でしか比べないため)</td>
             </tr>
             <tr>
               <td><a href="../web/src/lib/sources.ts">lib/sources.ts</a> の <code>filesInView</code> · <code>lodForZoom</code></td>
@@ -516,7 +525,7 @@
             </tr>
             <tr>
               <td><a href="../stac-browser/">stac-browser/</a> の <code>items-base.patch</code> · <code>build.sh</code></td>
-              <td>STAC Browser 5.1.0 に<b>パッチを1つ当てて</b>ビルドする (相対の <code>rel: items</code> がページ基準で解決され 404 になる不具合)。上流で直ったら外す</td>
+              <td>STAC Browser 5.1.0 に<b>パッチを1つ当てて</b>ビルドする (相対の <code>rel: items</code> がページ基準で解決され 404 になる不具合)。<code>rel: items</code> が無くなったので今は効く場面が無い。上流で直ったら外す</td>
             </tr>
             <tr class="group"><th colspan="2">判断の記録 (docs)</th></tr>
             <tr>
@@ -542,13 +551,6 @@
         <h2>次にやること</h2>
         <ol class="tasks">
           <li>
-            <b>カタログの英語版</b>
-            <span class="sub">
-              画面は英語にできた。カタログの題名・説明・条件の名前は日本語のまま。STAC の Language extension で
-              英語版の文書を結ぶ (STAC Browser も切り替わる)。JSON が約2倍になる
-            </span>
-          </li>
-          <li>
             <b>配らずに手元で変換する仕組み (構想)</b>
             <span class="sub">
               PLATEAU GIS Converter のように、利用者が取ったデータをブラウザの中 (WASM) で変換する。
@@ -572,7 +574,8 @@
           <li>
             <b>Item に名前と時点を入れる</b>
             <span class="sub">
-              STAC Browser で <code>plateau_bldg_01100</code>・「No time given」と出る。次に PLATEAU を書き換えるときに一緒に (306ファイルの上げ直しになるため)
+              ⓘ の Item の一覧が <code>plateau_bldg_01100</code> のような ID だけで、時点も無い。次に PLATEAU を書き換えるときに一緒に (306ファイルの上げ直しになるため)。
+              stac-geoparquet に列を足す形になる
             </span>
           </li>
           <li>
