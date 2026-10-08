@@ -61,11 +61,16 @@ const MAX_ROW_GROUPS: usize = 2_000;
 /// (Overtureの行政区域は約43KB/行、位置参照情報の点は約40バイト/行) ので、
 /// 行数で固定するとどれかが必ず不適切になる。
 pub fn default_row_group_size(file_bytes: u64, num_rows: usize) -> usize {
+    row_group_size_for(TARGET_ROW_GROUP_BYTES, file_bytes, num_rows)
+}
+
+/// [`default_row_group_size`] の、目標バイト数を選べる形。
+pub fn row_group_size_for(target_bytes: usize, file_bytes: u64, num_rows: usize) -> usize {
     if num_rows == 0 {
         return 1;
     }
     let bytes_per_row = (file_bytes as usize).div_ceil(num_rows).max(1);
-    let by_bytes = (TARGET_ROW_GROUP_BYTES / bytes_per_row).clamp(1, MAX_ROW_GROUP_SIZE);
+    let by_bytes = (target_bytes / bytes_per_row).clamp(1, MAX_ROW_GROUP_SIZE);
     by_bytes.max(num_rows.div_ceil(MAX_ROW_GROUPS))
 }
 

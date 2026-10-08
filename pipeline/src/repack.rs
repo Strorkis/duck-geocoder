@@ -41,16 +41,68 @@ pub struct Packed {
 /// **全行をメモリに読む。** 空間的な並べ替えは全行のbboxが揃わないと決められないので、
 /// ストリーミングはできない。港区の建物 (5.1万行) で実測56MB。
 pub fn repack(input: &Path, output: &Path, row_group_size: Option<usize>) -> Result<Packed> {
-    let (batch, geo_metadata, covering) = read_all(input)?;
+    repack_with(input, output, row_group_size, Layout::LevelFirst, &[])
+}
+
+/// `lod` 列 (段) があるときの並べ方。段が無いファイルではどちらも同じ。
+///
+/// **読み込み1回の重さで決まる。** 配信元 (R2) は1回ごとに約0.45秒待たされ、転送は約2MB/秒
+/// なので、1回余計に読むのは 約0.9MB 余計に読むのと同じ重さになる。DuckDB-WASM は1回ずつ
+/// 順に読み、続けて読む間は読み取りを4倍ずつ伸ばす (16KB → 64KB → 256KB → …)。
+/// 離れた場所を読むたびに 16KB からやり直しになるので、**要るものを隣り合わせに置く**のが効く。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    /// 段ごとに分け、段の中を場所で並べる。**線の粗い段**向け — 引いた表示で、
+    /// 広い範囲の粗い段だけを続けて読む。
+    LevelFirst,
+    /// 場所 ([`CELL_TARGET_BYTES`] ぶんの広さ) ごとに分け、場所の中を段で並べる。**建物**向け —
+    /// 寄った表示では同じ場所の全段を続けて読み、引いた表示では要らない段だけを飛ばす。
+    /// 段ごとに分けると、寄った表示で段の数だけ離れた場所を読みに行き、段の中の行グループが
+    /// 区全体に広がって範囲で読み飛ばせなくなっていた (2026-10-08、ズーム16で 18MB・58回)。
+    ///
+    /// **bbox の列を先頭に置く。** DuckDB は範囲の条件に使う bbox を先に読み、当たった
+    /// 行グループの残りの列を読む。bbox が後ろにあると、読むたびに行グループの頭へ戻る。
+    /// 測った結果は docs/pipeline.md の「建物の並べ方」。
+    CellFirst,
+}
+
+/// [`Layout::CellFirst`] の場所1つぶんの目標バイト数 (全段の合計)。
+/// 0.5〜4MB で比べて、寄った表示の往復と量の釣り合いがいちばん良かった。
+pub const CELL_TARGET_BYTES: usize = 1024 * 1024;
+
+/// [`repack`] の、`lod` 列の並べ方を選べる形。`extra` は KV に足すもの (同じキーは置き換える)。
+pub fn repack_with(
+    input: &Path,
+    output: &Path,
+    row_group_size: Option<usize>,
+    layout: Layout,
+    extra: &[(&str, &str)],
+) -> Result<Packed> {
+    let (batch, mut geo_metadata, covering) = read_all(input)?;
+    geo_metadata.retain(|entry| !extra.iter().any(|(key, _)| *key == entry.key));
+    for (key, value) in extra {
+        geo_metadata.push(KeyValue::new(key.to_string(), value.to_string()));
+    }
     let bboxes = read_bboxes(&batch, &covering)?;
 
     let input_bytes = std::fs::metadata(input)?.len();
-    let row_group_size = row_group_size
-        .unwrap_or_else(|| spatial_pack::default_row_group_size(input_bytes, batch.num_rows()));
+    let row_group_size = row_group_size.unwrap_or_else(|| match layout {
+        Layout::LevelFirst => spatial_pack::default_row_group_size(input_bytes, batch.num_rows()),
+        Layout::CellFirst => {
+            spatial_pack::row_group_size_for(CELL_TARGET_BYTES, input_bytes, batch.num_rows())
+        }
+    });
 
-    let (order, segments) = pack_by_level(&batch, &bboxes, row_group_size)?;
+    let (order, segments) = match layout {
+        Layout::LevelFirst => pack_by_level(&batch, &bboxes, row_group_size)?,
+        Layout::CellFirst => pack_by_cell(&batch, &bboxes, row_group_size)?,
+    };
     let indices = UInt32Array::from(order);
     let sorted = take_record_batch(&batch, &indices).context("行の並べ替えに失敗しました")?;
+    let sorted = match layout {
+        Layout::LevelFirst => sorted,
+        Layout::CellFirst => column_first(&sorted, &covering.column)?,
+    };
 
     // 書き込み中に落ちたときに元ファイルを壊さないよう、一時ファイル経由にする。
     let temporary = output.with_extension("parquet.writing");
@@ -111,6 +163,50 @@ fn pack_by_level(
             order.push(rows[packed as usize]);
         }
         segments.push(rows.len());
+    }
+    Ok((order, segments))
+}
+
+/// `name` の列を先頭に移す (ほかの列の順は変えない)。
+fn column_first(batch: &RecordBatch, name: &str) -> Result<RecordBatch> {
+    let schema = batch.schema();
+    let first = schema
+        .index_of(name)
+        .with_context(|| format!("列がありません: {name}"))?;
+    let mut indices = vec![first];
+    indices.extend((0..schema.fields().len()).filter(|&i| i != first));
+    Ok(batch.project(&indices)?)
+}
+
+/// 全行を場所で並べて行グループ1つ分ずつの**場所**に区切り、場所の中を段の小さい順に並べる
+/// ([`Layout::CellFirst`])。`lod` 列が無ければ [`pack_by_level`] と同じ。
+///
+/// 返す区切りは**場所ごと・段ごとの行数**。[`write`] がそこで行グループを切るので、
+/// 1つの行グループには1つの段しか入らない (`WHERE lod <= 1` で残りを読み飛ばせる)。
+fn pack_by_cell(
+    batch: &RecordBatch,
+    bboxes: &[Bbox],
+    row_group_size: usize,
+) -> Result<(Vec<u32>, Vec<usize>)> {
+    let Some(levels) = read_levels(batch)? else {
+        return pack_by_level(batch, bboxes, row_group_size);
+    };
+    let mut order = Vec::with_capacity(bboxes.len());
+    let mut segments = Vec::new();
+    for cell in spatial_pack::pack(bboxes, row_group_size)?.chunks(row_group_size) {
+        let mut cell = cell.to_vec();
+        // 安定な並べ替えなので、段の中では場所の並び (STR) が保たれる。
+        cell.sort_by_key(|&row| levels[row as usize]);
+        let mut start = 0;
+        for end in 1..=cell.len() {
+            let boundary =
+                end == cell.len() || levels[cell[end] as usize] != levels[cell[start] as usize];
+            if boundary {
+                segments.push(end - start);
+                start = end;
+            }
+        }
+        order.extend(cell);
     }
     Ok((order, segments))
 }
@@ -361,5 +457,74 @@ mod tests {
         let batch = batch_with_levels(vec![Some(0), None]);
         let error = pack_by_level(&batch, &bboxes(2), 1).unwrap_err();
         assert!(error.to_string().contains("欠損"), "{error}");
+    }
+
+    /// **場所ごとに区切り、場所の中を段で並べる** (建物)。行グループに段が混ざらないこと、
+    /// 場所をまたいで行が動かないこと。
+    #[test]
+    fn cell_first_keeps_places_together_and_never_mixes_levels() {
+        // 横一列の8行を、4行ずつの場所2つに。段は場所の中でばらばら。
+        let levels = [2, 0, 1, 2, 1, 2, 0, 2];
+        let batch = batch_with_levels(levels.iter().map(|&l| Some(l)).collect());
+        let (order, segments) = pack_by_cell(&batch, &bboxes(8), 4).unwrap();
+
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..8).collect::<Vec<u32>>());
+
+        // 前半の場所 (行0〜3) と後半 (4〜7) は混ざらない。
+        let first: Vec<u32> = order[..4].to_vec();
+        assert!(first.iter().all(|&row| row < 4) || first.iter().all(|&row| row >= 4));
+
+        // 場所の中は段の小さい順で、区切りは場所ごと・段ごと。
+        let after: Vec<u8> = order.iter().map(|&row| levels[row as usize]).collect();
+        let mut start = 0;
+        for &length in &segments {
+            let run = &after[start..start + length];
+            assert!(
+                run.iter().all(|&level| level == run[0]),
+                "段が混ざった: {run:?}"
+            );
+            start += length;
+        }
+        assert_eq!(start, 8);
+        for cell in after.chunks(4) {
+            assert!(cell.windows(2).all(|pair| pair[0] <= pair[1]), "{cell:?}");
+        }
+    }
+
+    /// 段が無ければ、場所ごとの並べ方もこれまでと同じ。
+    #[test]
+    fn cell_first_without_levels_is_the_plain_packing() {
+        let schema = Schema::new(vec![Field::new("x", DataType::UInt8, true)]);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![Arc::new(UInt8Array::from(vec![1, 2, 3])) as _],
+        )
+        .unwrap();
+        assert_eq!(
+            pack_by_cell(&batch, &bboxes(3), 2).unwrap(),
+            pack_by_level(&batch, &bboxes(3), 2).unwrap()
+        );
+    }
+
+    #[test]
+    fn moves_the_bbox_column_to_the_front() {
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::UInt8, true),
+            Field::new("bbox", DataType::UInt8, true),
+            Field::new("c", DataType::UInt8, true),
+        ]);
+        let column = || Arc::new(UInt8Array::from(vec![1])) as _;
+        let batch =
+            RecordBatch::try_new(Arc::new(schema), vec![column(), column(), column()]).unwrap();
+        let moved = column_first(&batch, "bbox").unwrap();
+        let names: Vec<&str> = moved
+            .schema_ref()
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect();
+        assert_eq!(names, ["bbox", "a", "c"]);
     }
 }
