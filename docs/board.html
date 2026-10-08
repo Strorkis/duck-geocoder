@@ -313,7 +313,7 @@
   <body>
     <header>
       <h1>duck-geocoder ダッシュボード</h1>
-      <span class="meta">更新 2026-10-07 09:05 (日本時間)</span>
+      <span class="meta">更新 2026-10-08 19:05 (日本時間)</span>
       <span class="meta">
         <a href="https://strorkis.github.io/duck-geocoder/">公開サイト</a> ·
         <a href="roadmap.md">方針 (roadmap.md)</a> · STAC 配布形式の実験
@@ -332,8 +332,8 @@
       </div>
       <div class="card kpi">
         <div class="label">公開待ちのコミット</div>
-        <div class="value">57 <small>件</small></div>
-        <span class="status you">R2へのアップロード → push 待ち</span>
+        <div class="value">4 <small>件</small></div>
+        <span class="status you">建物の上げ直し → push 待ち (前の57件は push 済み・デプロイは止まっている)</span>
       </div>
       <div class="card kpi">
         <div class="label">建物</div>
@@ -365,28 +365,29 @@
             追加のダイアログを3タブと目次に・公開前の権利の確認 (deploy.md)・
             UI とカタログの文章を丁寧語に (使い方・検索できるもの・出典・使っている技術も見直し)・
             英語の画面 (<code>?lang=en</code>。右下に「🌐 日本語 | English」)・カタログの英語版 (Language extension)・
-            JSON のまとめ (Item は stac-geoparquet 1つ・アプリは起動時にまとめを1回読む)
+            JSON のまとめ (Item は stac-geoparquet 1つ・アプリは起動時にまとめを1回読む)・
+            建物の並べ直し (場所ごと・段ごと。R2 で寄った表示が約35秒 → 約16秒の見積もり)
           </span>
         </li>
         <li>
           <b>テスト</b><span class="status done">済み</span>
           <span class="sub">
-            E2E 118件 (本番ビルド。115件通過・2件は対象データなしで飛ばす。1件はテストの競合で落ち、直して単独で通過)、
-            単体 18件 (WKB・言語)、パイプライン 199件、remote-zip 11件
+            E2E 118件 (本番ビルド・手元のデータ。116件通過・2件は対象データなしで飛ばす)、
+            単体 18件 (WKB・言語)、パイプライン 202件、remote-zip 11件。
+            <b>R2 の実データでの CI は 10-08 に落ちた</b> (建物の並べ方が R2 で遅かった。直した)
           </span>
         </li>
         <li class="current">
-          <b>R2へアップロード</b><span class="status you">あなたの番</span>
+          <b>建物を R2 へ上げ直す</b><span class="status you">あなたの番</span>
           <span class="sub">
-            まとめて1回。手順は <a href="deploy.md">deploy.md</a> の「2026-10-03 と 10-07 の分」。
-            <b>いつもと順が違う:</b> ① plateau/・overture/ の parquet → ② 増えるもの (items.parquet・まとめ・英語版) →
-            ③ push → ④ 新しいサイトが配られてから日本語の JSON → ⑤ 古い <code>*-items.json</code> を消す。
-            日本語の JSON を先に上げると、公開中の古いサイトが起動しなくなる
+            手順は <a href="deploy.md">deploy.md</a> の「2026-10-08 の分」。
+            ① 建物のファイル 698個・9.3GB (大きさで比べずに) → ② items.parquet・まとめ・英語版 (46個) → ③ push。
+            10-03・10-07 の分の ①〜③ は済んでいる
           </span>
         </li>
         <li>
-          <b>push</b><span class="status todo">まだ</span>
-          <span class="sub">②の直後に (CIがR2の実データで確かめる)。そのあと④⑤</span>
+          <b>CI が通ったら</b><span class="status todo">まだ</span>
+          <span class="sub">「10-03 と 10-07 の分」の ④ 日本語の JSON → ⑤ 古い <code>*-items.json</code> と <code>*_minato.parquet</code> を消す</span>
         </li>
         <li>
           <b>公開を確かめる</b><span class="status todo">まだ</span>
@@ -611,6 +612,13 @@
       <section class="card" aria-label="未決の問い">
         <h2>未決の問い</h2>
         <ul class="tasks">
+          <li>
+            <b>R2 に独自ドメインを付けるか</b>
+            <span class="sub">
+              r2.dev は読み込み1回ごとに約0.45秒待たされ、引いた表示の間引き (約45秒) と逆ジオコーディング (13〜16秒) が重い。
+              独自ドメインならキャッシュが効く (未計測・ドメインの費用がかかる)。付けないなら、標準で z13 の間引きをやめる手も (roadmap)
+            </span>
+          </li>
           <li>
             <b>建物の段の中の間引き</b>
             <span class="sub">住宅・その他 (全体の9割) をズーム15より手前で出すなら、段の中をどう減らすか</span>
