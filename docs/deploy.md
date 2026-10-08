@@ -328,6 +328,33 @@ rclone delete "$R2" --include '*-items.json'
 rclone delete "$R2/overture/overture_buildings_minato.parquet"
 ```
 
+### 2026-10-08 の分 (建物の並べ直し)
+
+上の「10-03 と 10-07 の分」は 1〜3 まで済んだが、**CI の E2E が落ちてデプロイが止まった。**
+建物の並べ方 (段ごと) が R2 では遅く、テストの待ち時間を超えていた。並べ方を直したので
+(docs/pipeline.md の「建物の並べ方」)、**建物のファイルを上げ直す。**
+
+```sh
+# 1. 建物のファイル (PLATEAU 306・Overture 392、計9.3GB) を、大きさで比べずに上げる。
+#    中身を並べ替えただけなので、公開中の古いサイトもそのまま読める
+rclone copy data/output "$R2" \
+  --filter '+ /plateau/plateau_bldg_[0-9]*.parquet' --filter '+ /overture/overture_buildings_*.parquet' \
+  --filter '- **' -P
+
+# 2. カタログの増えたもの (列の並びが変わったので作り直した。46ファイル)
+rclone copy data/output "$R2" \
+  --filter '+ /items.parquet' --filter '+ /collections*.json' --filter '+ *.en.json' --filter '- **' -P
+
+# 3. push すると CI が流れ直す
+git push
+```
+
+選ばれるのは、1が698ファイル・9.3GB、2が46ファイル
+(`rclone --config /dev/null size data/output --filter …` で上げる前に確かめられる)。
+`plateau_bldg_[0-9]*` なので、整備範囲 (`plateau_bldg_coverage`) は入らない。
+
+CI が通ったら、上の「10-03 と 10-07 の分」の 4 (日本語の JSON) と 5 (古いファイルを消す) に戻る。
+
 ### 平置きだった頃の古いJSONを消す
 
 `rclone copy` は消さないので、ルートに残る。`catalog.json` を差し替えれば
