@@ -9,6 +9,18 @@ type TestWindow = {
   __itemPaths?: () => Promise<Record<string, string>>;
 };
 
+/**
+ * データを読み終えるのを待つ長さ。**データの置き場所で決まる** (playwright.config.ts と同じ考え方)。
+ *
+ * R2 の公開URL (r2.dev) は読み込み1回ごとに約0.45秒待たされ (2026-10-08 に測った)、
+ * 逆ジオコーディング1回 (約30回の読み込み) だけで13〜16秒かかる。30秒では、並列で流して
+ * 混んだときに落ちていた。ここは「動くか」を見るテストで、速さは転送量のテストが見張る。
+ */
+const DATA_TIMEOUT =
+  process.env.PLAYWRIGHT_BASE_URL || /^https?:/.test(process.env.VITE_DATA_BASE_URL ?? '')
+    ? 90_000
+    : 30_000;
+
 /** 行政区域データセット。逆ジオコーディングと転送量の計測がこれを見る。 */
 const ADMIN_DATASET = 'overture_admin_jp';
 /** 建物データセット。無くても他の機能は動くので、無ければスキップする。 */
@@ -38,7 +50,7 @@ const datasetPaths = new Map<string, string>();
  */
 async function datasetUrl(page: Page, id: string): Promise<string | null> {
   if (datasetPaths.size === 0) {
-    await page.waitForFunction(() => '__itemPaths' in window, undefined, { timeout: 30_000 });
+    await page.waitForFunction(() => '__itemPaths' in window, undefined, { timeout: DATA_TIMEOUT });
     const paths = await page.evaluate(() => (window as unknown as TestWindow).__itemPaths!());
     for (const [itemId, path] of Object.entries(paths)) datasetPaths.set(itemId, path);
   }
@@ -276,7 +288,7 @@ async function useOvertureBuildings(page: Page) {
 /** 初期化 (DuckDB + 地図) の完了を待つ。 */
 async function waitForReady(page: Page) {
   // 単独なら5秒前後だが、並列で流して CPU を取り合うと15秒を超えることがあった。
-  await expect(page.locator('#loading')).toBeHidden({ timeout: 30_000 });
+  await expect(page.locator('#loading')).toBeHidden({ timeout: DATA_TIMEOUT });
   await expect(page.locator('#search-input')).toBeEnabled();
 }
 
@@ -425,7 +437,7 @@ test('📍を押してから地図をクリックすると逆ジオコーディ�
   const popup = page.locator('.result-popup .maplibregl-popup-content');
   await expect(popup).toBeVisible();
   // 「判定中…」から確定した地名に変わることを確認する。
-  await expect(popup).toContainText('東京都', { timeout: 30_000 });
+  await expect(popup).toContainText('東京都', { timeout: DATA_TIMEOUT });
 
   // 逆ジオコーディングの結果は検索欄にも反映される。
   await expect(page.locator('#search-input')).toHaveValue(/東京都/);
@@ -476,7 +488,7 @@ for (const how of ['close-button', 'escape'] as const) {
     });
     await pickOnMap(page, { x: 400, y: 300 });
     await expect(page.locator('.result-popup .maplibregl-popup-content')).toContainText('東京都', {
-      timeout: 30_000,
+      timeout: DATA_TIMEOUT,
     });
     await expect.poll(() => highlightFeatureCount(page)).toBe(1);
 
@@ -500,7 +512,7 @@ test('地図をクリックしても判定結果は消えない', async ({ page 
   });
   await pickOnMap(page, { x: 400, y: 300 });
   await expect(page.locator('.result-popup .maplibregl-popup-content')).toContainText('東京都', {
-    timeout: 30_000,
+    timeout: DATA_TIMEOUT,
   });
   // ポップアップの文字はポリゴンの取得より先に出る。揃うまで待ってから押す。
   await expect.poll(() => highlightFeatureCount(page)).toBe(1);
@@ -526,7 +538,7 @@ test('海上を指しても自治体は返らない', async ({ page }) => {
   await pickOnMap(page);
 
   await expect(page.locator('.result-popup .maplibregl-popup-content')).toContainText('該当する行政区域', {
-    timeout: 30_000,
+    timeout: DATA_TIMEOUT,
   });
 });
 
@@ -567,7 +579,7 @@ test('逆ジオコーディングはファイル全体のごく一部しか読�
   });
   await pickOnMap(page, { x: 400, y: 300 });
   await expect(page.locator('.result-popup .maplibregl-popup-content')).toContainText('東京都', {
-    timeout: 30_000,
+    timeout: DATA_TIMEOUT,
   });
 
   const measured =`${(fetchedBytes / 1024 / 1024).toFixed(1)} MB / ${(totalBytes / 1024 / 1024).toFixed(1)} MB`;
@@ -593,7 +605,7 @@ test('extensions.duckdb.org を遮断しても逆ジオコーディングでき�
   });
   await pickOnMap(page, { x: 400, y: 300 });
   await expect(page.locator('.result-popup .maplibregl-popup-content')).toContainText('東京都', {
-    timeout: 30_000,
+    timeout: DATA_TIMEOUT,
   });
 });
 
@@ -1168,14 +1180,14 @@ test('地形の標高を選び直せ、地理院の標高は値なしと負の�
       [lng, lat],
     );
   // 富士山頂 (3,776 m) の近く。読み込みを待つ。
-  await expect.poll(() => elevation(138.7274, 35.3606), { timeout: 30_000 }).toBeGreaterThan(3000);
+  await expect.poll(() => elevation(138.7274, 35.3606), { timeout: DATA_TIMEOUT }).toBeGreaterThan(3000);
   expect(await elevation(138.7274, 35.3606)).toBeLessThan(4000);
 
   // 海 (値なし) は 0 m 付近。針 (8万m) が立っていない。
   await page.evaluate(() => {
     (window as unknown as TestWindow).__map!.jumpTo({ center: [139.85, 35.5], zoom: 11 });
   });
-  await expect.poll(() => elevation(139.85, 35.5), { timeout: 30_000 }).not.toBeNull();
+  await expect.poll(() => elevation(139.85, 35.5), { timeout: DATA_TIMEOUT }).not.toBeNull();
   const sea = (await elevation(139.85, 35.5)) as number;
   expect(Math.abs(sea)).toBeLessThan(10);
 });
@@ -1298,7 +1310,7 @@ test('標高タイルから実際の高さが読める', async ({ page }) => {
         page.evaluate(() =>
           (window as unknown as TestWindow).__map!.queryTerrainElevation([139.2438, 35.6251]),
         ),
-      { message: '地形タイルが届くまで待つ', timeout: 30_000 },
+      { message: '地形タイルが届くまで待つ', timeout: DATA_TIMEOUT },
     )
     .toBeGreaterThan(300);
 });
@@ -1576,7 +1588,7 @@ test('表示範囲と重ならない建物データは読みに行かない', as
     const map = (window as unknown as TestWindow).__map!;
     map.jumpTo({ center: [139.7454, 35.6586], zoom: 16 });
   });
-  await expect.poll(() => requested.length, { timeout: 30_000 }).toBeGreaterThan(0);
+  await expect.poll(() => requested.length, { timeout: DATA_TIMEOUT }).toBeGreaterThan(0);
 });
 
 test('建物はホバーで情報が出て、地図は動かない', async ({ page }) => {
@@ -2479,7 +2491,7 @@ test('駅名で検索できる', async ({ page }) => {
 
   await page.locator('#search-input').fill('東京');
   const station = page.locator('#results li', { hasText: '駅' }).first();
-  await expect(station).toBeVisible({ timeout: 30_000 });
+  await expect(station).toBeVisible({ timeout: DATA_TIMEOUT });
   await expect(station).toContainText('東京駅');
 
   await station.click();
@@ -2495,7 +2507,7 @@ test('路線名でも駅が引ける', async ({ page }) => {
 
   await page.locator('#search-input').fill('山手線');
   const first = page.locator('#results li').first();
-  await expect(first).toBeVisible({ timeout: 30_000 });
+  await expect(first).toBeVisible({ timeout: DATA_TIMEOUT });
   await expect(first).toContainText('山手線');
 });
 
@@ -2647,7 +2659,7 @@ test('同名の駅を束ねて海へ飛ばさない', async ({ page }) => {
 
   await page.locator('#search-input').fill('住吉');
   const hit = page.locator('#results li', { hasText: '住吉駅' }).first();
-  await expect(hit).toBeVisible({ timeout: 30_000 });
+  await expect(hit).toBeVisible({ timeout: DATA_TIMEOUT });
   await hit.click();
 
   // flyTo は1.5秒かけて動くので、止まるまで待つ。すぐ読むと出発地点のまま。
@@ -2680,7 +2692,7 @@ test('「〜駅」と打っても引ける', async ({ page }) => {
 
   await page.locator('#search-input').fill('品川駅');
   await expect(page.locator('#results li').first()).toContainText('品川駅', {
-    timeout: 30_000,
+    timeout: DATA_TIMEOUT,
   });
 });
 
@@ -2693,7 +2705,7 @@ test('路線名で引くと路線が先頭に出て、全体へ寄る', async ({
 
   await page.locator('#search-input').fill('山手線');
   const first = page.locator('#results li').first();
-  await expect(first).toContainText('路線', { timeout: 30_000 });
+  await expect(first).toContainText('路線', { timeout: DATA_TIMEOUT });
   await expect(first).toContainText('山手線');
 
   await first.click();
@@ -2717,10 +2729,10 @@ test('路線を選ぶと線がハイライトされる', async ({ page }) => {
 
   await page.locator('#search-input').fill('山手線');
   const first = page.locator('#results li').first();
-  await expect(first).toContainText('路線', { timeout: 30_000 });
+  await expect(first).toContainText('路線', { timeout: DATA_TIMEOUT });
   await first.click();
 
-  await expect.poll(() => highlightFeatureCount(page), { timeout: 30_000 }).toBe(1);
+  await expect.poll(() => highlightFeatureCount(page), { timeout: DATA_TIMEOUT }).toBe(1);
 
   // 線であること (行政区域のポリゴンと同じソースを使い回している)。
   // ハイライトは1件を Feature として入れている (行政区域のポリゴンと同じ作り)。
@@ -2740,7 +2752,7 @@ test('駅の候補に会社名と路線名が出る', async ({ page }) => {
 
   await page.locator('#search-input').fill('品川駅');
   const first = page.locator('#results li').first();
-  await expect(first).toContainText('品川駅', { timeout: 30_000 });
+  await expect(first).toContainText('品川駅', { timeout: DATA_TIMEOUT });
   await expect(first.locator('.result-detail')).toBeVisible();
   // 会社名が入っていること (「本線」だけでは判別できない)。
   await expect(first.locator('.result-detail')).toContainText('鉄');
@@ -2755,7 +2767,7 @@ test('駅の候補に会社名と路線名が出る', async ({ page }) => {
 test('検索候補は他のパネルより手前に出る', async ({ page }) => {
   await page.locator('#search-input').fill('東京');
   const results = page.locator('#results li');
-  await expect(results.first()).toBeVisible({ timeout: 30_000 });
+  await expect(results.first()).toBeVisible({ timeout: DATA_TIMEOUT });
 
   // いちばん下の候補の中心が、実際にその候補で取れること
   // (データのパネルに覆われていれば、そちらが返る)。
@@ -2783,9 +2795,9 @@ test('路線のハイライトに塗りが出ない', async ({ page }) => {
 
   await page.locator('#search-input').fill('東海道線');
   const first = page.locator('#results li').first();
-  await expect(first).toContainText('路線', { timeout: 30_000 });
+  await expect(first).toContainText('路線', { timeout: DATA_TIMEOUT });
   await first.click();
-  await expect.poll(() => highlightFeatureCount(page), { timeout: 30_000 }).toBe(1);
+  await expect.poll(() => highlightFeatureCount(page), { timeout: DATA_TIMEOUT }).toBe(1);
 
   // **描き終わってから数える。** flyTo の途中だと、まだ線が画面に入っておらず
   // 塗りが出ていても 0 になる (実際それで一度見逃した)。
@@ -2841,7 +2853,7 @@ test('道路の件数が一覧に出る', async ({ page }) => {
   test.skip(!(await hasRoads(page)), '道路のデータが無い');
 
   await showRoads(page);
-  await expect(page.locator(`[data-layer="${LAYER.road}"]`)).toContainText('区間', { timeout: 30_000 });
+  await expect(page.locator(`[data-layer="${LAYER.road}"]`)).toContainText('区間', { timeout: DATA_TIMEOUT });
 });
 
 /**
@@ -2930,11 +2942,11 @@ test('表示量を上げると、同じ表示のまま閾値の手前のもの�
     map.jumpTo({ center: [139.7671, 35.6812], zoom: 14.5 });
   });
   const count = page.locator('#building-count');
-  await expect(count).toContainText('のみ', { timeout: 30_000 });
+  await expect(count).toContainText('のみ', { timeout: DATA_TIMEOUT });
 
   // 多めは14から全部。**同じ場所・同じズームのまま**間引きが外れる。
   await detail.selectOption('high');
-  await expect(count).not.toContainText('のみ', { timeout: 30_000 });
+  await expect(count).not.toContainText('のみ', { timeout: DATA_TIMEOUT });
   await expect(count).toContainText(/\d件/);
 
   // **覚えていること。** 端末で決まる設定なので、開くたびに選び直させない。
@@ -2977,7 +2989,7 @@ test('道路は種別で絞れる', async ({ page }) => {
 
   await openLayerSettings(page, LAYER.road);
   await page.locator('#road-none').click();
-  await expect.poll(() => sourceFeatureCount(page, 'road'), { timeout: 30_000 }).toBe(0);
+  await expect.poll(() => sourceFeatureCount(page, 'road'), { timeout: DATA_TIMEOUT }).toBe(0);
 
   await page.locator('#road-all').click();
   await expect.poll(() => sourceFeatureCount(page, 'road'), { timeout: 60_000 }).toBe(before);
@@ -3061,7 +3073,7 @@ test('建物の件数に原典のLODが添えられる', async ({ page }) => {
 
   await showPlateauBuildings(page);
   const count = page.locator('#building-count');
-  await expect(count).toContainText('表示はLOD0', { timeout: 30_000 });
+  await expect(count).toContainText('表示はLOD0', { timeout: DATA_TIMEOUT });
   // 港区の原典はLOD3まである。**件数と一緒の行に出す** (行を増やさない)。
   await expect(count).toContainText('原典はLOD3まで');
   await expect(count).toContainText('件');
@@ -3072,11 +3084,11 @@ test('OvertureにはLODを出さない', async ({ page }) => {
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
 
   await showPlateauBuildings(page);
-  await expect(page.locator('#building-count')).toContainText('LOD', { timeout: 30_000 });
+  await expect(page.locator('#building-count')).toContainText('LOD', { timeout: DATA_TIMEOUT });
 
   await useOvertureBuildings(page);
   // **件数が出るまで待ってから見る。** 空のうちは「LODを含まない」が即座に通ってしまう。
-  await expect(page.locator('#building-count')).toContainText('件', { timeout: 30_000 });
+  await expect(page.locator('#building-count')).toContainText('件', { timeout: DATA_TIMEOUT });
   await expect(page.locator('#building-count')).not.toContainText('LOD');
 });
 
@@ -3113,7 +3125,7 @@ test('建物は出所ごとに出せて、両方出すと塗り分けられる',
   await showLayer(page, LAYER.overtureBuildings);
 
   await expect
-    .poll(async () => Object.keys(await byOrigin()).sort(), { timeout: 30_000 })
+    .poll(async () => Object.keys(await byOrigin()).sort(), { timeout: DATA_TIMEOUT })
     .toEqual([LAYER.overtureBuildings, LAYER.plateauBuildings].sort());
 
   // **出所ごとに1つの番号で、互いに違う。** 同じだと重なったところで見分けられない。
@@ -3157,11 +3169,11 @@ for (const [layer, label] of [
 
     await jump(7);
     await showLayer(page, layer);
-    await expect(status).toContainText('本', { timeout: 30_000 });
+    await expect(status).toContainText('本', { timeout: DATA_TIMEOUT });
     await expect(status).toContainText('簡略表示');
 
     await jump(14);
-    await expect(status).toContainText('区間', { timeout: 30_000 });
+    await expect(status).toContainText('区間', { timeout: DATA_TIMEOUT });
     await expect(status).not.toContainText('簡略表示');
 
     // ホバーで名前と種別が出る。地図に描かれていることも兼ねて確かめる。
@@ -3288,6 +3300,10 @@ test('周辺検索: 地図上の点から、建物と駅が出て、距離を広
   await expect
     .poll(() => sourceFeatureCount(page, 'buildings'), { timeout: 60_000 })
     .toBeGreaterThan(0);
+  // **描き終わるまで待つ。** 途中で「空いている点」を探すと、あとから描かれた建物の上を押す
+  // ことになる (建物のファイルを並べ直して、届く順が変わったときに落ちた)。
+  await expect(page.locator('#building-count')).toContainText('件', { timeout: DATA_TIMEOUT });
+  await expect(page.locator('#busy')).toBeHidden({ timeout: DATA_TIMEOUT });
 
   // 東京駅の近くで、地物が描かれていない (= 点が起点になる) ところを押す。
   // 中心は駅舎の建物の上なので、押すと建物が起点になる。
@@ -3504,7 +3520,7 @@ test('周辺検索: 検索で選んだものを起点にできる', async ({ pag
   const input = page.locator('#search-input');
   await input.fill('東京駅');
   const candidate = page.locator('#results li', { hasText: '東京' }).first();
-  await expect(candidate).toBeVisible({ timeout: 30_000 });
+  await expect(candidate).toBeVisible({ timeout: DATA_TIMEOUT });
   await candidate.click();
   await expect.poll(() => sourceFeatureCount(page, 'selected-point')).toBe(1);
 
@@ -3521,7 +3537,7 @@ async function openDownloads(page: Page, layer: string, collectionId: string) {
   await openLayerDetails(page, layer);
   const section = page.locator(`.collection-card[data-collection="${collectionId}"] .download-section`);
   await section.locator('summary').click();
-  await expect(section).toContainText('ファイルごと', { timeout: 30_000 });
+  await expect(section).toContainText('ファイルごと', { timeout: DATA_TIMEOUT });
   return section;
 }
 
@@ -3608,7 +3624,7 @@ test('CityGML をメッシュ単位で探し、ZIPにまとめられる (配信�
   // **押すまで配信サービスを呼ばない。**
   expect(asked).toEqual([]);
   await section.locator('.citygml-find').click();
-  await expect(section.locator('.citygml-files li').first()).toBeVisible({ timeout: 30_000 });
+  await expect(section.locator('.citygml-files li').first()).toBeVisible({ timeout: DATA_TIMEOUT });
   // 表示範囲 (港区) のメッシュで問い合わせている。港区は 5339 の1次メッシュ。
   expect(asked.some((a) => a.includes('/datacatalog/citygml/m:5339'))).toBe(true);
   // 種類を選べて、建物が先頭。
@@ -3619,7 +3635,7 @@ test('CityGML をメッシュ単位で探し、ZIPにまとめられる (配信�
   await expect(section.locator('.download-status a', { hasText: 'ZIP' })).toHaveAttribute(
     'href',
     'https://api.plateauview.mlit.go.jp/citygml/pack/abc.zip',
-    { timeout: 30_000 },
+    { timeout: DATA_TIMEOUT },
   );
   expect(asked.some((a) => a.startsWith('POST') && a.endsWith('/citygml/pack'))).toBe(true);
 });
@@ -3677,7 +3693,7 @@ test('地理院のベクトルタイルをテーマごとに重ねられる', as
     (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7671, 35.6812], zoom: 15.5 });
   });
   await showLayer(page, gsiRow('building'));
-  await expect.poll(() => gsiVisibility(page, 'BldA'), { timeout: 30_000 }).toEqual(['visible']);
+  await expect.poll(() => gsiVisibility(page, 'BldA'), { timeout: DATA_TIMEOUT }).toEqual(['visible']);
   // ほかのテーマは出していない。
   expect(await gsiVisibility(page, 'RdCL')).toEqual(['none']);
   // 配布元の PMTiles から、建物のタイルが実際に読めて描かれる。
@@ -3690,7 +3706,7 @@ test('地理院のベクトルタイルをテーマごとに重ねられる', as
               .length,
           GSI_VECTOR,
         ),
-      { timeout: 30_000 },
+      { timeout: DATA_TIMEOUT },
     )
     .toBeGreaterThan(0);
   expect(asked.some((url) => url.includes('optimal_bvmap-v1.pmtiles'))).toBe(true);
@@ -3864,7 +3880,7 @@ test('読み込み中に建物を外しても、遅れて届いた結果は描�
   release();
 
   // 止めていた読み込みが終わるのを待ってから見る。
-  await expect(page.locator('#busy')).toBeHidden({ timeout: 30_000 });
+  await expect(page.locator('#busy')).toBeHidden({ timeout: DATA_TIMEOUT });
   await page.waitForTimeout(500);
   expect(await sourceFeatureCount(page, 'buildings')).toBe(0);
 });
