@@ -3205,9 +3205,13 @@ test('引いた表示では重要な段の建物だけが出る (間引き)', as
 
   const plateau = await datasetUrl(page, PLATEAU_DATASET);
   let bytes = 0;
+  /** 開いた建物のファイル。 */
+  const opened = new Set<string>();
   page.on('response', (response) => {
-    if (!response.url().endsWith('.parquet') || response.request().method() === 'HEAD') return;
+    if (!response.url().endsWith('.parquet')) return;
     if (!response.url().includes('/plateau_bldg_') || response.url().includes('coverage')) return;
+    opened.add(response.url().split('/').pop()!);
+    if (response.request().method() === 'HEAD') return;
     bytes += Number(response.headers()['content-length'] ?? 0);
   });
 
@@ -3233,6 +3237,11 @@ test('引いた表示では重要な段の建物だけが出る (間引き)', as
   expect(bytes, '転送量を計測できていない').toBeGreaterThan(0);
   // 全部読むとこの画面で30MB前後 (実測)。公共施設だけなら数MBに収まる。
   expect(bytes).toBeLessThan(12 * 1024 * 1024);
+  // **概観 (都道府県ごと) だけを開く。** 区ごとのファイルを20近く開くと、R2 では開く往復だけで
+  // 数十秒かかっていた。ここが崩れたら、概観を R2 に上げ忘れているか、読む側が戻っている。
+  console.log(`間引き (ズーム13.5) で開いた建物のファイル: ${[...opened].join(', ')}`);
+  expect([...opened].every((file) => file.startsWith('plateau_bldg_overview_')), [...opened].join(', ')).toBe(true);
+  expect(opened.size).toBeLessThanOrEqual(2);
 
   // 14.x: 公共施設と商業・業務。
   await jump(14.5);

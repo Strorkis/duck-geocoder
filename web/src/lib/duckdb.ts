@@ -13,6 +13,7 @@ import {
   setItemReader,
   type Collection,
   type DatasetKind,
+  type ItemFile,
   type StacLink,
 } from './stac';
 import {
@@ -128,12 +129,15 @@ export async function initDuckDb(collections: Collection[]): Promise<Database> {
   //
   // forceFullHTTPReads: これを明示しないとRangeリクエストを一切出さない。
   //   既定値は false のはずだが、指定した場合としない場合で挙動が変わることを実測で確認。
-  // reliableHeadRequests: DuckDB-WASMはまず「HEADにRangeを付けて206が返るか」で
-  //   部分取得の可否を判断するが、GitHub Pagesなど200を返すサーバーがある。
-  //   false にすると「GET bytes=0-0 で206を確認し、通常のHEADでサイズを取る」経路に
-  //   なり、配信元の流儀に左右されにくくなる。
+  // reliableHeadRequests / allowFullHTTPReads: **ファイルを開く往復を1回にする。**
+  //   どちらかが立っていると、DuckDB-WASM は最初に「Range を付けた HEAD」を送り、206 と
+  //   サイズが返ればそれで開き終わる。両方とも既定のままだと「GET bytes=0-0 → HEAD」の2回。
+  //   R2 は1回ごとに約0.45秒待たされ、引いた表示では十数ファイルを開くので、これが効く。
+  //   allowFullHTTPReads を切るのは、**黙って全体の取得に落ちないため**。206 を返さない
+  //   配信元では、部分取得に見えて全体を落とすのではなく、読み込みが失敗する。
+  //   (R2 と vite の preview / 開発サーバーは HEAD + Range に 206 を返す。2026-10-09 に確認)
   await db.open({
-    filesystem: { forceFullHTTPReads: false, reliableHeadRequests: false },
+    filesystem: { forceFullHTTPReads: false, reliableHeadRequests: true, allowFullHTTPReads: false },
   });
 
   const conn = await db.connect();
@@ -227,7 +231,7 @@ export async function initDuckDb(collections: Collection[]): Promise<Database> {
     }
     const result = await conn.query(`
       SELECT id, collection, bbox, links,
-             "table:row_count" AS row_count, "duck:source_lod" AS source_lod,
+             "table:row_count" AS row_count, "duck:source_lod" AS source_lod, "duck:lod_max" AS lod_max,
              assets.data.href AS href
       FROM read_parquet('${file}', file_row_number = true) ${where};
     `);
@@ -247,6 +251,7 @@ export async function initDuckDb(collections: Collection[]): Promise<Database> {
           // Int64 は BigInt で返る。
           'table:row_count': row.row_count === null ? undefined : Number(row.row_count),
           'duck:source_lod': row.source_lod ?? undefined,
+          'duck:lod_max': row.lod_max ?? undefined,
         },
         assets: { data: { href: row.href } },
       };
@@ -257,10 +262,18 @@ export async function initDuckDb(collections: Collection[]): Promise<Database> {
    * Collection の Item を読み、ファイルを DuckDB に教える。**使うときに一度だけ** (`once`)。
    * 建物・メッシュ・鉄道・道路・線で同じ形なので、ここで1つにする。
    */
-  const lazyFiles = (collection: Collection, assign: (files: ReturnType<typeof itemFiles>) => void) =>
+  const lazyFiles = (
+    collection: Collection,
+    assign: (files: ItemFile[], overviews: ItemFile[]) => void,
+  ) =>
     once(async () => {
       const files = itemFiles(await collection.items());
-      assign(files);
+      // **概観 (上の段だけの複製) は分けて渡す。** 元のファイルと一緒に読むと二重に出る。
+      // 受け取らない出所には渡らない。
+      assign(
+        files.filter((f) => f.lodMax === null),
+        files.filter((f) => f.lodMax !== null),
+      );
       await register(files.map(({ file }) => file));
       await ensureSpatial();
     });
@@ -391,13 +404,17 @@ export async function initDuckDb(collections: Collection[]): Promise<Database> {
       id: collection.id,
       // Itemを読むまで空。寄って実際に引くまで通信しない。
       files: [],
+      overviews: [],
       hasHeight: collection.columns.has('height'),
       categoryColumn,
       usages,
       bbox: collection.bbox,
       coverage,
       tiers: collection.tiers,
-      ensure: lazyFiles(collection, (files) => (source.files = files)),
+      ensure: lazyFiles(collection, (files, overviews) => {
+        source.files = files;
+        source.overviews = overviews;
+      }),
     };
     return source;
   });

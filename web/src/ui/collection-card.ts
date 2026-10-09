@@ -5,7 +5,7 @@
  * Collection で、何ファイルあって、元の JSON はどこか、が画面から辿れない。
  */
 import type * as duckdb from '@duckdb/duckdb-wasm';
-import { dataUrl, itemFile, type Bbox, type Collection, type DatasetKind } from '../lib/stac';
+import { dataUrl, isOverview, itemFile, type Bbox, type Collection, type DatasetKind } from '../lib/stac';
 import { EXACT_LOD, bboxOverlaps, type ViewBounds } from '../lib/sources';
 import { meshCodesInView } from '../lib/mesh';
 import { CITYGML_TYPES, fetchCityGmlFiles, packCityGml, type CityGmlFile } from '../lib/plateau-api';
@@ -88,7 +88,10 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
   const fillDownloads = async (collection: Collection, body: HTMLElement) => {
     body.replaceChildren(document.createTextNode(m.findingFiles));
     const bounds = currentBounds();
-    const items = (await collection.items()).filter(({ feature }) => {
+    const items = (await collection.items()).filter((item) => {
+      // 概観は元のファイルの複製なので、混ぜると件数が二重になる。
+      if (isOverview(item)) return false;
+      const { feature } = item;
       const bbox = feature.bbox?.length === 4 ? (feature.bbox as Bbox) : null;
       return !bbox || bboxOverlaps(bbox, bounds);
     });
@@ -471,7 +474,8 @@ export function createCollectionCards(options: CollectionCardOptions): Collectio
     fact(m.factFiles, count, ' ', itemsLink);
     collection
       .items()
-      .then((items) => (count.textContent = m.itemFileCount(items.length)))
+      // 概観 (引いた表示のための複製) は数えない。
+      .then((items) => (count.textContent = m.itemFileCount(items.filter((item) => !isOverview(item)).length)))
       .catch(() => (count.textContent = m.couldNotRead));
     if (collection.bbox) fact(m.factExtent, formatBbox(collection.bbox));
 

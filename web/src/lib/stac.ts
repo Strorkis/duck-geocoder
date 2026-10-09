@@ -260,6 +260,11 @@ export interface StacItem {
     'table:row_count'?: number;
     /** 原典にあるLOD ("1,2,3")。**配信しているものより細かいものが原典にある**ときだけ付く。 */
     'duck:source_lod'?: string;
+    /**
+     * **概観なら、入っている段の上限。** 上の段だけを広い範囲で集めた複製で、引いた表示で読む。
+     * 元のファイルと一緒に読むと同じ建物が二重に出るので、付いているものは分けて扱う。
+     */
+    'duck:lod_max'?: number;
   };
   assets: { data: { href: string } };
 }
@@ -591,7 +596,13 @@ export function itemFiles(items: LocatedItem[]): ItemFile[] {
     file: resolveHref(feature.assets.data.href, base),
     bbox: feature.bbox?.length === 4 ? (feature.bbox as Bbox) : null,
     sourceLod: parseSourceLod(feature.properties['duck:source_lod']),
+    lodMax: feature.properties['duck:lod_max'] ?? null,
   }));
+}
+
+/** 概観 (`duck:lod_max` の付いた Item) か。元のファイルと一緒に読んではいけない。 */
+export function isOverview(item: LocatedItem): boolean {
+  return item.feature.properties['duck:lod_max'] != null;
 }
 
 /** ファイル1つ分。収録範囲と、原典がどこまで細かいか。 */
@@ -600,6 +611,8 @@ export interface ItemFile {
   bbox: Bbox | null;
   /** 原典にあるLOD (昇順)。無ければ空。 */
   sourceLod: number[];
+  /** 概観なら、入っている段の上限。元のファイルは null。 */
+  lodMax: number | null;
 }
 
 /**
