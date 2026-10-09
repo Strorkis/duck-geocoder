@@ -355,6 +355,33 @@ git push
 
 CI が通ったら、上の「10-03 と 10-07 の分」の 4 (日本語の JSON) と 5 (古いファイルを消す) に戻る。
 
+### 2026-10-09 の分 (建物の概観)
+
+10-08 の分も 1〜3 まで済んだが、**CI の E2E はまだ落ちた** (手元から R2 に向けて流すと 116件中9件。
+引いた表示の間引きに1分以上かかり、ほかの読み込みが後ろで待たされる)。引いた表示のための
+**概観** (docs/pipeline.md の「建物の概観」) を足したので、**それを上げる。**
+
+```sh
+# 1. 概観 (PLATEAU 45・Overture 3、計409MB)。新しいファイルなので、公開中の古いサイトは読まない
+rclone copy data/output "$R2" \
+  --filter '+ /plateau/plateau_bldg_overview_*.parquet' --filter '+ /overture/overture_buildings_overview_*.parquet' \
+  --filter '- **' -P
+
+# 2. カタログ (items.parquet に概観の Item が増えた。46ファイル)
+rclone copy data/output "$R2" \
+  --filter '+ /items.parquet' --filter '+ /collections*.json' --filter '+ *.en.json' --filter '- **' -P
+
+# 3. push すると CI が流れ直す
+git push
+```
+
+- **1 を 2 より先に。** items.parquet が概観を指しているのに概観が無いと、新しいアプリの
+  引いた表示が読めずに失敗する (古いサイトは items.parquet を読まないので、どちらの順でも壊れない)
+- 選ばれるのは 1 が48ファイル、2 が46ファイル (`rclone --config /dev/null lsf -R data/output --files-only --filter …`)
+- 建物の元のファイルは変えていない (上げ直さなくてよい)
+
+CI が通ったら、上の「10-03 と 10-07 の分」の 4 (日本語の JSON) と 5 (古いファイルを消す) に戻る。
+
 ### 平置きだった頃の古いJSONを消す
 
 `rclone copy` は消さないので、ルートに残る。`catalog.json` を差し替えれば

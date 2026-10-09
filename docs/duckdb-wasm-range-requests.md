@@ -24,6 +24,22 @@ await db.open({ filesystem: { forceFullHTTPReads: false } });
 
 `registerFileURL` の第4引数 `directIO` は関係しない (true/falseどちらでも変わらない)。
 
+### 1b. 開く往復を1回にする (2026-10-09)
+
+```ts
+await db.open({
+  filesystem: { forceFullHTTPReads: false, reliableHeadRequests: true, allowFullHTTPReads: false },
+});
+```
+
+下の `openFile` のとおり、`reliableHeadRequests` か `!allowFullHTTPReads` が立っていると
+**「HEAD + `Range: bytes=0-`」を1回**送り、206 とサイズが返ればそこで開き終わる。どちらも
+既定のままだと「GET `bytes=0-0` → HEAD」の2回になる。R2 (r2.dev) は1回ごとに約0.45秒待たされ、
+引いた表示では十数ファイルを開くので効く (docs/pipeline.md の「建物の概観」)。
+
+`allowFullHTTPReads: false` も切るのは、**206 を返さない配信元で黙って全体の取得に落ちない**ため。
+読み込みが失敗するので気付ける。R2 と vite (開発サーバー・preview) は HEAD + Range に 206 を返す。
+
 ### 2. 配信側がRangeリクエストを正しく扱う必要がある
 
 Viteが内部で使っているsirvには、`Range: bytes=0-0` に対して **206を返しながら
