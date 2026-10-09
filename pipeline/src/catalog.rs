@@ -73,6 +73,11 @@ pub struct DatasetEntry {
     /// **段で間引く `lod` 列を持つか** (`add_building_lod` が書く `duck:lod_by_tier`)。
     /// Collection の全ファイルが持つときだけ、UI に `lod_column` として伝える。
     pub lod_by_tier: bool,
+    /// **概観なら、入っている段の上限** (`build_building_overview` が書く `duck:lod_max`)。
+    ///
+    /// 概観は元のファイルの複製なので、UI は Item のこれを見て元のファイルと分ける
+    /// (一緒に読むと同じ建物が二重に出る)。元のファイルは `None`。
+    pub lod_max: Option<u8>,
     /// **この出所の配布元。** 出所全体で1つ。ファイル側に `via` が無くてもこれはある。
     pub collection_via: &'static str,
 }
@@ -1033,6 +1038,13 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         .and_then(crate::lod::coarse_resolution_m);
     let covers = key_value(crate::coverage::COVERS_KEY);
     let lod_by_tier = key_value("duck:lod_by_tier").is_some();
+    let lod_max = key_value("duck:lod_max")
+        .map(|value| {
+            value
+                .parse::<u8>()
+                .with_context(|| format!("duck:lod_max が段の順位ではありません: {value} ({file})"))
+        })
+        .transpose()?;
 
     let columns: Vec<ColumnEntry> = file_metadata
         .schema_descr()
@@ -1081,6 +1093,7 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         covers,
         tiers,
         lod_by_tier,
+        lod_max,
         collection_via: described.via,
     })
 }

@@ -58,6 +58,13 @@ fn add_building_lod(input: &Path, force_relayout: bool) -> Result<bool> {
         format!("重要度の段の規則がありません (建物のファイルではない?): {stem}")
     })?;
 
+    // **概観 (`build_building_overview`) は並べ方が違う。** glob (`overture_buildings_*`) に
+    // 拾われても、場所ごとに並べ直さない。
+    if geoparquet::read_key_value(input, "duck:lod_max")?.is_some() {
+        println!("{}: 概観なので飛ばします", input.display());
+        return Ok(false);
+    }
+
     if geoparquet::read_key_value(input, LOD_BY_TIER_KEY)?.is_some() {
         // 段は付いている。**並べ方が古ければ並べ直すだけ** (段の列は作り直さない)。
         if !force_relayout

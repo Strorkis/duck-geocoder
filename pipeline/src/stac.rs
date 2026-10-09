@@ -295,6 +295,10 @@ fn item(entry: &DatasetEntry, dir: &str) -> Value {
     if let Some(source_lod) = &entry.source_lod {
         properties["duck:source_lod"] = json!(source_lod);
     }
+    // **概観 (引いた表示で読む、上の段だけの複製) か。** UI はこれで元のファイルと分ける。
+    if let Some(lod_max) = entry.lod_max {
+        properties["duck:lod_max"] = json!(lod_max);
+    }
 
     // **Item は stac-geoparquet (配信の起点に置く1ファイル) に入るので、リンクとアセットは
     // 起点からの相対で書く** (Collection の文書の隣ではない)。
@@ -1138,6 +1142,7 @@ mod tests {
             covers: None,
             tiers: None,
             lod_by_tier: false,
+            lod_max: None,
             collection_via: "https://example.invalid/download",
         }
     }
@@ -1534,6 +1539,25 @@ mod tests {
                 .get("duck:source_lod")
                 .is_none()
         );
+    }
+
+    /// **概観は Item で名乗る。** UI はこれで元のファイルと分ける (一緒に読むと二重に出る)。
+    /// stac-geoparquet にも書けること (知らない properties は書き出しで止まる)。
+    #[test]
+    fn item_says_it_is_an_overview() {
+        let mut overview = entry("a", "a.parquet", None);
+        overview.lod_max = Some(1);
+        let plain = entry("b", "b.parquet", None);
+
+        let datasets = [overview, plain];
+        let features = items_of(&datasets, "estat-mesh-pop");
+        assert_eq!(features[0]["properties"]["duck:lod_max"], 1);
+        assert!(features[1]["properties"].get("duck:lod_max").is_none());
+
+        let path =
+            std::env::temp_dir().join(format!("stac-overview-{}.parquet", std::process::id()));
+        crate::stac_geoparquet::write(&path, &features).unwrap();
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
