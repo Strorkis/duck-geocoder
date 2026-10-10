@@ -313,7 +313,7 @@
   <body>
     <header>
       <h1>duck-geocoder ダッシュボード</h1>
-      <span class="meta">更新 2026-10-10 12:40 (日本時間)</span>
+      <span class="meta">更新 2026-10-10 13:00 (日本時間)</span>
       <span class="meta">
         <a href="https://strorkis.github.io/duck-geocoder/">公開サイト</a> ·
         <a href="roadmap.md">方針 (roadmap.md)</a> · STAC 配布形式の実験
@@ -332,7 +332,7 @@
       </div>
       <div class="card kpi">
         <div class="label">公開待ちのコミット</div>
-        <div class="value">6 <small>件</small></div>
+        <div class="value">10 <small>件</small></div>
         <span class="status you">引いた表示をタイルにした。タイルとカタログを R2 へ → push 待ち</span>
       </div>
       <div class="card kpi">
@@ -439,93 +439,108 @@
         <h2>見てほしい箇所 — ありふれていない部分</h2>
         <p class="sub" style="margin: -0.3rem 0 0.5rem">
           どこかで見たことのある書き方ではなく、<b>このリポジトリ独自の判断が入っている所</b>。
-          壊れたときに直せる人が要る順。
+          壊れたときに直せる人が要る順。<b>項目を押すと、読み物 (<a href="tour.html">コードの読みどころ</a>) の該当の節が開く</b>。
+          何のための仕組みか → どう解いたか → 要のコード、の順に、ファイルを開かずに読める。
         </p>
         <table>
           <thead><tr><th>箇所</th><th>何が特別か</th></tr></thead>
           <tbody>
+            <!-- tour:begin (docs/tour/build.mjs が書く。手で直さない) -->
             <tr class="group"><th colspan="2">配り方 (パイプライン)</th></tr>
             <tr>
-              <td><a href="../crates/remote-zip/src/">crates/remote-zip</a></td>
+              <td><a href="tour.html#remote-zip">zip を落とさずに中身を取る (remote-zip)</a></td>
               <td>HTTP Range を <code>Read + Seek</code> に見せ、zip の中身を落とさず取る。<b>単体のクレートに切り出した</b> (CLI 付き)</td>
             </tr>
             <tr>
-              <td><a href="../pipeline/src/spatial_pack.rs">spatial_pack.rs</a> / <a href="../pipeline/src/repack.rs">repack.rs</a></td>
-              <td>STR で並べ、<b>段 (<code>lod</code>) の境で行グループを切る</b>。読み飛ばしが効くかはここで決まる</td>
+              <td><a href="tour.html#spatial-pack">行を場所で並べ、行グループで切る (STR・場所ごと・段ごと)</a></td>
+              <td>STR で並べ、<b>場所ごとに区切って段の境で行グループを切る</b>。読み飛ばしが効くかはここで決まる</td>
             </tr>
             <tr>
-              <td><a href="../pipeline/src/lod.rs">lod.rs</a></td>
+              <td><a href="tour.html#coarse-lod">線の粗い段 — 統合して簡略化した行を「足す」</a></td>
               <td>線の粗い段: 名前で束ねて簡略化した行を<b>同じファイルに足す</b> (原寸は消さない)</td>
             </tr>
             <tr>
-              <td><a href="../pipeline/src/quadkey.rs">quadkey.rs</a> · <a href="../pipeline/tests/quadkey_sql.rs">quadkey_sql.rs</a></td>
-              <td>同じ QuadKey を Rust と SQL の2通りで書き、テストで一致を見る。件数で割る深さを変える (<code>choose_tiles</code>)</td>
+              <td><a href="tour.html#quadkey">件数でファイルを割る (適応的な QuadKey)</a></td>
+              <td>件数の多いタイルだけを割る QuadKey。Rust と SQL の2通りで書き、テストで一致を見る</td>
             </tr>
             <tr>
-              <td><a href="../pipeline/src/catalog.rs">catalog.rs</a> の <code>TIERS</code> / <code>Terms</code></td>
-              <td>重要度の段と使う条件を<b>規則・データ</b>として持ち、SQL (<code>rank_sql</code>) とカタログの両方へ出す</td>
+              <td><a href="tour.html#tiers">重要度の段と使う条件を「規則・データ」として持つ</a></td>
+              <td>重要度の段と使う条件を<b>規則・データ</b>として持ち、SQL とカタログの両方へ出す</td>
             </tr>
             <tr>
-              <td><a href="../pipeline/src/stac.rs">stac.rs</a></td>
-              <td>STAC の置き方の判断 (サブカタログ、Item を1ファイルずつにしない、<code>duck:*</code> の独自項目)</td>
+              <td><a href="tour.html#stac-layout">STAC の置き方 — 実データの隣に、Item はまとめて</a></td>
+              <td>実データの隣に Collection を置き、Item はまとめる。<code>duck:*</code> の独自項目</td>
             </tr>
             <tr>
-              <td><a href="../pipeline/src/stac_geoparquet.rs">stac_geoparquet.rs</a> · <a href="../pipeline/src/stac_i18n.rs">stac_i18n.rs</a></td>
-              <td>Item を Collection ごとの行グループに。<b>フッターを削り、件数の少ないものをフッターの隣に</b>置く (16KB 単位で読まれるため) / 英語版とまとめ。訳の無い日本語はエラー</td>
+              <td><a href="tour.html#stac-geoparquet">Item の一覧も GeoParquet に (stac-geoparquet)</a></td>
+              <td>Item を Collection ごとの行グループに。<b>件数の少ないものをフッターの隣に</b> (16KB 単位で読まれるため)</td>
             </tr>
             <tr>
-              <td><a href="../pipeline/src/external.rs">external.rs</a> · <a href="../pipeline/src/pmtiles.rs">pmtiles.rs</a></td>
-              <td>外部の PMTiles をスナップショット (追跡) からカタログへ。テーマが層をちょうど覆うことを検証</td>
-            </tr>
-            <tr class="group"><th colspan="2">使い方 (web/src/lib/ · ui/ と main.ts)</th></tr>
-            <tr>
-              <td><a href="../web/src/lib/stac.ts">lib/stac.ts</a> の <code>fetchCollections</code> · <a href="../web/src/lib/duckdb.ts">lib/duckdb.ts</a> の <code>collectionRows</code></td>
-              <td>まとめ1つから Collection を作る (相対リンクは<b>その文書からの相対</b>)。Item は stac-geoparquet を<b>行番号の範囲</b>で読む (DuckDB は文字列の統計を頭でしか比べないため)</td>
+              <td><a href="tour.html#i18n">英語版のカタログ — 訳の無い日本語はエラー</a></td>
+              <td>英語版とまとめ。<b>訳の無い日本語はエラー</b></td>
             </tr>
             <tr>
-              <td><a href="../web/src/lib/sources.ts">lib/sources.ts</a> の <code>filesInView</code> · <code>lodForZoom</code></td>
-              <td>表示範囲に重なるファイルだけを DuckDB に渡し、ズームから粗い段か原寸かを決める</td>
+              <td><a href="tour.html#building-tiles">引いた表示のための建物のタイル (PMTiles)</a></td>
+              <td>引いた表示のための建物の <b>PMTiles</b>。段の上限はタイル自身から読む</td>
             </tr>
             <tr>
-              <td><a href="../web/src/lib/nearby.ts">lib/nearby.ts</a> の <code>toMeters</code> · <code>nearbyCondition</code></td>
-              <td>周辺検索: <code>ST_Affine</code> で起点付近をメートルに直してから <code>ST_DWithin</code>。当たった線は範囲で切り取る</td>
+              <td><a href="tour.html#pmtiles">PMTiles をヘッダだけ読んでカタログに載せる</a></td>
+              <td>PMTiles を<b>ヘッダとメタデータだけ</b>読んでカタログへ (16.9GB のうち 7KB)</td>
+            </tr>
+            <tr class="group"><th colspan="2">使い方 (アプリ)</th></tr>
+            <tr>
+              <td><a href="tour.html#catalog-load">カタログを読む — まとめ1つと、Item を行番号の範囲で</a></td>
+              <td>まとめ1つから Collection を作り、Item は<b>行番号の範囲</b>で読む</td>
             </tr>
             <tr>
-              <td><a href="../web/src/lib/tiles.ts">lib/tiles.ts</a> の <code>vectorLayerSpecs</code> · <code>createVectorOverlay</code></td>
-              <td>地理院のタイルを<b>データだけ</b>読み、形の種類から描く。入り切りはズームで戻さない</td>
+              <td><a href="tour.html#files-in-view">表示範囲からファイルを選び、ズームから段を決める</a></td>
+              <td><b>表示範囲に重なるファイルだけ</b>を DuckDB に渡し、ズームから粗い段か原寸かを決める</td>
             </tr>
             <tr>
-              <td><a href="../web/src/lib/tiles.ts">lib/tiles.ts</a> の <code>baseStyle</code> · <code>gsiDemHeight</code></td>
-              <td>背景地図と地形を<b>カタログから組む</b>。地理院の標高 (独自形式) は読み込むときに Terrarium へ詰め直す</td>
+              <td><a href="tour.html#buildings">建物の出し方 — 全部 / 重要な段だけ (タイル) / 整備範囲</a></td>
+              <td>1ズーム引くごとに1段減らす間引き。<b>引いた表示はタイルで描く</b> (件数は寄った表示でだけ)</td>
             </tr>
             <tr>
-              <td><a href="../web/src/ui/layers/buildings.ts">ui/layers/buildings.ts</a> の <code>buildingDepth</code> · <a href="../web/src/lib/queries.ts">lib/queries.ts</a> の <code>fetchBuildingsInView</code></td>
-              <td>1ズーム引くごとに1段減らす間引き (<code>lod &lt;= 段</code>)。転送量の上限はここ</td>
+              <td><a href="tour.html#nearby">周辺検索 — メートルに直してから距離で判定</a></td>
+              <td>周辺検索: 起点付近を<b>メートルに直してから</b>距離で判定。鉄道は押した地点の前後1.5km</td>
             </tr>
             <tr>
-              <td><a href="../web/src/lib/wkb.ts">lib/wkb.ts</a> · <a href="../web/tests-unit/wkb.test.ts">tests-unit/wkb.test.ts</a></td>
-              <td>DuckDB が返す GeoArrow (WKB) を自前で読む (GeoJSON の文字列を作らない)。見本は DuckDB spatial で作った</td>
+              <td><a href="tour.html#gsi-vector">地理院のベクトルタイルを、データだけで描く</a></td>
+              <td>地理院のタイルを<b>データだけ</b>読み、形の種類から描く</td>
             </tr>
             <tr>
-              <td><a href="../web/src/ui/layers/context.ts">ui/layers/context.ts</a></td>
-              <td>データの描き方の共通の形 (世代を最初に進める・空なら setData しない)。各 refresh はこの形</td>
+              <td><a href="tour.html#gsi-dem">地理院の標高 (独自形式) を読み込むときに直す</a></td>
+              <td>地理院の標高 (独自形式) を読み込むときに Terrarium へ詰め直す</td>
             </tr>
             <tr>
-              <td><a href="../web/src/lib/duckdb.ts">lib/duckdb.ts</a> の <code>exportParquet</code></td>
-              <td>ブラウザの中で GeoParquet を書き、出典と規約を KV に入れる</td>
+              <td><a href="tour.html#wkb">DuckDB の返すジオメトリ (WKB) を自前で読む</a></td>
+              <td>DuckDB が返す GeoArrow (WKB) を<b>自前で読む</b> (GeoJSON の文字列を作らない)</td>
             </tr>
             <tr>
-              <td><a href="../web/src/ui/layer-list.ts">ui/layer-list.ts</a> の <code>applyOrder</code> · <code>startDrag</code></td>
-              <td>一覧の順番を地図の層へ写す (区分ごとの目印の層の直下に積む)。ドラッグは Pointer Events で、動きは window で拾う</td>
+              <td><a href="tour.html#draw-shape">データの描き方の共通の形</a></td>
+              <td>データの描き方の共通の形 (<b>世代を最初に進める</b>・空なら setData しない)</td>
             </tr>
             <tr>
-              <td><a href="../web/src/ui/hover.ts">ui/hover.ts</a> の <code>HOVER_LAYERS</code> · <a href="../web/src/ui/nearby-panel.ts">ui/nearby-panel.ts</a> の <code>setFocusMode</code></td>
-              <td>吹き出しを層ごとの表で1つの仕掛けに (周辺検索の結果にも、指で押しても出る) / 周辺検索でほかの層を薄くして閉じたら戻す</td>
+              <td><a href="tour.html#export">ブラウザの中で GeoParquet を書き、出典と規約を入れる</a></td>
+              <td>ブラウザの中で GeoParquet を書き、<b>出典と規約を KV に入れる</b></td>
             </tr>
             <tr>
-              <td><a href="../stac-browser/">stac-browser/</a> の <code>items-base.patch</code> · <code>build.sh</code></td>
-              <td>STAC Browser 5.1.0 に<b>パッチを1つ当てて</b>ビルドする (相対の <code>rel: items</code> がページ基準で解決され 404 になる不具合)。<code>rel: items</code> が無くなったので今は効く場面が無い。上流で直ったら外す</td>
+              <td><a href="tour.html#layer-order">一覧の順番を地図の層へ写す</a></td>
+              <td>一覧の順番を地図の層へ写す (区分ごとの目印の層の直下に積む)</td>
             </tr>
+            <tr>
+              <td><a href="tour.html#hover">吹き出しを層ごとの表で1つの仕掛けに</a></td>
+              <td>吹き出しを<b>層ごとの表</b>で1つの仕掛けに (周辺検索の結果やタイルの建物にも)</td>
+            </tr>
+            <tr>
+              <td><a href="tour.html#dev-server">手元の配信をオブジェクトストレージと同じ流儀に (と、R2 の遅さの再現)</a></td>
+              <td>手元の配信をオブジェクトストレージと同じ流儀に。<b>R2 の遅さを再現</b>できる</td>
+            </tr>
+            <tr>
+              <td><a href="tour.html#stac-browser">STAC Browser にパッチを1つ当ててビルドする</a></td>
+              <td>STAC Browser 5.1.0 に<b>パッチを1つ</b>当ててビルドする。上流で直ったら外す</td>
+            </tr>
+            <!-- tour:end -->
             <tr class="group"><th colspan="2">判断の記録 (docs)</th></tr>
             <tr>
               <td><a href="geoparquet-layout.md">geoparquet-layout.md</a></td>

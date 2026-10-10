@@ -1,0 +1,1148 @@
+<!doctype html>
+<!--
+  コードの読みどころ。**このファイルは生成物**: docs/tour/build.mjs を直して `node docs/tour/build.mjs` で作り直す。
+  コードの抜き出しはソースから取るので、コードを変えたら作り直す (行番号がずれる)。
+-->
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>duck-geocoder コードの読みどころ</title>
+    <style>
+      :root { --page:#f9f9f7; --surface:#fcfcfb; --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781; --hairline:#e1e0d9; --accent:#2a78d6; --code:#f1f0ec; }
+      @media (prefers-color-scheme: dark) {
+        :root { --page:#0d0d0d; --surface:#1a1a19; --ink:#fff; --ink-2:#c3c2b7; --muted:#898781; --hairline:#2c2c2a; --accent:#3987e5; --code:#141413; }
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 1.25rem 1.5rem 3rem; font-family: system-ui, 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+        color: var(--ink); background: var(--page); line-height: 1.7; }
+      main { max-width: 60rem; margin: 0 auto; }
+      a { color: var(--accent); }
+      header { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: baseline; margin-bottom: 1rem; }
+      h1 { font-size: 1.4rem; margin: 0; }
+      h2 { font-size: 1.15rem; margin: 2rem 0 0.25rem; }
+      h3 { font-size: 1.05rem; margin: 0 0 0.4rem; }
+      .meta, .intro, .lines, .docs { color: var(--ink-2); font-size: 0.9rem; }
+      .card { background: var(--surface); border: 1px solid var(--hairline); border-radius: 0.6rem; padding: 1rem 1.2rem; margin: 0.9rem 0; }
+      .lead { color: var(--ink-2); margin: 0 0 0.6rem; }
+      .anchor { color: var(--muted); text-decoration: none; margin-right: 0.35rem; }
+      code { font-size: 0.85em; padding: 0 0.25rem; border-radius: 0.2rem; background: var(--hairline); }
+      figure.code { margin: 0.8rem 0 0; }
+      figcaption { font-size: 0.85rem; margin-bottom: 0.2rem; }
+      pre { margin: 0; padding: 0.7rem 0.9rem; overflow-x: auto; background: var(--code); border: 1px solid var(--hairline);
+        border-radius: 0.4rem; font-size: 0.8rem; line-height: 1.5; }
+      pre code { padding: 0; background: none; font-size: inherit; }
+      .ln { display: inline-block; color: var(--muted); user-select: none; margin-right: 1rem; text-align: right; }
+      .more { font-size: 0.85rem; color: var(--ink-2); margin-top: 0.2rem; }
+      nav.toc { background: var(--surface); border: 1px solid var(--hairline); border-radius: 0.6rem; padding: 0.6rem 1.2rem; }
+      nav.toc ol { margin: 0.2rem 0; padding-left: 1.4rem; }
+      nav.toc > ol { padding-left: 1rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>コードの読みどころ</h1>
+        <span class="meta"><a href="board.html">← ダッシュボード</a> · このリポジトリ独自の判断が入っているところを、ファイルを開かずに読めるようにしたもの</span>
+      </header>
+      <p class="intro">各項目は <b>何のための仕組みか → どう解いたか → 要のコード</b> の順。コードはソースから抜き出していて、見出しのファイル名から元のファイルを開ける。
+      測った数字の詳しい表は <a href="geoparquet-layout.md">geoparquet-layout.md</a> と <a href="pipeline.md">pipeline.md</a> にある。</p>
+      <nav class="toc" aria-label="目次"><ol><li>配り方 (パイプライン)<ol><li><a href="#remote-zip">zip を落とさずに中身を取る (remote-zip)</a></li><li><a href="#spatial-pack">行を場所で並べ、行グループで切る (STR・場所ごと・段ごと)</a></li><li><a href="#coarse-lod">線の粗い段 — 統合して簡略化した行を「足す」</a></li><li><a href="#quadkey">件数でファイルを割る (適応的な QuadKey)</a></li><li><a href="#tiers">重要度の段と使う条件を「規則・データ」として持つ</a></li><li><a href="#stac-layout">STAC の置き方 — 実データの隣に、Item はまとめて</a></li><li><a href="#stac-geoparquet">Item の一覧も GeoParquet に (stac-geoparquet)</a></li><li><a href="#i18n">英語版のカタログ — 訳の無い日本語はエラー</a></li><li><a href="#building-tiles">引いた表示のための建物のタイル (PMTiles)</a></li><li><a href="#pmtiles">PMTiles をヘッダだけ読んでカタログに載せる</a></li></ol></li><li>使い方 (アプリ)<ol><li><a href="#catalog-load">カタログを読む — まとめ1つと、Item を行番号の範囲で</a></li><li><a href="#files-in-view">表示範囲からファイルを選び、ズームから段を決める</a></li><li><a href="#buildings">建物の出し方 — 全部 / 重要な段だけ (タイル) / 整備範囲</a></li><li><a href="#nearby">周辺検索 — メートルに直してから距離で判定</a></li><li><a href="#gsi-vector">地理院のベクトルタイルを、データだけで描く</a></li><li><a href="#gsi-dem">地理院の標高 (独自形式) を読み込むときに直す</a></li><li><a href="#wkb">DuckDB の返すジオメトリ (WKB) を自前で読む</a></li><li><a href="#draw-shape">データの描き方の共通の形</a></li><li><a href="#export">ブラウザの中で GeoParquet を書き、出典と規約を入れる</a></li><li><a href="#layer-order">一覧の順番を地図の層へ写す</a></li><li><a href="#hover">吹き出しを層ごとの表で1つの仕掛けに</a></li><li><a href="#dev-server">手元の配信をオブジェクトストレージと同じ流儀に (と、R2 の遅さの再現)</a></li><li><a href="#stac-browser">STAC Browser にパッチを1つ当ててビルドする</a></li></ol></li></ol></nav>
+<h2>配り方 (パイプライン)</h2>
+<p class="intro">原典を GeoParquet と STAC に変換して、静的な置き場所 (R2) に置く側。ブラウザが <b>必要な範囲だけを HTTP Range で読める形</b>に整えるのが仕事で、速さの大半はここで決まる。</p>
+<section class="card" id="remote-zip">
+<h3><a class="anchor" href="#remote-zip">#</a>zip を落とさずに中身を取る (remote-zip)</h3>
+<p class="lead">PLATEAU の CityGML は都市ごとの zip (数百MB〜数GB) で配られる。要るのは建物の GML だけなので、全体を落とすのは無駄が大きい。</p>
+<p>zip は<b>末尾に目次 (中央ディレクトリ)</b> があり、各ファイルが何バイト目から始まるかが書いてある。
+HTTP Range で末尾を読み、目次から欲しいファイルの位置だけを取れば、全体を落とさずに済む。</p>
+<p>Rust の <code>zip</code> クレートは <code>Read + Seek</code> を受け取って読むので、<b>Range で取る処理を
+<code>Read + Seek</code> に見せる</b> <code>RangeReader</code> を作った。zip の読み方には手を入れていない。</p>
+<ul>
+<li>続けて読んでいる間はまとめ読みの大きさを伸ばし、離れた場所へ飛ぶと小さく戻す (往復の回数を減らす)。
+ブラウザの DuckDB-WASM も同じ考え方で読んでいる</li>
+<li>パイプラインから切り出した単体のクレート (CLI 付き)。<b>API が無くても Range に応える配信元なら使える</b>のが売り</li>
+</ul>
+
+<figure class="code">
+<figcaption><a href="../crates/remote-zip/src/range.rs">crates/remote-zip/src/range.rs</a> <span class="lines">38〜54 行</span></figcaption>
+<pre><code><span class="ln">38</span>/// `FetchRange` を `Read + Seek` に見せる。読んだ範囲は1つ分だけ手元に置く。
+<span class="ln">39</span>pub struct RangeReader&lt;F: FetchRange&gt; {
+<span class="ln">40</span>    source: F,
+<span class="ln">41</span>    len: u64,
+<span class="ln">42</span>    pos: u64,
+<span class="ln">43</span>    chunk: u64,
+<span class="ln">44</span>    /// 手元にある範囲の開始位置と中身。
+<span class="ln">45</span>    buffer: Option&lt;(u64, Vec&lt;u8&gt;)&gt;,
+<span class="ln">46</span>    /// 前回取った範囲の終端。ここから続けて読んでいれば「順に読んでいる」とみなす。
+<span class="ln">47</span>    last_end: Option&lt;u64&gt;,
+<span class="ln">48</span>    /// まとめ読みの大きさを固定するか (テスト用)。
+<span class="ln">49</span>    fixed_chunk: bool,
+<span class="ln">50</span>    /// 何回 fetch したか。テストと転送量の確認に使う。
+<span class="ln">51</span>    fetches: usize,
+<span class="ln">52</span>    /// 取った合計バイト数。
+<span class="ln">53</span>    fetched_bytes: u64,
+<span class="ln">54</span>}</code></pre>
+</figure>
+<figure class="code">
+<figcaption><a href="../crates/remote-zip/src/range.rs">crates/remote-zip/src/range.rs</a> <span class="lines">121〜135 行</span></figcaption>
+<pre><code><span class="ln">121</span>impl&lt;F: FetchRange&gt; Read for RangeReader&lt;F&gt; {
+<span class="ln">122</span>    fn read(&amp;mut self, out: &amp;mut [u8]) -&gt; io::Result&lt;usize&gt; {
+<span class="ln">123</span>        if self.pos &gt;= self.len || out.is_empty() {
+<span class="ln">124</span>            return Ok(0);
+<span class="ln">125</span>        }
+<span class="ln">126</span>        self.ensure_buffered()
+<span class="ln">127</span>            .map_err(|e| io::Error::other(format!("{e:#}")))?;
+<span class="ln">128</span>        let (start, bytes) = self.buffer.as_ref().expect("ensure_buffered で必ず入る");
+<span class="ln">129</span>        let offset = (self.pos - start) as usize;
+<span class="ln">130</span>        let n = out.len().min(bytes.len() - offset);
+<span class="ln">131</span>        out[..n].copy_from_slice(&amp;bytes[offset..offset + n]);
+<span class="ln">132</span>        self.pos += n as u64;
+<span class="ln">133</span>        Ok(n)
+<span class="ln">134</span>    }
+<span class="ln">135</span>}</code></pre>
+</figure>
+</section>
+<section class="card" id="spatial-pack">
+<h3><a class="anchor" href="#spatial-pack">#</a>行を場所で並べ、行グループで切る (STR・場所ごと・段ごと)</h3>
+<p class="lead">Parquet の統計 (最小・最大) は行グループ単位。変換した直後は全国が1つの行グループに入っていて、1点を調べるだけでもジオメトリ列を丸ごと読む。</p>
+<p>行を <b>STR (Sort-Tile-Recursive)</b> で空間的に並べ、行グループに切る。行グループごとの bbox の統計で、
+画面に掛からない行グループを読み飛ばせる。逆ジオコーディングは全国の行政区域 97.6MB のうち <b>1.5MB</b> で済むようになった。</p>
+<p>建物は「重要度の段 (<code>lod</code>)」も持つので、並べ方を2通り比べた。</p>
+<ul>
+<li><b>段ごと → 場所</b>: 引いた表示 (上の段だけを広く) に向くが、寄った表示で段の数だけ離れた場所を読みに行く</li>
+<li><b>場所ごと → 段</b> (採用、<code>CellFirst</code>): 約1MB ぶんの場所に区切り、その中を段で並べる。寄った表示では同じ場所の全段を続けて読み、引いた表示では要らない段を飛ばす</li>
+</ul>
+<p>行グループの大きさは<b>読み込み1回の重さ</b>で決まる。R2 は1回ごとに約0.45秒待たされ、転送は約2MB/秒なので、
+1回余計に読むのは約0.9MB 余計に読むのと同じ重さ。bbox の列を先頭に置くのも、DuckDB が bbox を読んだあとに
+行グループの頭へ戻らずに済ませるため。</p>
+<p class="docs">関連: <a href="geoparquet-layout.md">GeoParquet の並べ方と読み方 (測った数字・テストで見えていない部分)</a> · <a href="pipeline.md">pipeline.md の「建物の並べ方」(並べ方ごとの表)</a></p>
+<figure class="code">
+<figcaption><a href="../pipeline/src/repack.rs">pipeline/src/repack.rs</a> <span class="lines">181〜212 行</span></figcaption>
+<pre><code><span class="ln">181</span>/// 全行を場所で並べて行グループ1つ分ずつの**場所**に区切り、場所の中を段の小さい順に並べる
+<span class="ln">182</span>/// ([`Layout::CellFirst`])。`lod` 列が無ければ [`pack_by_level`] と同じ。
+<span class="ln">183</span>///
+<span class="ln">184</span>/// 返す区切りは**場所ごと・段ごとの行数**。[`write`] がそこで行グループを切るので、
+<span class="ln">185</span>/// 1つの行グループには1つの段しか入らない (`WHERE lod &lt;= 1` で残りを読み飛ばせる)。
+<span class="ln">186</span>fn pack_by_cell(
+<span class="ln">187</span>    batch: &amp;RecordBatch,
+<span class="ln">188</span>    bboxes: &amp;[Bbox],
+<span class="ln">189</span>    row_group_size: usize,
+<span class="ln">190</span>) -&gt; Result&lt;(Vec&lt;u32&gt;, Vec&lt;usize&gt;)&gt; {
+<span class="ln">191</span>    let Some(levels) = read_levels(batch)? else {
+<span class="ln">192</span>        return pack_by_level(batch, bboxes, row_group_size);
+<span class="ln">193</span>    };
+<span class="ln">194</span>    let mut order = Vec::with_capacity(bboxes.len());
+<span class="ln">195</span>    let mut segments = Vec::new();
+<span class="ln">196</span>    for cell in spatial_pack::pack(bboxes, row_group_size)?.chunks(row_group_size) {
+<span class="ln">197</span>        let mut cell = cell.to_vec();
+<span class="ln">198</span>        // 安定な並べ替えなので、段の中では場所の並び (STR) が保たれる。
+<span class="ln">199</span>        cell.sort_by_key(|&amp;row| levels[row as usize]);
+<span class="ln">200</span>        let mut start = 0;
+<span class="ln">201</span>        for end in 1..=cell.len() {
+<span class="ln">202</span>            let boundary =
+<span class="ln">203</span>                end == cell.len() || levels[cell[end] as usize] != levels[cell[start] as usize];
+<span class="ln">204</span>            if boundary {
+<span class="ln">205</span>                segments.push(end - start);
+<span class="ln">206</span>                start = end;
+<span class="ln">207</span>            }
+<span class="ln">208</span>        }
+<span class="ln">209</span>        order.extend(cell);
+<span class="ln">210</span>    }
+<span class="ln">211</span>    Ok((order, segments))
+<span class="ln">212</span>}</code></pre>
+</figure>
+</section>
+<section class="card" id="coarse-lod">
+<h3><a class="anchor" href="#coarse-lod">#</a>線の粗い段 — 統合して簡略化した行を「足す」</h3>
+<p class="lead">引いた表示でも道路・鉄道を出したい (「寄らないとデータがあるか見えない」のは使いにくい)。全国の国道を原寸で読むと28MBある。</p>
+<p>路線ごとに統合して簡略化した行を、<b>同じファイルの先頭の行グループに足す</b> (<code>lod = 0</code>)。元の行
+(<code>lod = 1</code>) は何も変えない。UI は引いた表示で <code>WHERE lod = 0</code> を投げ、行グループの統計で原寸を読み飛ばす。
+全国の高速道路が 483KB、鉄道が 329KB で描ける。</p>
+<p>どのズームまで粗い段で足りるかは、ファイルに書いた<b>簡略化の許容誤差</b> (100m) から UI が求める
+(<a href="#files-in-view">表示範囲からファイルを選ぶ</a>)。ズームの閾値をどこにも書かない。</p>
+<p>COGP (Cloud Optimized GeoParquet) は「行を段に<b>分配</b>する (各行は1度だけ)」形だが、道路網では行を選ぶと
+網目が途切れ、行ごとに簡略化した列を持つと行数の壁に当たった。そのため「足す」形にした。</p>
+<p class="docs">関連: <a href="pipeline.md">pipeline.md の「COGP を手元のデータで測った」「粗い段」</a></p>
+<figure class="code">
+<figcaption><a href="../pipeline/src/lod.rs">pipeline/src/lod.rs</a> <span class="lines">128〜207 行</span></figcaption>
+<pre><code><span class="ln">128</span>/// 既にあるGeoParquetに粗い段を足して書き直すSQLを組み立てる。
+<span class="ln">129</span>///
+<span class="ln">130</span>/// 粗い段を `lod = 0`、元の行を `lod = 1` として1つのファイルにする。
+<span class="ln">131</span>/// **元の行は何も変えない** (簡略化するのは足す方だけ)。
+<span class="ln">132</span>///
+<span class="ln">133</span>/// 並べ替えはこのあと [`crate::repack`] が段ごとにやり直すので、
+<span class="ln">134</span>/// ここでの行順には意味が無い。
+<span class="ln">135</span>pub fn build_with_coarse_lod_sql(
+<span class="ln">136</span>    input: &amp;str,
+<span class="ln">137</span>    output: &amp;str,
+<span class="ln">138</span>    level: &amp;CoarseLevel,
+<span class="ln">139</span>    geo_metadata_json: &amp;str,
+<span class="ln">140</span>    vintage: &amp;str,
+<span class="ln">141</span>) -&gt; String {
+<span class="ln">142</span>    let escaped_geo = geo_metadata_json.replace('\'', "''");
+<span class="ln">143</span>    let escaped_lod = lod_metadata_json(COARSE_TOLERANCE_M).replace('\'', "''");
+<span class="ln">144</span>    let vintage = vintage.replace('\'', "''");
+<span class="ln">145</span>    let tolerance = tolerance_degrees(COARSE_TOLERANCE_M);
+<span class="ln">146</span>
+<span class="ln">147</span>    let columns = level.columns().join(",\n    ");
+<span class="ln">148</span>    let key = level.merge_key.join(", ");
+<span class="ln">149</span>    // 統合キーと畳む列を1つの並びにする。**畳む列が無いこともある** (送電線・川は
+<span class="ln">150</span>    // キーだけ) ので、別々に書くと末尾にカンマが残って構文エラーになる。
+<span class="ln">151</span>    let grouped = level
+<span class="ln">152</span>        .merge_key
+<span class="ln">153</span>        .iter()
+<span class="ln">154</span>        .map(|name| (*name).to_string())
+<span class="ln">155</span>        .chain(
+<span class="ln">156</span>            level
+<span class="ln">157</span>                .folded
+<span class="ln">158</span>                .iter()
+<span class="ln">159</span>                .map(|(name, expression)| format!("{expression} AS {name}")),
+<span class="ln">160</span>        )
+<span class="ln">161</span>        .collect::&lt;Vec&lt;_&gt;&gt;()
+<span class="ln">162</span>        .join(",\n      ");
+<span class="ln">163</span>    let require = level
+<span class="ln">164</span>        .require
+<span class="ln">165</span>        .map(|condition| format!("\n    WHERE {condition}"))
+<span class="ln">166</span>        .unwrap_or_default();
+<span class="ln">167</span>
+<span class="ln">168</span>    format!(
+<span class="ln">169</span>        "INSTALL spatial; LOAD spatial;
+<span class="ln">170</span>-- 統合は行を抱えるので、順序を保たせずメモリを絞る。
+<span class="ln">171</span>SET preserve_insertion_order = false;
+<span class="ln">172</span>SET memory_limit = '2GB';
+<span class="ln">173</span>COPY (
+<span class="ln">174</span>  -- 粗い段。断片を路線ごとに繋いでから簡略化する。
+<span class="ln">175</span>  SELECT
+<span class="ln">176</span>    {coarse_lod}::UTINYINT AS lod,
+<span class="ln">177</span>    {columns},
+<span class="ln">178</span>    {{
+<span class="ln">179</span>      xmin: ST_XMin(geometry),
+<span class="ln">180</span>      ymin: ST_YMin(geometry),
+<span class="ln">181</span>      xmax: ST_XMax(geometry),
+<span class="ln">182</span>      ymax: ST_YMax(geometry)
+<span class="ln">183</span>    }} AS bbox,
+<span class="ln">184</span>    ST_AsWKB(geometry)::BLOB AS geometry
+<span class="ln">185</span>  FROM (
+<span class="ln">186</span>    SELECT
+<span class="ln">187</span>      {grouped},
+<span class="ln">188</span>      ST_Simplify(ST_LineMerge(ST_Collect(list(geometry))), {tolerance}) AS geometry
+<span class="ln">189</span>    FROM read_parquet('{input}'){require}
+<span class="ln">190</span>    GROUP BY {key}
+<span class="ln">191</span>  )
+<span class="ln">192</span>  -- 簡略化で潰れて消えることがあるので、空は入れない。
+<span class="ln">193</span>  WHERE NOT ST_IsEmpty(geometry)
+<span class="ln">194</span>
+<span class="ln">195</span>  UNION ALL
+<span class="ln">196</span>
+<span class="ln">197</span>  -- 原寸。**元の行をそのまま通す。**
+<span class="ln">198</span>  SELECT
+<span class="ln">199</span>    {exact_lod}::UTINYINT AS lod,
+<span class="ln">200</span>    {columns},
+<span class="ln">201</span>    bbox,
+<span class="ln">202</span>    ST_AsWKB(geometry)::BLOB AS geometry
+<span class="ln">203</span>  FROM read_parquet('{input}')
+<span class="ln">204</span>) TO '{output}' (FORMAT PARQUET, KV_METADATA {{
+<span class="ln">205</span>  geo: '{escaped_geo}',
+<span class="ln">206</span>  '{lod_key}': '{escaped_lod}',
+<span class="ln">207</span>  '{vintage_key}': '{vintage}'</code></pre><div class="more">… 続きは <a href="../pipeline/src/lod.rs">pipeline/src/lod.rs</a> で</div>
+</figure>
+</section>
+<section class="card" id="quadkey">
+<h3><a class="anchor" href="#quadkey">#</a>件数でファイルを割る (適応的な QuadKey)</h3>
+<p class="lead">Overture の建物は日本付近で7,405万棟。同じ細かさで切ると、都心のタイルはメモリに載らず、過疎地は数棟のファイルが数千に増える。</p>
+<p>ズーム7の QuadKey から始め、<b>40万棟を超えるタイルだけを4つに割る</b> (最大ズーム12)。返すキーは互いに
+接頭辞にならないので、どの建物もちょうど1つのファイルに入る。392ファイルになった。</p>
+<p>QuadKey は Rust (どのタイルに入るか) と SQL (DuckDB で振り分ける) の2通りで書いていて、テストで両者の一致を確かめる。
+地域メッシュは日本の基準なので、世界のデータである Overture には使わない。</p>
+
+<figure class="code">
+<figcaption><a href="../pipeline/src/quadkey.rs">pipeline/src/quadkey.rs</a> <span class="lines">91〜143 行</span></figcaption>
+<pre><code><span class="ln"> 91</span>/// **件数に応じて細かさを変えたタイルの組** (適応的な四分木) を選ぶ。
+<span class="ln"> 92</span>///
+<span class="ln"> 93</span>/// 同じズームで切ると、建物の密度の差が大きすぎる。実測 (日本付近の Overture 建物
+<span class="ln"> 94</span>/// 7,405万棟) でズーム10でも最大195万棟のタイルがあり、`repack` はファイルを丸ごと
+<span class="ln"> 95</span>/// メモリに読む (1棟約1.1KB) ので2GBを超える。一方で細かくすると、過疎地は数棟の
+<span class="ln"> 96</span>/// ファイルが数千に増える。そこで**多いタイルだけ割る。**
+<span class="ln"> 97</span>///
+<span class="ln"> 98</span>/// - `counts`: ズーム `max_zoom` の QuadKey ごとの件数 (0件のキーは入れない)
+<span class="ln"> 99</span>/// - `min_zoom` から始め、件数が `max_rows` を超えるタイルを4つに割る。
+<span class="ln">100</span>///   `max_zoom` まで割っても超えるものはそのまま (それ以上は割らない)
+<span class="ln">101</span>///
+<span class="ln">102</span>/// 返すキーは**互いに接頭辞にならない** (どの建物もちょうど1つのタイルに入る)。
+<span class="ln">103</span>pub fn choose_tiles(
+<span class="ln">104</span>    counts: &amp;std::collections::BTreeMap&lt;String, u64&gt;,
+<span class="ln">105</span>    min_zoom: usize,
+<span class="ln">106</span>    max_zoom: usize,
+<span class="ln">107</span>    max_rows: u64,
+<span class="ln">108</span>) -&gt; Vec&lt;String&gt; {
+<span class="ln">109</span>    use std::collections::BTreeMap;
+<span class="ln">110</span>    // 接頭辞ごとの合計。
+<span class="ln">111</span>    let mut totals: BTreeMap&lt;&amp;str, u64&gt; = BTreeMap::new();
+<span class="ln">112</span>    for (key, count) in counts {
+<span class="ln">113</span>        assert_eq!(
+<span class="ln">114</span>            key.len(),
+<span class="ln">115</span>            max_zoom,
+<span class="ln">116</span>            "件数は max_zoom のキーで渡すこと: {key}"
+<span class="ln">117</span>        );
+<span class="ln">118</span>        for len in min_zoom..=max_zoom {
+<span class="ln">119</span>            *totals.entry(&amp;key[..len]).or_default() += count;
+<span class="ln">120</span>        }
+<span class="ln">121</span>    }
+<span class="ln">122</span>    let mut chosen = Vec::new();
+<span class="ln">123</span>    let mut stack: Vec&lt;String&gt; = totals
+<span class="ln">124</span>        .keys()
+<span class="ln">125</span>        .filter(|key| key.len() == min_zoom)
+<span class="ln">126</span>        .map(|key| (*key).to_string())
+<span class="ln">127</span>        .collect();
+<span class="ln">128</span>    while let Some(key) = stack.pop() {
+<span class="ln">129</span>        let total = totals.get(key.as_str()).copied().unwrap_or(0);
+<span class="ln">130</span>        if total == 0 {
+<span class="ln">131</span>            continue;
+<span class="ln">132</span>        }
+<span class="ln">133</span>        if total &lt;= max_rows || key.len() == max_zoom {
+<span class="ln">134</span>            chosen.push(key);
+<span class="ln">135</span>        } else {
+<span class="ln">136</span>            for digit in ['0', '1', '2', '3'] {
+<span class="ln">137</span>                stack.push(format!("{key}{digit}"));
+<span class="ln">138</span>            }
+<span class="ln">139</span>        }
+<span class="ln">140</span>    }
+<span class="ln">141</span>    chosen.sort();
+<span class="ln">142</span>    chosen
+<span class="ln">143</span>}</code></pre>
+</figure>
+</section>
+<section class="card" id="tiers">
+<h3><a class="anchor" href="#tiers">#</a>重要度の段と使う条件を「規則・データ」として持つ</h3>
+<p class="lead">建物を「公共施設 / 商業・業務 / 住宅・その他」に分けたい。PLATEAU の用途は19種類、Overture の種別は語彙が違う。</p>
+<p>段は<b>列ではなく規則</b>としてカタログに載せる (<code>duck:tiers</code>)。同じ規則から、SQL の式
+(<code>rank_sql</code>) と UI の式 (<code>tierExpression</code>) を作る。一覧での絞り込み・色分け・間引きが同じ規則で動く。</p>
+<p>使う条件 (商用可か・出典表示・改変の明記・継承) も <code>duck:terms</code> としてデータで持ち、カードと出典の画面に出す。
+<b>規約の本文が正本で、これは要約</b>。画面には必ず本文へのリンクを添える。</p>
+<p>注意: 間引きのための <code>lod</code> 列だけはファイルに焼き込んでいる。段の規則を変えたら <code>add_building_lod</code> を掛け直す。</p>
+
+<figure class="code">
+<figcaption><a href="../pipeline/src/catalog.rs">pipeline/src/catalog.rs</a> <span class="lines">214〜237 行</span></figcaption>
+<pre><code><span class="ln">214</span>/// 段の**順位** (0がいちばん重要) を求めるSQLの式。
+<span class="ln">215</span>///
+<span class="ln">216</span>/// UI (`tierExpression`) は同じ規則から段の ID を求める。**規則は1つで、
+<span class="ln">217</span>/// 式の形だけが違う** — こちらは並べ替え (間引きの段) に使うので順位を返す。
+<span class="ln">218</span>pub fn rank_sql(&amp;self) -&gt; String {
+<span class="ln">219</span>    let quote = |value: &amp;str| format!("'{}'", value.replace('\'', "''"));
+<span class="ln">220</span>    let mut whens = Vec::new();
+<span class="ln">221</span>    if self.named_first {
+<span class="ln">222</span>        whens.push("WHEN name IS NOT NULL THEN 0".to_string());
+<span class="ln">223</span>    }
+<span class="ln">224</span>    let (_, rest) = self
+<span class="ln">225</span>        .tiers
+<span class="ln">226</span>        .split_last()
+<span class="ln">227</span>        .expect("段が1つも無い規則は validate_tiers で弾いている");
+<span class="ln">228</span>    for (rank, tier) in rest.iter().enumerate() {
+<span class="ln">229</span>        let values = tier.values.iter().map(|v| quote(v)).collect::&lt;Vec&lt;_&gt;&gt;();
+<span class="ln">230</span>        whens.push(format!(
+<span class="ln">231</span>            "WHEN {} IN ({}) THEN {rank}",
+<span class="ln">232</span>            self.column,
+<span class="ln">233</span>            values.join(", ")
+<span class="ln">234</span>        ));
+<span class="ln">235</span>    }
+<span class="ln">236</span>    format!("CASE {} ELSE {} END", whens.join(" "), self.tiers.len() - 1)
+<span class="ln">237</span>}</code></pre>
+</figure>
+</section>
+<section class="card" id="stac-layout">
+<h3><a class="anchor" href="#stac-layout">#</a>STAC の置き方 — 実データの隣に、Item はまとめて</h3>
+<p class="lead">データは10の出所・32の Collection・760ファイル。カタログの置き方しだいで、読む回数も、他の道具での読みやすさも変わる。</p>
+<ul>
+<li><b>出所ごとのディレクトリに、実データと Collection の文書を一緒に置く</b> (<code>plateau/</code>・<code>overture/</code> など)。
+ルートは <code>catalog.json</code> だけで、その下に出所ごとのサブカタログ。1つの出所だけを上げ直せる</li>
+<li><b>Item を1つずつの JSON にしない。</b>Item は stac-geoparquet 1つにまとめ、Collection はそれをアセット (<code>roles: stac-items</code>) で指す</li>
+<li>STAC に無い概念 (種別・段の規則・使う条件・出典の文言・版) は <code>duck:*</code> の独自項目で持つ。
+地図の道具が読めるリンク (<code>rel: pmtiles</code>・<code>xyz</code>) は標準の拡張 (web-map-links) で書く</li>
+<li>相対リンクは<b>その文書からの相対</b>。起点からのパスで書くと、仕様どおりに解決する道具 (STAC Browser など) で壊れる</li>
+</ul>
+
+<figure class="code">
+<figcaption><a href="../pipeline/src/stac.rs">pipeline/src/stac.rs</a> <span class="lines">110〜121 行</span></figcaption>
+<pre><code><span class="ln">110</span>/// `dir` にある Collection から、Item をまとめた stac-geoparquet への相対リンク。
+<span class="ln">111</span>///
+<span class="ln">112</span>/// **Item は全 Collection 分を1つの Parquet にまとめる** ([`crate::stac_geoparquet`])。
+<span class="ln">113</span>/// 以前は Collection ごとに ItemCollection の JSON (`*-items.json`) を置いていた。
+<span class="ln">114</span>fn items_href(dir: &amp;str) -&gt; String {
+<span class="ln">115</span>    let file = crate::stac_geoparquet::ITEMS_FILE;
+<span class="ln">116</span>    if dir.is_empty() {
+<span class="ln">117</span>        file.to_string()
+<span class="ln">118</span>    } else {
+<span class="ln">119</span>        format!("../{file}")
+<span class="ln">120</span>    }
+<span class="ln">121</span>}</code></pre>
+</figure>
+</section>
+<section class="card" id="stac-geoparquet">
+<h3><a class="anchor" href="#stac-geoparquet">#</a>Item の一覧も GeoParquet に (stac-geoparquet)</h3>
+<p class="lead">Item (ファイル1つの説明) は761件。Collection ごとの JSON にすると、起動時に何十回も読み込む。</p>
+<p>Item を1つの stac-geoparquet にまとめ、<b>Collection ごとに行グループを分ける</b>。画面は Collection を
+<code>file_row_number</code> の範囲で読む (<a href="#catalog-load">カタログを読む</a>)。</p>
+<p><b>Item の多い Collection を前に、少ないものをフッターの隣に置く。</b>DuckDB-WASM は 16KB 単位で取り、取ったブロックは
+使い回すので、起動時に要る行政区域のような1〜2件の Collection はフッターと同じブロックで読める。</p>
+
+<figure class="code">
+<figcaption><a href="../pipeline/src/stac_geoparquet.rs">pipeline/src/stac_geoparquet.rs</a> <span class="lines">194〜223 行</span></figcaption>
+<pre><code><span class="ln">194</span>/// Item を stac-geoparquet にして書く。**Collection ごとに行グループを分ける。**
+<span class="ln">195</span>///
+<span class="ln">196</span>/// **Item の多い Collection を前に、少ないものを後ろ (フッターの隣) に置く。** 読む側
+<span class="ln">197</span>/// (DuckDB-WASM) は 16KB のブロック単位で取り、取ったブロックは使い回す。起動時に要るのは
+<span class="ln">198</span>/// 行政区域や整備範囲のような1〜2件の Collection なので、フッターと同じブロックに入れておけば
+<span class="ln">199</span>/// 読み足さずに済む。件数が同じなら渡された順。
+<span class="ln">200</span>pub fn write(path: &amp;Path, items: &amp;[Value]) -&gt; Result&lt;()&gt; {
+<span class="ln">201</span>    let mut fields = json_fields();
+<span class="ln">202</span>    fields.push(Field::new("geometry", DataType::Binary, true));
+<span class="ln">203</span>    fields.push(Field::new("bbox", DataType::Struct(bbox_fields()), true));
+<span class="ln">204</span>    let schema = Arc::new(Schema::new(fields));
+<span class="ln">205</span>
+<span class="ln">206</span>    // Collection ごとに束ねる (出てきた順を保つ)。
+<span class="ln">207</span>    let mut groups: Vec&lt;(String, Vec&lt;&amp;Value&gt;)&gt; = Vec::new();
+<span class="ln">208</span>    for item in items {
+<span class="ln">209</span>        let collection = item["collection"]
+<span class="ln">210</span>            .as_str()
+<span class="ln">211</span>            .context("Item に collection がありません")?;
+<span class="ln">212</span>        match groups.last_mut() {
+<span class="ln">213</span>            Some((id, members)) if id == collection =&gt; members.push(item),
+<span class="ln">214</span>            _ =&gt; {
+<span class="ln">215</span>                if groups.iter().any(|(id, _)| id == collection) {
+<span class="ln">216</span>                    bail!(
+<span class="ln">217</span>                        "{collection} の Item が離れて並んでいます (Collection ごとにまとめて渡すこと)"
+<span class="ln">218</span>                    );
+<span class="ln">219</span>                }
+<span class="ln">220</span>                groups.push((collection.to_string(), vec![item]));
+<span class="ln">221</span>            }
+<span class="ln">222</span>        }
+<span class="ln">223</span>    }</code></pre><div class="more">… 続きは <a href="../pipeline/src/stac_geoparquet.rs">pipeline/src/stac_geoparquet.rs</a> で</div>
+</figure>
+</section>
+<section class="card" id="i18n">
+<h3><a class="anchor" href="#i18n">#</a>英語版のカタログ — 訳の無い日本語はエラー</h3>
+<p class="lead">カタログの題名・説明を英語でも出したい。訳し忘れは画面で気付きにくい。</p>
+<p>日本語の文書から英語の文書を作るとき、題名・説明・名前を対訳表で置き換え、<b>訳の無い日本語が残ったらエラーで止める</b>。
+出典の文言 (規約が書き方を指定している) と語彙 (データの中身) は訳さない。STAC の Language extension で
+日本語版と英語版を結ぶ。</p>
+
+<figure class="code">
+<figcaption><a href="../pipeline/src/stac_i18n.rs">pipeline/src/stac_i18n.rs</a> <span class="lines">419〜453 行</span></figcaption>
+<pre><code><span class="ln">419</span>/// 題名・説明・名前を英語にする。**訳の無い日本語が残ったらエラー**。
+<span class="ln">420</span>fn translate(value: &amp;mut Value, table: &amp;BTreeMap&lt;&amp;str, &amp;str&gt;, at: &amp;str) -&gt; Result&lt;()&gt; {
+<span class="ln">421</span>    match value {
+<span class="ln">422</span>        Value::Object(map) =&gt; {
+<span class="ln">423</span>            for (key, child) in map.iter_mut() {
+<span class="ln">424</span>                // 出典の文言は規約が書き方を指定しているので訳さない。語彙はデータの中身。
+<span class="ln">425</span>                if key == "duck:attribution" || key == "summaries" {
+<span class="ln">426</span>                    continue;
+<span class="ln">427</span>                }
+<span class="ln">428</span>                let translatable = matches!(
+<span class="ln">429</span>                    key.as_str(),
+<span class="ln">430</span>                    "title" | "description" | "name" | "duck:vintage"
+<span class="ln">431</span>                );
+<span class="ln">432</span>                match child {
+<span class="ln">433</span>                    Value::String(text) if translatable &amp;&amp; has_japanese(text) =&gt; {
+<span class="ln">434</span>                        let Some(english) = table.get(text.as_str()) else {
+<span class="ln">435</span>                            bail!(
+<span class="ln">436</span>                                "{at}: 英語の訳がありません (stac_i18n.rs の EN に足すこと): {text}"
+<span class="ln">437</span>                            );
+<span class="ln">438</span>                        };
+<span class="ln">439</span>                        *text = (*english).to_string();
+<span class="ln">440</span>                    }
+<span class="ln">441</span>                    _ =&gt; translate(child, table, at)?,
+<span class="ln">442</span>                }
+<span class="ln">443</span>            }
+<span class="ln">444</span>        }
+<span class="ln">445</span>        Value::Array(items) =&gt; {
+<span class="ln">446</span>            for child in items {
+<span class="ln">447</span>                translate(child, table, at)?;
+<span class="ln">448</span>            }
+<span class="ln">449</span>        }
+<span class="ln">450</span>        _ =&gt; {}
+<span class="ln">451</span>    }
+<span class="ln">452</span>    Ok(())
+<span class="ln">453</span>}</code></pre>
+</figure>
+</section>
+<section class="card" id="building-tiles">
+<h3><a class="anchor" href="#building-tiles">#</a>引いた表示のための建物のタイル (PMTiles)</h3>
+<p class="lead">引いた表示 (段で間引くズーム) を GeoParquet で読むと、都市ごとのファイルを十数個開き、R2 では1分近くかかった。</p>
+<p>最後の段 (住宅・その他) を除いた建物を、出所ごとに <b>PMTiles 1つ</b>にする (PLATEAU 123MB・Overture 39MB)。
+段 k はズーム 12+k から入れる。MapLibre はタイルを並列に取り、タイルは描く用に簡略化されて量が少ないので、
+東京駅 z13 が <b>39秒 → 10秒</b> になった。</p>
+<ul>
+<li>元の GeoParquet は都市ごとのまま (寄った表示・周辺検索・保存はそちら)。<b>描くことと調べることを別の形式に分けた</b></li>
+<li>どの段まで入っているかは、タイル自身のメタデータ (tilestats の <code>lod</code> の最大) からカタログが読む</li>
+<li>用途の列は出所で名前が違うので、タイルでは <code>category</code> にそろえる</li>
+</ul>
+<p>その前に試した「概観 (上の段だけを都道府県ごとに集めた GeoParquet)」は、「1つの出所 = 1つのファイル」が崩れたうえに
+タイルより遅かったのでやめた。</p>
+<p class="docs">関連: <a href="format-survey.md">他の形式の調査と、タイルを測った結果</a></p>
+<figure class="code">
+<figcaption><a href="../pipeline/src/bin/build_building_tiles.rs">pipeline/src/bin/build_building_tiles.rs</a> <span class="lines">65〜114 行</span></figcaption>
+<pre><code><span class="ln"> 65</span>fn build_family(dir: &amp;Path, family: &amp;Family) -&gt; Result&lt;()&gt; {
+<span class="ln"> 66</span>    let source_dir = dir.join(family.dir);
+<span class="ln"> 67</span>    let mut inputs: Vec&lt;PathBuf&gt; = std::fs::read_dir(&amp;source_dir)
+<span class="ln"> 68</span>        .with_context(|| format!("読めません: {}", source_dir.display()))?
+<span class="ln"> 69</span>        .filter_map(|entry| entry.ok().map(|e| e.path()))
+<span class="ln"> 70</span>        .filter(|path| {
+<span class="ln"> 71</span>            path.extension().is_some_and(|ext| ext == "parquet")
+<span class="ln"> 72</span>                &amp;&amp; path
+<span class="ln"> 73</span>                    .file_stem()
+<span class="ln"> 74</span>                    .and_then(|stem| stem.to_str())
+<span class="ln"> 75</span>                    .and_then(|stem| stem.strip_prefix(family.prefix))
+<span class="ln"> 76</span>                    // 数字だけのものが元のファイル (整備範囲などを拾わない)。
+<span class="ln"> 77</span>                    .is_some_and(|code| {
+<span class="ln"> 78</span>                        !code.is_empty() &amp;&amp; code.bytes().all(|b| b.is_ascii_digit())
+<span class="ln"> 79</span>                    })
+<span class="ln"> 80</span>        })
+<span class="ln"> 81</span>        .collect();
+<span class="ln"> 82</span>    inputs.sort();
+<span class="ln"> 83</span>    let Some(first) = inputs.first() else {
+<span class="ln"> 84</span>        println!("{}: 元のファイルがありません", source_dir.display());
+<span class="ln"> 85</span>        return Ok(());
+<span class="ln"> 86</span>    };
+<span class="ln"> 87</span>
+<span class="ln"> 88</span>    let stem = first
+<span class="ln"> 89</span>        .file_stem()
+<span class="ln"> 90</span>        .and_then(|s| s.to_str())
+<span class="ln"> 91</span>        .unwrap_or_default();
+<span class="ln"> 92</span>    let tiers =
+<span class="ln"> 93</span>        tiers_for_file(stem).with_context(|| format!("重要度の段の規則がありません: {stem}"))?;
+<span class="ln"> 94</span>    if tiers.tiers.len() &lt; 2 {
+<span class="ln"> 95</span>        bail!("段が1つしかないのでタイルは作れません: {stem}");
+<span class="ln"> 96</span>    }
+<span class="ln"> 97</span>    // **最後の段 (住宅・その他) を除く。** 量の大半はそこ (PLATEAU で 3.8GB のうち 3.4GB)。
+<span class="ln"> 98</span>    let lod_max = tiers.tiers.len() - 2;
+<span class="ln"> 99</span>    for input in &amp;inputs {
+<span class="ln">100</span>        if geoparquet::read_key_value(input, "duck:lod_by_tier")?.is_none() {
+<span class="ln">101</span>            bail!(
+<span class="ln">102</span>                "段が付いていません (先に add_building_lod を流す): {}",
+<span class="ln">103</span>                input.display()
+<span class="ln">104</span>            );
+<span class="ln">105</span>        }
+<span class="ln">106</span>    }
+<span class="ln">107</span>
+<span class="ln">108</span>    let output = source_dir.join(format!("{}{TILES_WORD}.pmtiles", family.prefix));
+<span class="ln">109</span>    // **拡張子は `.fgb` で終える。** tippecanoe は拡張子で形式を決める (違うと GeoJSON として読み、
+<span class="ln">110</span>    // 「有効な形が無い」で止まる)。
+<span class="ln">111</span>    let staged = output.with_extension("writing.fgb");
+<span class="ln">112</span>    let list = inputs
+<span class="ln">113</span>        .iter()
+<span class="ln">114</span>        .map(|path| {</code></pre><div class="more">… 続きは <a href="../pipeline/src/bin/build_building_tiles.rs">pipeline/src/bin/build_building_tiles.rs</a> で</div>
+</figure>
+</section>
+<section class="card" id="pmtiles">
+<h3><a class="anchor" href="#pmtiles">#</a>PMTiles をヘッダだけ読んでカタログに載せる</h3>
+<p class="lead">地理院の最適化ベクトルタイルは 16.9GB の PMTiles 1つ。複製はせず、カタログに載せて指すだけにしたい。</p>
+<p>PMTiles は先頭127バイトのヘッダに、メタデータ (層の一覧・ズーム・範囲) の位置が書いてある。<b>ヘッダとメタデータの
+7KB弱だけを Range で読めば</b>カタログを作れる。GeoParquet のフッターから列を読むのと同じ考え方。</p>
+<p>外部のものは取ったメタデータをスナップショットとしてリポジトリに置き、カタログを作るときはネットワークに触らない。
+テーマ (人向けのまとまり) が層をちょうど覆っていることも検証する。自前の建物のタイルも同じ読み方で読む。</p>
+
+<figure class="code">
+<figcaption><a href="../pipeline/src/pmtiles.rs">pipeline/src/pmtiles.rs</a> <span class="lines">174〜189 行</span></figcaption>
+<pre><code><span class="ln">174</span>/// 手元の PMTiles のヘッダとメタデータを読む (配信ディレクトリに置いたものをカタログに載せるとき)。
+<span class="ln">175</span>pub fn read_local(path: &amp;std::path::Path) -&gt; Result&lt;(Header, Metadata)&gt; {
+<span class="ln">176</span>    use std::io::{Seek, SeekFrom};
+<span class="ln">177</span>    let mut file =
+<span class="ln">178</span>        std::fs::File::open(path).with_context(|| format!("開けません: {}", path.display()))?;
+<span class="ln">179</span>    let mut head = vec![0u8; HEADER_LEN as usize];
+<span class="ln">180</span>    file.read_exact(&amp;mut head)
+<span class="ln">181</span>        .with_context(|| format!("ヘッダを読めません: {}", path.display()))?;
+<span class="ln">182</span>    let header = parse_header(&amp;head)?;
+<span class="ln">183</span>    let mut bytes = vec![0u8; header.metadata_length as usize];
+<span class="ln">184</span>    file.seek(SeekFrom::Start(header.metadata_offset))?;
+<span class="ln">185</span>    file.read_exact(&amp;mut bytes)
+<span class="ln">186</span>        .with_context(|| format!("メタデータを読めません: {}", path.display()))?;
+<span class="ln">187</span>    let metadata = parse_metadata(&amp;bytes, header.internal_compression)?;
+<span class="ln">188</span>    Ok((header, metadata))
+<span class="ln">189</span>}</code></pre>
+</figure>
+</section>
+<h2>使い方 (アプリ)</h2>
+<p class="intro">ブラウザの中で DuckDB-WASM が GeoParquet を Range で読み、MapLibre で描く側。<b>読む回数と量を減らす</b>工夫と、カタログ (STAC) から画面を組む仕組み。</p>
+<section class="card" id="catalog-load">
+<h3><a class="anchor" href="#catalog-load">#</a>カタログを読む — まとめ1つと、Item を行番号の範囲で</h3>
+<p class="lead">カタログを文書ごとに辿ると、起動だけで3段・43回の読み込みになっていた。</p>
+<p>起動時は<b>まとめ (<code>collections.json</code>) 1つ</b>だけを読み、そこから Collection を組み立てる。
+相対リンクは「その文書からの相対」で解決する (起点からのパスにすると、仕様どおりに解決する道具で壊れる)。</p>
+<p>Item は stac-geoparquet から、<b>その Collection の行グループだけ</b>を読む。行グループの統計で Collection の名前を比べたいが、
+DuckDB は文字列の統計を頭の数文字でしか比べないため、<code>parquet_metadata</code> から Collection ごとの行番号の範囲を求め、
+<code>file_row_number</code> で絞る。</p>
+
+<figure class="code">
+<figcaption><a href="../web/src/lib/duckdb.ts">web/src/lib/duckdb.ts</a> <span class="lines">194〜220 行</span></figcaption>
+<pre><code><span class="ln">194</span>const collectionRows = (file: string) =&gt; {
+<span class="ln">195</span>  let ranges = rowRanges.get(file);
+<span class="ln">196</span>  if (!ranges) {
+<span class="ln">197</span>    ranges = conn
+<span class="ln">198</span>      .query(
+<span class="ln">199</span>        `SELECT row_group_id, row_group_num_rows AS n, stats_min_value AS lo, stats_max_value AS hi
+<span class="ln">200</span>         FROM parquet_metadata('${file}') WHERE path_in_schema = 'collection' ORDER BY row_group_id;`,
+<span class="ln">201</span>      )
+<span class="ln">202</span>      .then((result) =&gt; {
+<span class="ln">203</span>        const found = new Map&lt;string, [number, number]&gt;();
+<span class="ln">204</span>        let start = 0;
+<span class="ln">205</span>        for (const row of result.toArray()) {
+<span class="ln">206</span>          const end = start + Number(row.n);
+<span class="ln">207</span>          // 1つの行グループに1つの Collection だけのときに使う (混ざっていれば使わない)。
+<span class="ln">208</span>          if (row.lo !== null &amp;&amp; row.lo === row.hi) {
+<span class="ln">209</span>            const known = found.get(row.lo);
+<span class="ln">210</span>            // 行グループの上限を超えて2つに分かれた Collection は、続きとしてつなぐ。
+<span class="ln">211</span>            found.set(row.lo, known &amp;&amp; known[1] === start ? [known[0], end] : [start, end]);
+<span class="ln">212</span>          }
+<span class="ln">213</span>          start = end;
+<span class="ln">214</span>        }
+<span class="ln">215</span>        return found;
+<span class="ln">216</span>      });
+<span class="ln">217</span>    rowRanges.set(file, ranges);
+<span class="ln">218</span>  }
+<span class="ln">219</span>  return ranges;
+<span class="ln">220</span>};</code></pre>
+</figure>
+</section>
+<section class="card" id="files-in-view">
+<h3><a class="anchor" href="#files-in-view">#</a>表示範囲からファイルを選び、ズームから段を決める</h3>
+<p class="lead">DuckDB は渡されたファイルを全部開く (1つにつき数回の往復)。PLATEAU だけで306ファイルある。</p>
+<p><b>カタログを空間の索引として使う。</b>Item の bbox と画面を比べ、重なるファイルだけを DuckDB に渡す。
+収録範囲が分からないファイルは落とさない (判断材料が無いので読む)。</p>
+<p>線の粗い段を使うズームは、カタログにある許容誤差から求める: 誤差が2画素以下に収まるズームまでは粗い段で足りる。</p>
+
+<figure class="code">
+<figcaption><a href="../web/src/lib/sources.ts">web/src/lib/sources.ts</a> <span class="lines">42〜52 行</span></figcaption>
+<pre><code><span class="ln">42</span>/** 表示範囲に重なるファイル。**重ならないファイルは読まない** (行グループの統計より手前で落とす)。 */
+<span class="ln">43</span>export function filesInView(
+<span class="ln">44</span>  source: { files: ItemFile[] },
+<span class="ln">45</span>  bounds: ViewBounds,
+<span class="ln">46</span>): string[] {
+<span class="ln">47</span>  const overlapping = source.files.filter(
+<span class="ln">48</span>    // 収録範囲が分からないファイルは落とさない (判断材料が無いので読む)。
+<span class="ln">49</span>    ({ bbox }) =&gt; !bbox || bboxOverlaps(bbox, bounds),
+<span class="ln">50</span>  );
+<span class="ln">51</span>  return overlapping.map(({ file }) =&gt; file);
+<span class="ln">52</span>}</code></pre>
+</figure>
+<figure class="code">
+<figcaption><a href="../web/src/lib/sources.ts">web/src/lib/sources.ts</a> <span class="lines">270〜284 行</span></figcaption>
+<pre><code><span class="ln">270</span>/**
+<span class="ln">271</span> * 許容誤差 `toleranceM` で簡略化したものが使えるのは、どのズームまでか。
+<span class="ln">272</span> *
+<span class="ln">273</span> * **誤差が2px以内なら使う。** 100mの誤差はズーム10で0.8px、11で1.6px、12で3.2px
+<span class="ln">274</span> * なので、100mの段はズーム11まで。線の太さが2px前後あるので、2px以内のずれは
+<span class="ln">275</span> * 線の中に収まって見えない。
+<span class="ln">276</span> *
+<span class="ln">277</span> * **ズーム閾値を書かずにここで決める**のが肝。データ側の誤差が変われば
+<span class="ln">278</span> * 切り替わるズームも自動で追従する。
+<span class="ln">279</span> */
+<span class="ln">280</span>export function coarseLodUntilZoom(toleranceM: number): number {
+<span class="ln">281</span>  let zoom = 0;
+<span class="ln">282</span>  while (zoom &lt; 24 &amp;&amp; toleranceM / metersPerPixel(zoom + 1) &lt;= 2) zoom += 1;
+<span class="ln">283</span>  return zoom;
+<span class="ln">284</span>}</code></pre>
+</figure>
+</section>
+<section class="card" id="buildings">
+<h3><a class="anchor" href="#buildings">#</a>建物の出し方 — 全部 / 重要な段だけ (タイル) / 整備範囲</h3>
+<p class="lead">東京駅のズーム13を全部描くと22万棟・31MB。引くほど画面の面積は4倍ずつ増える。</p>
+<p><b>1ズーム引くごとに1段減らす</b> (表示量「標準」なら z15〜 全部、z14 公共施設と商業・業務、z13 公共施設、それより引くと整備範囲の1kmメッシュ)。
+<b>どこまで出しているかを必ず言う</b> (黙って減らすと「住宅が無い」と読まれる)。</p>
+<p>段で間引くズームでは、タイルに入っている段なら GeoParquet を問い合わせずに<b>タイルの層</b>を出す。タイルは数えられないので、
+件数の代わりに「表示しています · 公共施設のみ」と段だけを言う。</p>
+<ul>
+<li>絞り込み (高さ・用途・段) は、問い合わせと同じ条件をスタイルの filter で書く</li>
+<li>塗りは GeoJSON の層と同じ規則 (<code>BUILDING_COLOR_BY_*</code>) から作る。出所の番号と段の順位をタイルの属性に置き換えるだけ</li>
+</ul>
+
+<figure class="code">
+<figcaption><a href="../web/src/ui/layers/buildings.ts">web/src/ui/layers/buildings.ts</a> <span class="lines">141〜158 行</span></figcaption>
+<pre><code><span class="ln">141</span>/**
+<span class="ln">142</span> * このズームで建物をどこまで出すか。`'all'` = 全部、数字 = その順位の段まで (間引き)、
+<span class="ln">143</span> * `null` = 建物は出さない (整備範囲を出すか、寄れと言う)。
+<span class="ln">144</span> *
+<span class="ln">145</span> * **1ズーム引くごとに1段減らす。** 画面の面積は1ズームで4倍になるので、
+<span class="ln">146</span> * 段を1つ落とすことで読む量を抑える。実測 (東京駅・1280×720):
+<span class="ln">147</span> * z13 で公共施設だけなら1.0万棟・1.9MB (全部なら22万棟・31MB)、
+<span class="ln">148</span> * z14 で商業・業務までなら1.7万棟・2.5MB。
+<span class="ln">149</span> * 段の列 (`lod_column`) を持たない出所は間引けないので、全部か無しか。
+<span class="ln">150</span> */
+<span class="ln">151</span>const buildingDepth = (source: BuildingSource, zoom: number): 'all' | number | null =&gt; {
+<span class="ln">152</span>  const steps = Math.ceil(ctx.detail().buildingsMinZoom - zoom);
+<span class="ln">153</span>  if (steps &lt;= 0) return 'all';
+<span class="ln">154</span>  const tiers = source.tiers;
+<span class="ln">155</span>  if (!tiers?.lod_column) return null;
+<span class="ln">156</span>  const rank = tiers.tiers.length - 1 - steps;
+<span class="ln">157</span>  return rank &gt;= 0 ? rank : null;
+<span class="ln">158</span>};</code></pre>
+</figure>
+<figure class="code">
+<figcaption><a href="../web/src/ui/layers/buildings.ts">web/src/ui/layers/buildings.ts</a> <span class="lines">102〜121 行</span></figcaption>
+<pre><code><span class="ln">102</span>/**
+<span class="ln">103</span> * タイルの絞り込み。問い合わせ (`fetchBuildingsInView`) と同じ条件を、スタイルの式で書く。
+<span class="ln">104</span> * 用途の列はタイルでは `category` にそろえてある (build_building_tiles)。段の順位は `lod`。
+<span class="ln">105</span> */
+<span class="ln">106</span>const tileFilter = (source: BuildingSource, depth: number): FilterSpecification =&gt; {
+<span class="ln">107</span>  const filter = filterOf(source);
+<span class="ln">108</span>  const conditions: ExpressionSpecification[] = [['&lt;=', ['get', 'lod'], depth]];
+<span class="ln">109</span>  if (source.hasHeight &amp;&amp; filter.minHeight &gt; 0) {
+<span class="ln">110</span>    // 問い合わせの `height &gt;= x` と同じく、高さの無い建物は外す。
+<span class="ln">111</span>    conditions.push(['&gt;=', ['coalesce', ['get', 'height'], -1], filter.minHeight]);
+<span class="ln">112</span>  }
+<span class="ln">113</span>  if (source.categoryColumn &amp;&amp; filter.usages) {
+<span class="ln">114</span>    conditions.push(['in', ['get', 'category'], ['literal', filter.usages]]);
+<span class="ln">115</span>  }
+<span class="ln">116</span>  if (source.tiers &amp;&amp; filter.tiers) {
+<span class="ln">117</span>    const ranks = source.tiers.tiers.flatMap((tier, rank) =&gt; (filter.tiers!.includes(tier.id) ? [rank] : []));
+<span class="ln">118</span>    conditions.push(['in', ['get', 'lod'], ['literal', ranks]]);
+<span class="ln">119</span>  }
+<span class="ln">120</span>  return ['all', ...conditions];
+<span class="ln">121</span>};</code></pre>
+</figure>
+<figure class="code">
+<figcaption><a href="../web/src/ui/map.ts">web/src/ui/map.ts</a> <span class="lines">118〜131 行</span></figcaption>
+<pre><code><span class="ln">118</span>/**
+<span class="ln">119</span> * 建物の塗りの式を、タイルの層で使える形にする。**塗りの規則は1つに保つ** (`BUILDING_COLOR_BY_*`)。
+<span class="ln">120</span> * GeoJSON の地物は出所の番号 (`palette`) と段の順位 (`tierRank`) を持つが、タイルの地物は持たない。
+<span class="ln">121</span> * 出所の番号は層ごとに決まった値に、段の順位はタイルの `lod` (段の順位そのもの) に置き換える。
+<span class="ln">122</span> */
+<span class="ln">123</span>export function tileColor(expression: ExpressionSpecification, palette: number): ExpressionSpecification {
+<span class="ln">124</span>  const replace = (value: unknown): unknown =&gt; {
+<span class="ln">125</span>    if (!Array.isArray(value)) return value;
+<span class="ln">126</span>    if (value.length === 2 &amp;&amp; value[0] === 'get' &amp;&amp; value[1] === 'palette') return palette;
+<span class="ln">127</span>    if (value.length === 2 &amp;&amp; value[0] === 'get' &amp;&amp; value[1] === 'tierRank') return ['get', 'lod'];
+<span class="ln">128</span>    return value.map(replace);
+<span class="ln">129</span>  };
+<span class="ln">130</span>  return replace(expression) as ExpressionSpecification;
+<span class="ln">131</span>}</code></pre>
+</figure>
+</section>
+<section class="card" id="nearby">
+<h3><a class="anchor" href="#nearby">#</a>周辺検索 — メートルに直してから距離で判定</h3>
+<p class="lead">「この点・建物・線から○m以内に何があるか」を、画面に出していないデータも含めて全部に聞きたい。経緯度のままでは距離が測れない。</p>
+<p>起点の近くの緯度で<b>度をメートルに直す</b> (<code>ST_Affine</code>) 。1km以内なら平面とみなした誤差は小さい。
+先に bbox で行グループを絞り、そのうえで <code>ST_DWithin</code> で判定する。当たった線は範囲で切り取って描く
+(区間ごと描くと範囲の外まで伸びて、どこが当たったか読めない)。</p>
+<p>鉄道を起点にしたときは<b>押した地点の前後1.5km</b>だけを起点にする。路線全体の沿線を丸ごと調べると R2 で1分半かかり、
+知りたいのはふつう駅や駅と駅の間くらい (利用者の判断)。行グループは都心で約2km四方あり、それより細い範囲は並べ方を変えないと絞れない。</p>
+
+<figure class="code">
+<figcaption><a href="../web/src/lib/nearby.ts">web/src/lib/nearby.ts</a> <span class="lines">52〜85 行</span></figcaption>
+<pre><code><span class="ln">52</span>/**
+<span class="ln">53</span> * 周辺検索の座標系と先に絞る範囲を決める。
+<span class="ln">54</span> *
+<span class="ln">55</span> * **起点が画面より大きいときは、表示範囲の中だけを数える。** 路線のように
+<span class="ln">56</span> * 長いものを起点にすると、範囲が都市を丸ごと覆って建物を何百MBも読むことになる。
+<span class="ln">57</span> */
+<span class="ln">58</span>export function nearbyFrame(origin: NearbyOrigin, distance: number, view: ViewBounds): NearbyFrame {
+<span class="ln">59</span>  const [west, south, east, north] = geometryBbox(origin.geometry);
+<span class="ln">60</span>  const lat0 = (south + north) / 2;
+<span class="ln">61</span>  const lon0 = (west + east) / 2;
+<span class="ln">62</span>  const sx = 111_320 * Math.cos((lat0 * Math.PI) / 180);
+<span class="ln">63</span>  const sy = 110_540;
+<span class="ln">64</span>  const dx = distance / sx;
+<span class="ln">65</span>  const dy = distance / sy;
+<span class="ln">66</span>  const expanded = { west: west - dx, south: south - dy, east: east + dx, north: north + dy };
+<span class="ln">67</span>  const clipped =
+<span class="ln">68</span>    expanded.west &lt; view.west ||
+<span class="ln">69</span>    expanded.east &gt; view.east ||
+<span class="ln">70</span>    expanded.south &lt; view.south ||
+<span class="ln">71</span>    expanded.north &gt; view.north;
+<span class="ln">72</span>  const bounds: ViewBounds = clipped
+<span class="ln">73</span>    ? {
+<span class="ln">74</span>        west: Math.max(expanded.west, view.west),
+<span class="ln">75</span>        south: Math.max(expanded.south, view.south),
+<span class="ln">76</span>        east: Math.min(expanded.east, view.east),
+<span class="ln">77</span>        north: Math.min(expanded.north, view.north),
+<span class="ln">78</span>        centerLon: lon0,
+<span class="ln">79</span>        centerLat: lat0,
+<span class="ln">80</span>      }
+<span class="ln">81</span>    : { ...expanded, centerLon: lon0, centerLat: lat0 };
+<span class="ln">82</span>  const json = JSON.stringify(origin.geometry).replace(/'/g, "''");
+<span class="ln">83</span>  const frame = { sx, sy, ox: -lon0 * sx, oy: -lat0 * sy, bounds, clipped, distance };
+<span class="ln">84</span>  return { ...frame, origin: toMeters(frame, `ST_GeomFromGeoJSON('${json}')`) };
+<span class="ln">85</span>}</code></pre>
+</figure>
+<figure class="code">
+<figcaption><a href="../web/src/lib/nearby.ts">web/src/lib/nearby.ts</a> <span class="lines">103〜109 行</span></figcaption>
+<pre><code><span class="ln">103</span>/** 先に bbox で絞り、そのうえで距離で判定する WHERE の中身。 */
+<span class="ln">104</span>function nearbyCondition(frame: NearbyFrame): string {
+<span class="ln">105</span>  const b = frame.bounds;
+<span class="ln">106</span>  return `bbox.xmin &lt;= ${b.east} AND bbox.xmax &gt;= ${b.west}
+<span class="ln">107</span>      AND bbox.ymin &lt;= ${b.north} AND bbox.ymax &gt;= ${b.south}
+<span class="ln">108</span>      AND ST_DWithin(${toMeters(frame, 'geometry')}, ${frame.origin}, ${frame.distance})`;
+<span class="ln">109</span>}</code></pre>
+</figure>
+<figure class="code">
+<figcaption><a href="../web/src/lib/clip.ts">web/src/lib/clip.ts</a> <span class="lines">14〜49 行</span></figcaption>
+<pre><code><span class="ln">14</span>/**
+<span class="ln">15</span> * 線 (LineString / MultiLineString) を四角で切り取る。四角の中に何も残らなければ null。
+<span class="ln">16</span> * 線以外はそのまま返す。切り取った部分は途切れたところで別の線に分ける。
+<span class="ln">17</span> */
+<span class="ln">18</span>export function clipLines(geometry: GeoJSON.Geometry, box: Bbox): GeoJSON.Geometry | null {
+<span class="ln">19</span>  const lines =
+<span class="ln">20</span>    geometry.type === 'LineString'
+<span class="ln">21</span>      ? [geometry.coordinates]
+<span class="ln">22</span>      : geometry.type === 'MultiLineString'
+<span class="ln">23</span>        ? geometry.coordinates
+<span class="ln">24</span>        : null;
+<span class="ln">25</span>  if (lines === null) return geometry;
+<span class="ln">26</span>  const out: GeoJSON.Position[][] = [];
+<span class="ln">27</span>  for (const line of lines) {
+<span class="ln">28</span>    let current: GeoJSON.Position[] = [];
+<span class="ln">29</span>    for (let i = 1; i &lt; line.length; i++) {
+<span class="ln">30</span>      const segment = clipSegment(line[i - 1], line[i], box);
+<span class="ln">31</span>      if (segment === null) {
+<span class="ln">32</span>        if (current.length &gt; 1) out.push(current);
+<span class="ln">33</span>        current = [];
+<span class="ln">34</span>        continue;
+<span class="ln">35</span>      }
+<span class="ln">36</span>      const [a, b] = segment;
+<span class="ln">37</span>      const last = current[current.length - 1];
+<span class="ln">38</span>      // 前の線分の終わりから続いていれば、同じ線に足す。
+<span class="ln">39</span>      if (last &amp;&amp; last[0] === a[0] &amp;&amp; last[1] === a[1]) current.push(b);
+<span class="ln">40</span>      else {
+<span class="ln">41</span>        if (current.length &gt; 1) out.push(current);
+<span class="ln">42</span>        current = [a, b];
+<span class="ln">43</span>      }
+<span class="ln">44</span>    }
+<span class="ln">45</span>    if (current.length &gt; 1) out.push(current);
+<span class="ln">46</span>  }
+<span class="ln">47</span>  if (out.length === 0) return null;
+<span class="ln">48</span>  return out.length === 1 ? { type: 'LineString', coordinates: out[0] } : { type: 'MultiLineString', coordinates: out };
+<span class="ln">49</span>}</code></pre>
+</figure>
+</section>
+<section class="card" id="gsi-vector">
+<h3><a class="anchor" href="#gsi-vector">#</a>地理院のベクトルタイルを、データだけで描く</h3>
+<p class="lead">地理院の最適化ベクトルタイルには配布元のスタイルがあるが、123層あって重く、このアプリの見た目にも合わない。</p>
+<p>カタログに写した<b>層ごとの形の種類 (面・線・点)</b> から、層ごとに描き方を決める。テーマ (人向けのまとまり) ごとに
+出し入れでき、出るズームはタイル側の minzoom・maxzoom に従う。</p>
+
+<figure class="code">
+<figcaption><a href="../web/src/lib/tiles.ts">web/src/lib/tiles.ts</a> <span class="lines">86〜125 行</span></figcaption>
+<pre><code><span class="ln"> 86</span>/**
+<span class="ln"> 87</span> * タイルの層1つを描く地図の層。**カタログに書いた形の種類だけから決める**
+<span class="ln"> 88</span> * (面は塗りと輪郭、線は線、文字を持つ点は文字、それ以外の点は丸)。
+<span class="ln"> 89</span> *
+<span class="ln"> 90</span> * 配布元の描き方 (地理院の `std.json`) は使わない。規約が明示しているのはタイル
+<span class="ln"> 91</span> * (データ) で、スタイル・記号・フォントの扱いは書かれていないため。
+<span class="ln"> 92</span> * 文字はブラウザのフォントで描く (`glyphs` を指定しなければ MapLibre がそうする)。
+<span class="ln"> 93</span> */
+<span class="ln"> 94</span>function vectorLayerSpecs(
+<span class="ln"> 95</span>  source: string,
+<span class="ln"> 96</span>  layer: VectorLayerInfo,
+<span class="ln"> 97</span>  look: VectorLook,
+<span class="ln"> 98</span>): LayerSpecification[] {
+<span class="ln"> 99</span>  const base = {
+<span class="ln">100</span>    source,
+<span class="ln">101</span>    'source-layer': layer.id,
+<span class="ln">102</span>    // 入れるまでは出さない。入り切りは `VectorOverlay.apply` が写す。
+<span class="ln">103</span>    layout: { visibility: 'none' as const },
+<span class="ln">104</span>  };
+<span class="ln">105</span>  const id = (suffix: string) =&gt; `${source}/${layer.id}/${suffix}`;
+<span class="ln">106</span>  const width: ExpressionSpecification = ['interpolate', ['linear'], ['zoom'], 8, 0.4, 16, 1.6];
+<span class="ln">107</span>  switch (layer.geometry) {
+<span class="ln">108</span>    case 'Polygon':
+<span class="ln">109</span>      return [
+<span class="ln">110</span>        { ...base, id: id('fill'), type: 'fill', paint: { 'fill-color': look.color, 'fill-opacity': 0.2 } },
+<span class="ln">111</span>        {
+<span class="ln">112</span>          ...base,
+<span class="ln">113</span>          id: id('outline'),
+<span class="ln">114</span>          type: 'line',
+<span class="ln">115</span>          paint: { 'line-color': look.color, 'line-width': 0.6, 'line-opacity': 0.6 },
+<span class="ln">116</span>        },
+<span class="ln">117</span>      ];
+<span class="ln">118</span>    case 'LineString':
+<span class="ln">119</span>      return [
+<span class="ln">120</span>        {
+<span class="ln">121</span>          ...base,
+<span class="ln">122</span>          id: id('line'),
+<span class="ln">123</span>          type: 'line',
+<span class="ln">124</span>          paint: {
+<span class="ln">125</span>            'line-color': look.color,</code></pre><div class="more">… 続きは <a href="../web/src/lib/tiles.ts">web/src/lib/tiles.ts</a> で</div>
+</figure>
+</section>
+<section class="card" id="gsi-dem">
+<h3><a class="anchor" href="#gsi-dem">#</a>地理院の標高 (独自形式) を読み込むときに直す</h3>
+<p class="lead">地理院の標高タイルは Terrain-RGB に似た独自形式で、そのまま MapLibre に渡すと海に8万mの針が立つ。</p>
+<p>独自のプロトコルで画像を受け取り、<b>1画素ずつ高さに直して Terrarium に詰め直す</b>。値なし (海など) は 0m、
+負の値 (2の補数) は正しく負にする。背景地図と地形はカタログから組み立てる。</p>
+
+<figure class="code">
+<figcaption><a href="../web/src/lib/tiles.ts">web/src/lib/tiles.ts</a> <span class="lines">293〜304 行</span></figcaption>
+<pre><code><span class="ln">293</span>/**
+<span class="ln">294</span> * 地理院の標高を1画素ずつ高さ (m) に直す。**独自の形式**で、線形の部分は Terrain-RGB と
+<span class="ln">295</span> * 同じ形 (x = R×2¹⁶ + G×2⁸ + B、高さ = x × 0.01 m) だが、そのままでは読めない値が2つある:
+<span class="ln">296</span> *
+<span class="ln">297</span> * - **値なし** (x = 2²³ = (128,0,0)。海など): そのまま読むと 83,886 m の針が立つ → 0 m にする
+<span class="ln">298</span> * - **負の値** (x &gt; 2²³、2の補数): そのまま読むと 8万m台に化ける → (x − 2²⁴) × 0.01 m
+<span class="ln">299</span> */
+<span class="ln">300</span>export function gsiDemHeight(r: number, g: number, b: number): number {
+<span class="ln">301</span>  const x = r * 65536 + g * 256 + b;
+<span class="ln">302</span>  if (x === 8388608) return 0;
+<span class="ln">303</span>  return (x &lt; 8388608 ? x : x - 16777216) * 0.01;
+<span class="ln">304</span>}</code></pre>
+</figure>
+</section>
+<section class="card" id="wkb">
+<h3><a class="anchor" href="#wkb">#</a>DuckDB の返すジオメトリ (WKB) を自前で読む</h3>
+<p class="lead">SQL でジオメトリを GeoJSON の文字列にしてから JSON.parse すると、文字列を作って読むぶん遅い。</p>
+<p>DuckDB-WASM はジオメトリの列をそのまま返すと GeoArrow (WKB) で返す。<b>WKB を直接 GeoJSON のジオメトリに読む</b>小さな読み手を書いた。
+単体テストの見本は DuckDB の spatial で作った (WKB と GeoJSON の組)。</p>
+
+<figure class="code">
+<figcaption><a href="../web/src/lib/wkb.ts">web/src/lib/wkb.ts</a> <span class="lines">37〜76 行</span></figcaption>
+<pre><code><span class="ln">37</span>geometry(): GeoJSON.Geometry {
+<span class="ln">38</span>  this.little = this.view.getUint8(this.offset) === 1;
+<span class="ln">39</span>  this.offset += 1;
+<span class="ln">40</span>  let code = this.uint32();
+<span class="ln">41</span>  let dims = 2;
+<span class="ln">42</span>  if (code &amp; (EWKB_Z | EWKB_M | EWKB_SRID)) {
+<span class="ln">43</span>    if (code &amp; EWKB_Z) dims++;
+<span class="ln">44</span>    if (code &amp; EWKB_M) dims++;
+<span class="ln">45</span>    if (code &amp; EWKB_SRID) this.offset += 4;
+<span class="ln">46</span>    code &amp;= 0x0fffffff;
+<span class="ln">47</span>  } else if (code &gt;= 1000) {
+<span class="ln">48</span>    // ISO: 1000番台 = Z、2000番台 = M、3000番台 = ZM。
+<span class="ln">49</span>    const extra = Math.floor(code / 1000);
+<span class="ln">50</span>    dims += extra === 3 ? 2 : 1;
+<span class="ln">51</span>    code %= 1000;
+<span class="ln">52</span>  }
+<span class="ln">53</span>  switch (code) {
+<span class="ln">54</span>    case POINT: {
+<span class="ln">55</span>      const coordinates = this.position(dims);
+<span class="ln">56</span>      // 空の点は NaN で書かれる。GeoJSON では座標の無い点になる。
+<span class="ln">57</span>      return { type: 'Point', coordinates: Number.isNaN(coordinates[0]) ? [] : coordinates };
+<span class="ln">58</span>    }
+<span class="ln">59</span>    case LINE_STRING:
+<span class="ln">60</span>      return { type: 'LineString', coordinates: this.positions(dims) };
+<span class="ln">61</span>    case POLYGON:
+<span class="ln">62</span>      return { type: 'Polygon', coordinates: this.rings(dims) };
+<span class="ln">63</span>    case MULTI_POINT:
+<span class="ln">64</span>      return { type: 'MultiPoint', coordinates: this.parts(() =&gt; (this.geometry() as GeoJSON.Point).coordinates) };
+<span class="ln">65</span>    case MULTI_LINE_STRING:
+<span class="ln">66</span>      return {
+<span class="ln">67</span>        type: 'MultiLineString',
+<span class="ln">68</span>        coordinates: this.parts(() =&gt; (this.geometry() as GeoJSON.LineString).coordinates),
+<span class="ln">69</span>      };
+<span class="ln">70</span>    case MULTI_POLYGON:
+<span class="ln">71</span>      return {
+<span class="ln">72</span>        type: 'MultiPolygon',
+<span class="ln">73</span>        coordinates: this.parts(() =&gt; (this.geometry() as GeoJSON.Polygon).coordinates),
+<span class="ln">74</span>      };
+<span class="ln">75</span>    case GEOMETRY_COLLECTION:
+<span class="ln">76</span>      return { type: 'GeometryCollection', geometries: this.parts(() =&gt; this.geometry()) };</code></pre><div class="more">… 続きは <a href="../web/src/lib/wkb.ts">web/src/lib/wkb.ts</a> で</div>
+</figure>
+</section>
+<section class="card" id="draw-shape">
+<h3><a class="anchor" href="#draw-shape">#</a>データの描き方の共通の形</h3>
+<p class="lead">建物・人口メッシュ・鉄道・道路・送電線と川は、地図が動くたびに引き直す。読み込み中に地図がまた動くと、古い結果を描いてしまう。</p>
+<p>どの描き方も同じ形をとる: <b>世代を最初に進める</b> → 出していなければ空にして終わる (既に空なら <code>setData</code> しない)
+→ 表示範囲で引き、世代が変わっていなければ描く。世代を進めるのを早期 return より後にしたら、外したあとに前の結果を描いた (実際に起きた)。</p>
+
+<figure class="code">
+<figcaption><a href="../web/src/ui/layers/context.ts">web/src/ui/layers/context.ts</a> <span class="lines">2〜10 行</span></figcaption>
+<pre><code><span class="ln"> 2</span>* **データの描き方** (建物・人口メッシュ・鉄道・道路・送電線と川) が共通に使う道具。
+<span class="ln"> 3</span>*
+<span class="ln"> 4</span>* どの描き方も同じ形をしている:
+<span class="ln"> 5</span>* 1. **世代 (token) を最初に進める** — 外したあとに、読み込み中だった前の結果を描かないように
+<span class="ln"> 6</span>*    (全部外したときの早期 return より前でないといけない。実際に起きた)
+<span class="ln"> 7</span>* 2. 一覧で出していなければ空にして終わる (既に空なら `setData` しない — 地図の Worker を
+<span class="ln"> 8</span>*    建物の描画と取り合うため)
+<span class="ln"> 9</span>* 3. 表示範囲で引き (lib/queries.ts)、世代が変わっていなければ描いて、一覧の行に状態を書く
+<span class="ln">10</span>*/</code></pre>
+</figure>
+</section>
+<section class="card" id="export">
+<h3><a class="anchor" href="#export">#</a>ブラウザの中で GeoParquet を書き、出典と規約を入れる</h3>
+<p class="lead">「この範囲を保存」で、見ている範囲のデータを持ち帰れるようにしたい。持ち帰ったファイルからも出所と条件が分かるべき。</p>
+<p>DuckDB-WASM の <code>COPY … TO</code> でブラウザの中で GeoParquet を書き、<b>出典・規約・配布元を KV メタデータに入れる</b>。
+ライセンスを持ち回れるようにするのが、このリポジトリの軸の1つ。</p>
+
+<figure class="code">
+<figcaption><a href="../web/src/lib/duckdb.ts">web/src/lib/duckdb.ts</a> <span class="lines">521〜543 行</span></figcaption>
+<pre><code><span class="ln">521</span>/**
+<span class="ln">522</span> * 問い合わせの結果を Parquet にして返す (ダウンロード用)。
+<span class="ln">523</span> *
+<span class="ln">524</span> * DuckDB-WASM の中の空のファイルに書いてから取り出す。ジオメトリの列が
+<span class="ln">525</span> * GEOMETRY 型なら DuckDB が `geo` メタデータを書くので、GeoParquet として読める。
+<span class="ln">526</span> * `kv` に出典や規約を入れて、**切り出したファイルにも条件が付いて回る**ようにする。
+<span class="ln">527</span> */
+<span class="ln">528</span>const exportParquet = async (select: string, kv: Record&lt;string, string&gt;): Promise&lt;Uint8Array&gt; =&gt; {
+<span class="ln">529</span>  const name = `export_${Date.now()}.parquet`;
+<span class="ln">530</span>  await db.registerEmptyFileBuffer(name);
+<span class="ln">531</span>  const escape = (text: string) =&gt; text.replace(/'/g, "''");
+<span class="ln">532</span>  const kvSql = Object.entries(kv)
+<span class="ln">533</span>    .map(([key, value]) =&gt; `'${escape(key)}': '${escape(value)}'`)
+<span class="ln">534</span>    .join(', ');
+<span class="ln">535</span>  try {
+<span class="ln">536</span>    await conn.query(
+<span class="ln">537</span>      `COPY (${select}) TO '${name}' (FORMAT PARQUET${kvSql ? `, KV_METADATA {${kvSql}}` : ''});`,
+<span class="ln">538</span>    );
+<span class="ln">539</span>    return await db.copyFileToBuffer(name);
+<span class="ln">540</span>  } finally {
+<span class="ln">541</span>    await db.dropFile(name);
+<span class="ln">542</span>  }
+<span class="ln">543</span>};</code></pre>
+</figure>
+</section>
+<section class="card" id="layer-order">
+<h3><a class="anchor" href="#layer-order">#</a>一覧の順番を地図の層へ写す</h3>
+<p class="lead">一覧でデータの重ね順をドラッグで変えられる。地図の層は1つのデータに複数ある (塗り・縁・タイル)。</p>
+<p>区分 (データ・地図タイル) ごとに目印の層を置き、<b>一覧の下から順に目印の直下へ積み直す</b>。行ごとに「どの地図の層を持つか」を
+持たせてあり、建物は引いた表示のタイルの層も一緒に動く。地図に無い層は飛ばす。</p>
+
+<figure class="code">
+<figcaption><a href="../web/src/ui/layer-list.ts">web/src/ui/layer-list.ts</a> <span class="lines">187〜201 行</span></figcaption>
+<pre><code><span class="ln">187</span>/**
+<span class="ln">188</span> * 重ね順を地図に写す。**下から順に、区分の目印の直下へ動かす** (動かすたびにその直下へ
+<span class="ln">189</span> * 入るので、最後に動かしたものがいちばん上になる)。
+<span class="ln">190</span> */
+<span class="ln">191</span>const applyOrder = () =&gt; {
+<span class="ln">192</span>  for (const section of ['tile', 'data'] as const) {
+<span class="ln">193</span>    const anchor = LAYER_ANCHORS[section];
+<span class="ln">194</span>    if (!map.getLayer(anchor)) continue;
+<span class="ln">195</span>    for (const id of [...order[section]].reverse()) {
+<span class="ln">196</span>      for (const mapLayer of byId.get(id)?.mapLayerIds() ?? []) {
+<span class="ln">197</span>        if (map.getLayer(mapLayer)) map.moveLayer(mapLayer, anchor);
+<span class="ln">198</span>      }
+<span class="ln">199</span>    }
+<span class="ln">200</span>  }
+<span class="ln">201</span>};</code></pre>
+</figure>
+</section>
+<section class="card" id="hover">
+<h3><a class="anchor" href="#hover">#</a>吹き出しを層ごとの表で1つの仕掛けに</h3>
+<p class="lead">建物・鉄道・道路・メッシュ・周辺検索の結果など、層ごとに見せたい項目が違う。</p>
+<p><b>層の ID → 吹き出しの中身</b> の表を1つ持ち、その点でいちばん上にある地物の層で引く。同じものなら作り直さない
+(区間の境でちらつくため)。指で押しても出る。地理院のタイルは層が多いので表に書かず、層の対応から引く。
+引いた表示のタイルの建物は、層 (= 出所) から出所と段の名前を補って、GeoJSON の建物と同じ吹き出しにする。</p>
+
+<figure class="code">
+<figcaption><a href="../web/src/ui/hover.ts">web/src/ui/hover.ts</a> <span class="lines">116〜145 行</span></figcaption>
+<pre><code><span class="ln">116</span>const HOVER_LAYERS: Record&lt;string, (props: Props) =&gt; Hover&gt; = {
+<span class="ln">117</span>  'nearby-hits': (p) =&gt; ({
+<span class="ln">118</span>    key: `nearby|${p.origin}|${p.name}|${p.height}|${p.category}`,
+<span class="ln">119</span>    rows: [...buildingRows(p), nearbyRow()],
+<span class="ln">120</span>  }),
+<span class="ln">121</span>  'nearby-hit-lines': (p) =&gt; {
+<span class="ln">122</span>    const origin = originOf(p);
+<span class="ln">123</span>    return {
+<span class="ln">124</span>      key: `nearby-line|${p.kind}|${p.name}`,
+<span class="ln">125</span>      rows: [
+<span class="ln">126</span>        ['', text(p.name) ?? m.unnamed],
+<span class="ln">127</span>        [m.hoverKind, m.nearbyKinds[p.kind as string] ?? text(p.kind)],
+<span class="ln">128</span>        [m.hoverSource, origin?.group?.title ?? null],
+<span class="ln">129</span>        [m.hoverVintage, origin?.vintage ?? null],
+<span class="ln">130</span>        nearbyRow(),
+<span class="ln">131</span>      ],
+<span class="ln">132</span>    };
+<span class="ln">133</span>  },
+<span class="ln">134</span>  'buildings-3d': (p) =&gt; ({
+<span class="ln">135</span>    key: `building|${p.origin}|${p.name}|${p.height}|${p.category}`,
+<span class="ln">136</span>    rows: buildingRows(p),
+<span class="ln">137</span>  }),
+<span class="ln">138</span>  // 整備範囲のメッシュ。**どのメッシュか、どの自治体かが読めること。**
+<span class="ln">139</span>  // 塗りの濃さは埋まり具合しか表さないので、中身はここでしか分からない。
+<span class="ln">140</span>  'buildings-coverage-fill': (p) =&gt; {
+<span class="ln">141</span>    const code = p.code as string;
+<span class="ln">142</span>    const cities = (p.cities as string) || m.unknown;
+<span class="ln">143</span>    const filled = p.filled as number;
+<span class="ln">144</span>    const total = p.total as number;
+<span class="ln">145</span>    return {</code></pre><div class="more">… 続きは <a href="../web/src/ui/hover.ts">web/src/ui/hover.ts</a> で</div>
+</figure>
+</section>
+<section class="card" id="dev-server">
+<h3><a class="anchor" href="#dev-server">#</a>手元の配信をオブジェクトストレージと同じ流儀に (と、R2 の遅さの再現)</h3>
+<p class="lead">Vite の配信は Range の扱いに穴があり (bytes=0-0 に206を返しながら Content-Range を付けない)、DuckDB-WASM がちょうどそこを踏む。</p>
+<p>データの配信を丸ごと引き取り、R2 と同じ流儀 (HEAD・Range・CORS のヘッダ) で返す。開発サーバーと本番ビルドの確認用サーバーの両方で効く。</p>
+<p>手元では往復の待ちがほぼ0なので、読み込みの回数が増えても気付けない。<code>DATA_LATENCY_MS=450 DATA_BANDWIDTH_MBPS=16</code> で
+<b>R2 と同じ待ちを足せる</b>。<code>DATA_DIR</code> で配るディレクトリを差し替えれば、並べ方を変えたデータをアプリはそのままで比べられる。</p>
+
+<figure class="code">
+<figcaption><a href="../web/vite.config.ts">web/vite.config.ts</a> <span class="lines">67〜136 行</span></figcaption>
+<pre><code><span class="ln"> 67</span>function serveLikeObjectStorage(urlPath: string, directory: string): Plugin {
+<span class="ln"> 68</span>  const root = fileURLToPath(new URL(directory, import.meta.url));
+<span class="ln"> 69</span>  // ベースパス配下で配信されることがあるので、解決後の base を前置きしてマウントする。
+<span class="ln"> 70</span>  let mountPath = urlPath;
+<span class="ln"> 71</span>
+<span class="ln"> 72</span>  const handle: Connect.NextHandleFunction = (request, response, next) =&gt; {
+<span class="ln"> 73</span>    // マウントした接頭辞は取り除かれた状態で渡ってくるので、残りがファイル名。
+<span class="ln"> 74</span>    const path = (request.url ?? '').split('?')[0].replace(/^\//, '');
+<span class="ln"> 75</span>    // 開発サーバーとはいえ、指定したディレクトリの外は出さない。
+<span class="ln"> 76</span>    const relative = normalize(decodeURIComponent(path));
+<span class="ln"> 77</span>    if (relative.startsWith('..')) return next();
+<span class="ln"> 78</span>    const file = join(root, relative);
+<span class="ln"> 79</span>
+<span class="ln"> 80</span>    let size: number;
+<span class="ln"> 81</span>    try {
+<span class="ln"> 82</span>      size = statSync(file).size;
+<span class="ln"> 83</span>    } catch {
+<span class="ln"> 84</span>      return next();
+<span class="ln"> 85</span>    }
+<span class="ln"> 86</span>
+<span class="ln"> 87</span>    response.setHeader('Accept-Ranges', 'bytes');
+<span class="ln"> 88</span>    // 別オリジンに置いたときにDuckDB-WASMがこれらを読めるようにする。
+<span class="ln"> 89</span>    response.setHeader('Access-Control-Allow-Origin', '*');
+<span class="ln"> 90</span>    response.setHeader(
+<span class="ln"> 91</span>      'Access-Control-Expose-Headers',
+<span class="ln"> 92</span>      'Content-Range, Content-Length, Accept-Ranges',
+<span class="ln"> 93</span>    );
+<span class="ln"> 94</span>    const contentType = CONTENT_TYPES[extname(file)];
+<span class="ln"> 95</span>    if (contentType) response.setHeader('Content-Type', contentType);
+<span class="ln"> 96</span>
+<span class="ln"> 97</span>    // "bytes=100-199" / "bytes=100-" の2形だけ扱う (複数レンジは使われない)。
+<span class="ln"> 98</span>    const match = /^bytes=(\d+)-(\d*)$/.exec(request.headers.range ?? '');
+<span class="ln"> 99</span>    const start = match ? Number(match[1]) : 0;
+<span class="ln">100</span>    const end = match &amp;&amp; match[2] !== '' ? Math.min(Number(match[2]), size - 1) : size - 1;
+<span class="ln">101</span>
+<span class="ln">102</span>    if (match &amp;&amp; (start &gt; end || start &gt;= size)) {
+<span class="ln">103</span>      response.statusCode = 416;
+<span class="ln">104</span>      response.setHeader('Content-Range', `bytes */${size}`);
+<span class="ln">105</span>      return response.end();
+<span class="ln">106</span>    }
+<span class="ln">107</span>
+<span class="ln">108</span>    if (match) {
+<span class="ln">109</span>      response.statusCode = 206;
+<span class="ln">110</span>      response.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
+<span class="ln">111</span>      response.setHeader('Content-Length', end - start + 1);
+<span class="ln">112</span>    } else {
+<span class="ln">113</span>      response.statusCode = 200;
+<span class="ln">114</span>      response.setHeader('Content-Length', size);
+<span class="ln">115</span>    }
+<span class="ln">116</span>
+<span class="ln">117</span>    // HEADは本文を返さない。ヘッダはGETと同じものを返す。
+<span class="ln">118</span>    const send = () =&gt; {
+<span class="ln">119</span>      if (request.method === 'HEAD') return response.end();
+<span class="ln">120</span>      createReadStream(file, { start, end }).pipe(response);
+<span class="ln">121</span>    };
+<span class="ln">122</span>    // **R2 の遅さを手元で再現する** (`DATA_LATENCY_MS` / `DATA_BANDWIDTH_MBPS`)。
+<span class="ln">123</span>    // 手元では往復の待ちがほぼ0なので、読み込みの回数や量が増えても気付けない。
+<span class="ln">124</span>    const bytes = request.method === 'HEAD' ? 0 : end - start + 1;
+<span class="ln">125</span>    const delay = SIMULATED_LATENCY_MS + (SIMULATED_BYTES_PER_MS &gt; 0 ? bytes / SIMULATED_BYTES_PER_MS : 0);
+<span class="ln">126</span>    if (delay &gt; 0) setTimeout(send, delay);
+<span class="ln">127</span>    else send();
+<span class="ln">128</span>  };
+<span class="ln">129</span>
+<span class="ln">130</span>  return {
+<span class="ln">131</span>    name: `serve-like-object-storage${urlPath.replace(/\//g, '-')}`,
+<span class="ln">132</span>    configResolved(config) {
+<span class="ln">133</span>      mountPath = `${config.base.replace(/\/$/, '')}${urlPath}`;
+<span class="ln">134</span>    },
+<span class="ln">135</span>    configureServer(server) {
+<span class="ln">136</span>      server.middlewares.use(mountPath, handle);</code></pre><div class="more">… 続きは <a href="../web/vite.config.ts">web/vite.config.ts</a> で</div>
+</figure>
+</section>
+<section class="card" id="stac-browser">
+<h3><a class="anchor" href="#stac-browser">#</a>STAC Browser にパッチを1つ当ててビルドする</h3>
+<p class="lead">カタログを地図ではなくページで辿れるよう、STAC Browser 5.1.0 を /catalog/ に置いている。</p>
+<p>相対の <code>rel: items</code> がページ基準で解決されて 404 になる不具合があり、パッチを1つ当ててビルドする
+(<code>stac-browser/items-base.patch</code>・<code>build.sh</code>)。Item を stac-geoparquet に移して <code>rel: items</code> が無くなったので、
+今は効く場面が無い。上流で直ったら外す。</p>
+
+
+</section>
+    </main>
+  </body>
+</html>
