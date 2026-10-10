@@ -123,8 +123,10 @@ GeoParquet のまま細かく絞る道が開ける。追いかける価値はあ
 
 ## 乗り換えではなく、足す (フィードバック・fork の候補)
 
-**利用者の方針 (2026-10-10):** 別の形式に乗り換えるより、形式や読み手にフィードバック・fork して
-最適になるなら、その方向にしたい。クローンを読んだ結果 (`.reference/github.com/` の
+**利用者の方針 (2026-10-10):** 別の形式に乗り換えるより、既存の形式や読み手を改善する案を
+**TOBE (目指す姿) として残しておく**。優先はこちら側でできること (データの作り方・読み方・機能の範囲)
+をやり切ること。issue へのコメントなど外部への投稿は、そのあと余裕があれば最後に。
+以下はその TOBE の候補の書き留めで、クローンを読んだ結果 (`.reference/github.com/` の
 opengeospatial/geoparquet・apache/sedona-db・flatgeobuf/flatgeobuf・maplibre/maplibre-tile-spec・
 Kanahiro/cloud-optimized-geoparquet)。
 
@@ -138,7 +140,7 @@ Kanahiro/cloud-optimized-geoparquet)。
 | 6 | **SedonaDB** | 空間の条件 (`ST_Intersects`) からページ単位の読み飛ばし | 小 (ブラウザで動かない) | 中 (Rust・DataFusion) | 行グループ単位の空間の読み飛ばしはある (`filter_access_plan_using_geoparquet_covering`)。ページ単位は無い |
 
 **fork は最後の手段にする。** DuckDB や DuckDB-WASM を fork すると追従の手間が大きい。
-上流に入れる前提で、まず数字 (1) と小さな PR (5) から始めるのが筋に見える。
+手を付けるなら、こちら側をやり切ったあとに、数字 (1) や小さな PR (5) のような軽いものから。
 
 ### ここ側で先にできる準備: ページを細かく切る
 
