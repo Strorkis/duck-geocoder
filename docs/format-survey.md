@@ -121,6 +121,46 @@ GeoParquet のまま細かく絞る道が開ける。追いかける価値はあ
 
 ---
 
+## 測ったこと: 引いた表示を PMTiles で描く (2026-10-10)
+
+概観と同じ建物 (PLATEAU の段0〜1、247万棟) から PMTiles を作り、アプリの地図に層として足して測った
+(アプリのコードは一時的に変えて戻した)。R2 相当の待ち (`DATA_LATENCY_MS=450 DATA_BANDWIDTH_MBPS=16`)。
+
+```bash
+# FlatGeobuf を経由して tippecanoe へ (lod は数として読ませる)
+duckdb -c "LOAD spatial; COPY (SELECT lod::INTEGER AS lod, name, usage, height, geometry
+  FROM read_parquet('plateau_bldg_overview_all.parquet')) TO 'plateau_overview.fgb'
+  WITH (FORMAT GDAL, DRIVER 'FlatGeobuf', SRS 'EPSG:4326');"
+tippecanoe -q -o plateau_overview.pmtiles -Z12 -z14 -l buildings -T lod:int \
+  -j '{"*":["any",["==","lod",0],[">=","$zoom",13]]}' --no-feature-limit --no-tile-size-limit plateau_overview.fgb
+```
+
+| | GeoParquet の概観 (いま) | PMTiles |
+| --- | --- | --- |
+| 大きさ | 327MB (45ファイル) | **123MB (1ファイル)** |
+| 東京駅 z13 | 39秒・9.0MB・39回 | **10.0秒**・1.3MB・8回 |
+| 東京駅 z14.5 | 36秒・11.7MB・29回 | **3.4秒**・0.4MB・6回 |
+| 東京タワー z13.5 | — | **7.1秒**・1.1MB・6回 |
+
+- **3〜10倍速い。** MapLibre はタイルを並列に取り (DuckDB は1回ずつ順に)、タイルは描く用に簡略化されて量が少ない
+- 手元の preview は HTTP/1.1 (同時接続6本まで)。R2 は HTTP/2 なので、タイルにはもう少し有利に出るはず
+- 作るのは約1分 (tippecanoe、z12〜14)。経由した FlatGeobuf は **788MB** (GeoParquet の2.4倍。圧縮が無いため)
+- **「1つの出所 = 1つのファイル」に戻せる。** 元の GeoParquet は都市ごとのまま (上の「どこまで分けるか」)、
+  引いた表示は PMTiles 1つ。概観の GeoParquet (327MB) は要らなくなり、容量も減る
+
+### 組み込むときの得失
+
+| | いま (GeoParquet の概観) | PMTiles |
+| --- | --- | --- |
+| 件数の表示 (「公共施設のみ・3,000件以上」) | 出せる | **出せない** (タイルは数えられない)。「公共施設・商業・業務を表示」と言うだけになる |
+| 絞り込み (高さ・用途・段) | 問い合わせの条件で | スタイルの filter で (タイルに属性が入っていれば) |
+| ホバーの吹き出し | 出せる | 出せる (名前・用途・高さをタイルに入れる) |
+| 表示量 (控えめ・標準・多め) | 段の上限を変える | スタイルの filter と minzoom で。タイルに入れる段は作るときに決まる |
+| 作る工程 | `build_building_overview` | tippecanoe が増える (いまはパイプラインに無い道具) |
+| カタログ | Item に `duck:lod_max` | Collection のアセット (`rel: pmtiles` は地理院で使っている形) |
+
+---
+
 ## 乗り換えではなく、足す (フィードバック・fork の候補)
 
 **利用者の方針 (2026-10-10):** 別の形式に乗り換えるより、既存の形式や読み手を改善する案を
