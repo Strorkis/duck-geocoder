@@ -33,6 +33,7 @@ import {
   type NearbyFrame,
   type NearbyOrigin,
 } from '../lib/nearby';
+import { aroundBox, clipLines } from '../lib/clip';
 
 /** 種類の名前 (地図の絞り込みの鍵でもある「建物」「駅」…) を、画面の言語で見せる。 */
 const kindLabel = (kind: string): string => m.nearbyKinds[kind] ?? kind;
@@ -71,13 +72,23 @@ export interface NearbyPanel {
   distance: () => string;
 }
 
-/** 起点に使える地図上のレイヤーと、その呼び名・名前の属性。上ほど優先。 */
-const ORIGIN_LAYERS: { layer: string; label: string; nameKey: string | null }[] = [
+/** 鉄道を起点にしたときの、押した地点の前後 (m)。 */
+const RAILWAY_AROUND_M = 1500;
+
+/**
+ * 起点に使える地図上のレイヤーと、その呼び名・名前の属性。上ほど優先。
+ * `nameKey` があれば同じ名前の区間をまとめて起点にする。
+ * `aroundM` があれば、まとめずに**押した地点の前後だけ** (その半径の四角で切り取る) を起点にする。
+ */
+const ORIGIN_LAYERS: { layer: string; label: string; nameKey: string | null; aroundM?: number }[] = [
   { layer: 'buildings-3d', label: '建物', nameKey: null },
   { layer: 'line-power_line', label: '送電線', nameKey: 'name' },
   { layer: 'line-waterway', label: '川', nameKey: 'name' },
   { layer: 'railway-station', label: '駅', nameKey: 'stationName' },
-  { layer: 'railway-line', label: '鉄道', nameKey: 'lineName' },
+  // **鉄道は路線全体にしない。** 東西線の沿線を丸ごと調べるような問いは重く (R2 で1分半)、
+  // 知りたいのはふつう駅や駅と駅の間くらい。元の区間は中央値302m・9割が3.4km以内だが、
+  // 引いた表示 (粗い段) では路線が1本に描かれているので、長さで切る。
+  { layer: 'railway-line', label: '鉄道', nameKey: 'lineName', aroundM: RAILWAY_AROUND_M },
   { layer: 'road-line', label: '道路', nameKey: 'roadName' },
 ];
 
@@ -235,21 +246,33 @@ export function createNearbyPanel(options: NearbyPanelOptions): NearbyPanel {
       };
     }
     const name = hit.properties[spec.nameKey] as string | null;
-    if (!name) return { label: `${kindLabel(spec.label)} ${m.unnamed}`, geometry: hit.geometry };
-    const data = await (map.getSource(hit.source) as GeoJSONSource).getData();
+    if (!name && spec.aroundM === undefined) {
+      return { label: `${kindLabel(spec.label)} ${m.unnamed}`, geometry: hit.geometry };
+    }
+    // 同じ名前の区間は、描いているデータから集める (押したものの形はタイルの境で切れている)。
     const lines: GeoJSON.Position[][] = [];
-    if (data.type === 'FeatureCollection') {
-      for (const feature of data.features) {
-        if (feature.properties?.[spec.nameKey] !== name) continue;
-        const g = feature.geometry;
-        if (g.type === 'LineString') lines.push(g.coordinates);
-        if (g.type === 'MultiLineString') lines.push(...g.coordinates);
+    if (name) {
+      const data = await (map.getSource(hit.source) as GeoJSONSource).getData();
+      if (data.type === 'FeatureCollection') {
+        for (const feature of data.features) {
+          if (feature.properties?.[spec.nameKey] !== name) continue;
+          const g = feature.geometry;
+          if (g.type === 'LineString') lines.push(g.coordinates);
+          if (g.type === 'MultiLineString') lines.push(...g.coordinates);
+        }
       }
     }
-    return {
-      label: `${spec.label} ${name}`,
-      geometry: lines.length > 0 ? { type: 'MultiLineString', coordinates: lines } : hit.geometry,
-    };
+    const merged: GeoJSON.Geometry =
+      lines.length > 0 ? { type: 'MultiLineString', coordinates: lines } : hit.geometry;
+    if (spec.aroundM !== undefined) {
+      // 押した地点の前後だけを起点にする。
+      const clipped = clipLines(merged, aroundBox(lngLat, spec.aroundM));
+      return {
+        label: `${kindLabel(spec.label)} ${m.aroundClicked(name ?? m.unnamed, spec.aroundM / 1000)}`,
+        geometry: clipped ?? { type: 'Point', coordinates: [lngLat.lng, lngLat.lat] },
+      };
+    }
+    return { label: `${spec.label} ${name}`, geometry: merged };
   };
 
   map.on('click', (e) => {
