@@ -212,7 +212,9 @@ export default defineConfig(async () => {
     // 隠しディレクトリ (既定の .vite/) にしない。開いて読めるところに置く。
     build: { license: { fileName: 'THIRD-PARTY-LICENSES.md' } },
     plugins: [
-      serveLikeObjectStorage('/data', '../data/output/'),
+      // `DATA_DIR` (web/ からの相対) で配るディレクトリを差し替えられる。並べ方・分け方を変えた
+      // データを、アプリはそのままで比べるため (docs/geoparquet-layout.md)。
+      serveLikeObjectStorage('/data', `${(process.env.DATA_DIR ?? '../data/output').replace(/\/?$/, '/')}`),
       // node_modules 由来のパスと衝突しないよう、拡張のキャッシュを先にマウントする。
       serveLikeObjectStorage('/duckdb/extensions', DUCKDB_EXTENSIONS_CACHE),
       // 開発時はDuckDB-WASM本体を node_modules から配る (ビルド時はコピーする)。
