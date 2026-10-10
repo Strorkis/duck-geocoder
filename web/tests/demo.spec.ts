@@ -17,7 +17,9 @@ type TestWindow = {
  * 混んだときに落ちていた。ここは「動くか」を見るテストで、速さは転送量のテストが見張る。
  */
 const DATA_TIMEOUT =
-  process.env.PLAYWRIGHT_BASE_URL || /^https?:/.test(process.env.VITE_DATA_BASE_URL ?? '')
+  process.env.PLAYWRIGHT_BASE_URL ||
+  /^https?:/.test(process.env.VITE_DATA_BASE_URL ?? '') ||
+  Number(process.env.DATA_LATENCY_MS ?? 0) > 0
     ? 90_000
     : 30_000;
 
@@ -3307,7 +3309,7 @@ test('周辺検索: 地図上の点から、建物と駅が出て、距離を広
     (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7671, 35.6812], zoom: 16 });
   });
   await expect
-    .poll(() => sourceFeatureCount(page, 'buildings'), { timeout: 60_000 })
+    .poll(() => sourceFeatureCount(page, 'buildings'), { timeout: DATA_TIMEOUT })
     .toBeGreaterThan(0);
   // **描き終わるまで待つ。** 途中で「空いている点」を探すと、あとから描かれた建物の上を押す
   // ことになる (建物のファイルを並べ直して、届く順が変わったときに落ちた)。
@@ -3318,8 +3320,8 @@ test('周辺検索: 地図上の点から、建物と駅が出て、距離を広
   // 中心は駅舎の建物の上なので、押すと建物が起点になる。
   await nearbyAt(page, await emptyPointNear(page, { x: 640, y: 360 }));
   const results = page.locator('#nearby-results');
-  await expect(page.locator('#nearby-origin')).toContainText('地図上の点', { timeout: 60_000 });
-  await expect(results).toContainText('棟', { timeout: 60_000 });
+  await expect(page.locator('#nearby-origin')).toContainText('地図上の点', { timeout: DATA_TIMEOUT });
+  await expect(results).toContainText('棟', { timeout: DATA_TIMEOUT });
   await expect(results.locator('dt', { hasText: '駅' })).toBeVisible();
   await expect(results).toContainText('東京駅');
   expect(await sourceFeatureCount(page, 'nearby-zone')).toBe(1);
@@ -3377,11 +3379,11 @@ test('周辺検索: 地図上の点から、建物と駅が出て、距離を広
   const near = await nearbyBuildingTotal(page);
   expect(near).toBeGreaterThan(0);
   await page.locator('#nearby-distance').selectOption('300');
-  await expect(page.locator('#nearby-origin')).toContainText('300 m', { timeout: 60_000 });
-  await expect.poll(() => nearbyBuildingTotal(page), { timeout: 60_000 }).toBeGreaterThanOrEqual(near);
+  await expect(page.locator('#nearby-origin')).toContainText('300 m', { timeout: DATA_TIMEOUT });
+  await expect.poll(() => nearbyBuildingTotal(page), { timeout: DATA_TIMEOUT }).toBeGreaterThanOrEqual(near);
 
   // **名前の札を押すと、それだけを残して寄る。** もう一度押すと戻る。
-  await expect(page.locator('#busy')).toBeHidden({ timeout: 60_000 });
+  await expect(page.locator('#busy')).toBeHidden({ timeout: DATA_TIMEOUT });
   // 駅の札は「東京駅 (総武線)」の形 (建物の「東京駅丸の内駅舎」と取り違えない)。
   const station = page.locator('#nearby-results .nearby-chip', { hasText: /^東京駅 \(/ }).first();
   const before = await page.evaluate(() => (window as unknown as TestWindow).__map!.getCenter().toArray());
@@ -3441,11 +3443,11 @@ test('周辺検索: 当たった建物と駅にも、ホバーと押したとき
     (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7671, 35.6812], zoom: 16 });
   });
   await expect
-    .poll(() => sourceFeatureCount(page, 'buildings'), { timeout: 60_000 })
+    .poll(() => sourceFeatureCount(page, 'buildings'), { timeout: DATA_TIMEOUT })
     .toBeGreaterThan(0);
   await nearbyAt(page, await emptyPointNear(page, { x: 640, y: 360 }));
-  await expect(page.locator('#nearby-results')).toContainText('東京駅', { timeout: 60_000 });
-  await expect(page.locator('#busy')).toBeHidden({ timeout: 60_000 });
+  await expect(page.locator('#nearby-results')).toContainText('東京駅', { timeout: DATA_TIMEOUT });
+  await expect(page.locator('#busy')).toBeHidden({ timeout: DATA_TIMEOUT });
   const popup = page.locator('.hover-popup');
 
   const building = await pointOnNearbyHit(page, 'nearby-hits');
@@ -3485,16 +3487,19 @@ test('周辺検索: 建物を起点にできる', async ({ page }) => {
   await expect.poll(findPoint, { message: '建物の上の点が見つからない' }).not.toBeNull();
   const point = await findPoint();
   await nearbyAt(page, point!);
-  await expect(page.locator('#nearby-origin')).toContainText('起点: 建物', { timeout: 60_000 });
-  await expect(page.locator('#nearby-results')).toContainText('棟', { timeout: 60_000 });
+  await expect(page.locator('#nearby-origin')).toContainText('起点: 建物', { timeout: DATA_TIMEOUT });
+  await expect(page.locator('#nearby-results')).toContainText('棟', { timeout: DATA_TIMEOUT });
 });
 
 /**
- * **線を起点にすると、同じ名前の区間をまとめて起点にする** (「〜線沿い」になる)。
- * 1区間だけだと、川や鉄道は細かく切れているので沿線にならない。
+ * **鉄道を起点にすると、押した地点の前後 (1.5km) の線で調べる。** 路線全体 (東西線の沿線を
+ * 丸ごと) は重く (R2 で1分半)、知りたいのはふつう駅や駅と駅の間くらい。
+ * 区間は細かく切れているので、同じ名前の区間を集めてから切り取る (1区間だけだと駅に届かない)。
  */
-test('周辺検索: 線 (鉄道) を起点にすると同じ名前の区間をまとめる', async ({ page }) => {
+test('周辺検索: 鉄道を起点にすると、押した地点の前後の線で調べる', async ({ page }) => {
   test.skip(!(await hasRailway(page)), '鉄道のデータが無い');
+  // 結果を待つのが長い (下) ので、テスト全体の上限も広げる。
+  test.setTimeout(DATA_TIMEOUT * 3);
   await showRailway(page, 14);
   // 絞り込みを開いていると一覧が伸びて地図を覆うので、閉じておく。
   await page.locator(`[data-layer="${LAYER.railway}"] .layer-settings-button[aria-expanded="true"]`).click();
@@ -3514,10 +3519,38 @@ test('周辺検索: 線 (鉄道) を起点にすると同じ名前の区間を�
     return null;
   });
   expect(point, '路線の上の点が見つからない').not.toBeNull();
+  // **線の起点は読む量が増えやすい** (路線全体だと 180回・48MB だった)。読み込みの回数と量を残す。
+  let requests = 0;
+  let bytes = 0;
+  /** ファイルの種類 (名前から数字を除いたもの) → [回数, 量]。 */
+  const byKind = new Map<string, [number, number]>();
+  page.on('response', (response) => {
+    if (!response.url().endsWith('.parquet')) return;
+    const size = response.request().method() === 'HEAD' ? 0 : Number(response.headers()['content-length'] ?? 0);
+    requests++;
+    bytes += size;
+    const kind = response.url().split('/').pop()!.replace(/_?[0-9]+\.parquet$/, '').replace(/\.parquet$/, '');
+    const [n, b] = byKind.get(kind) ?? [0, 0];
+    byKind.set(kind, [n + 1, b + size]);
+  });
+  const started = Date.now();
   await nearbyAt(page, point!);
-  await expect(page.locator('#nearby-origin')).toContainText('起点: 鉄道', { timeout: 60_000 });
-  // 線の沿線には駅がある (同じ名前の区間をまとめているので、画面内の駅が拾える)。
-  await expect(page.locator('#nearby-results dt', { hasText: '駅' })).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator('#nearby-origin')).toContainText('起点: 鉄道', { timeout: DATA_TIMEOUT });
+  await expect(page.locator('#nearby-origin')).toContainText('押した地点の前後');
+  // 前後1.5kmの線の近くには駅がある (都心の駅の間隔は1km前後)。
+  // **重い問いなので長めに待つ。** 8種類ほどのデータを調べ、R2 相当の回線で約80秒かかる
+  // (速さはここで縛らず、下のログの回数と量で見る)。
+  await expect(page.locator('#nearby-results dt', { hasText: '駅' })).toBeVisible({
+    timeout: DATA_TIMEOUT * 1.5,
+  });
+  console.log(
+    `周辺検索 (鉄道) の読み込み: ${requests}回・${(bytes / 1e6).toFixed(1)} MB・${((Date.now() - started) / 1000).toFixed(0)}秒 (` +
+      [...byKind]
+        .sort((a, b) => b[1][1] - a[1][1])
+        .map(([kind, [n, b]]) => `${kind} ${n}回・${(b / 1e6).toFixed(1)}MB`)
+        .join(', ') +
+      ')',
+  );
   await expect(
     page.locator('#nearby-results dt', { hasText: '駅' }).locator('+ dd'),
   ).not.toHaveText('なし');
@@ -3537,8 +3570,8 @@ test('周辺検索: 検索で選んだものを起点にできる', async ({ pag
   const fromSearch = page.locator('#nearby-from-search');
   await expect(fromSearch).toBeVisible();
   await fromSearch.click();
-  await expect(page.locator('#nearby-origin')).toContainText('東京', { timeout: 60_000 });
-  await expect(page.locator('#nearby-results dt', { hasText: '駅' })).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator('#nearby-origin')).toContainText('東京', { timeout: DATA_TIMEOUT });
+  await expect(page.locator('#nearby-results dt', { hasText: '駅' })).toBeVisible({ timeout: DATA_TIMEOUT });
 });
 
 /** ⓘ を開き、Collection カードの「この範囲を取得」を開く。 */

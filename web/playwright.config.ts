@@ -41,8 +41,11 @@ const remoteURL = process.env.PLAYWRIGHT_BASE_URL;
 // 初期化だけで数十回のRangeリクエストが走るので、データが別オリジンにあると
 // 往復の遅延が積み上がって数十秒かかる (実測で約24秒)。
 // アプリを手元の preview で動かしていても、データがR2なら同じだけ待つ。
+// 手元の配信に R2 の待ちを足したとき (`DATA_LATENCY_MS`、vite.config.ts) も同じ。
 const readsRemoteData =
-  Boolean(remoteURL) || /^https?:/.test(process.env.VITE_DATA_BASE_URL ?? '');
+  Boolean(remoteURL) ||
+  /^https?:/.test(process.env.VITE_DATA_BASE_URL ?? '') ||
+  Number(process.env.DATA_LATENCY_MS ?? 0) > 0;
 
 export default defineConfig({
   testDir: './tests',
@@ -63,6 +66,10 @@ export default defineConfig({
   // CIはネットワーク越しにデータを読むので、1回だけやり直す。
   // 再実行でトレースが残るため、ヘッドレスでの失敗を後から追える。
   retries: process.env.CI ? 1 : 0,
+  // **CI では失敗を GitHub の注釈にも書く。** 注釈は公開リポジトリなら認証なしの API で読める
+  // (ジョブのログは認証が要る)。どのテストがどの行で何のエラーで落ちたかが、外から分かる。
+  // 注釈は1ステップにエラー10件まで。
+  reporter: process.env.CI ? [['github'], ['dot']] : 'list',
   use: {
     baseURL: remoteURL ?? local.url,
     trace: 'on-first-retry',

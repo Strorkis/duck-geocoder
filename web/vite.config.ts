@@ -56,6 +56,14 @@ const CONTENT_TYPES: Record<string, string> = {
  * 公開時はここで配るものをすべてオブジェクトストレージに置き、URLを
  * VITE_DATA_BASE_URL / VITE_DUCKDB_BASE_URL で渡す。ビルド成果物には含めない。
  */
+/**
+ * 手元の配信に足す、R2 に似せた待ち。R2 (r2.dev) は1回ごとに約450ms 待たされ、転送は約16Mbps
+ * (2026-10-08 に手元から測った)。`DATA_LATENCY_MS=450 DATA_BANDWIDTH_MBPS=16 pnpm test` のように使う。
+ * DuckDB-WASM は Worker の同期 XHR で読むので、テスト側で通信を横取りするより、配る側で遅らせるほうが確か。
+ */
+const SIMULATED_LATENCY_MS = Number(process.env.DATA_LATENCY_MS ?? 0);
+const SIMULATED_BYTES_PER_MS = (Number(process.env.DATA_BANDWIDTH_MBPS ?? 0) * 1e6) / 8 / 1000;
+
 function serveLikeObjectStorage(urlPath: string, directory: string): Plugin {
   const root = fileURLToPath(new URL(directory, import.meta.url));
   // ベースパス配下で配信されることがあるので、解決後の base を前置きしてマウントする。
@@ -107,8 +115,16 @@ function serveLikeObjectStorage(urlPath: string, directory: string): Plugin {
     }
 
     // HEADは本文を返さない。ヘッダはGETと同じものを返す。
-    if (request.method === 'HEAD') return response.end();
-    createReadStream(file, { start, end }).pipe(response);
+    const send = () => {
+      if (request.method === 'HEAD') return response.end();
+      createReadStream(file, { start, end }).pipe(response);
+    };
+    // **R2 の遅さを手元で再現する** (`DATA_LATENCY_MS` / `DATA_BANDWIDTH_MBPS`)。
+    // 手元では往復の待ちがほぼ0なので、読み込みの回数や量が増えても気付けない。
+    const bytes = request.method === 'HEAD' ? 0 : end - start + 1;
+    const delay = SIMULATED_LATENCY_MS + (SIMULATED_BYTES_PER_MS > 0 ? bytes / SIMULATED_BYTES_PER_MS : 0);
+    if (delay > 0) setTimeout(send, delay);
+    else send();
   };
 
   return {
