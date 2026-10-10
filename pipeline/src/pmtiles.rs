@@ -83,6 +83,11 @@ pub struct VectorLayer {
     /// 地物の数 (全ズームの延べ)。`tilestats` から写す。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<u64>,
+    /// **数の属性の範囲** (属性名 → [最小, 最大])。`tilestats` から写す。
+    ///
+    /// 建物のタイルが**どの段まで入っているか** (`lod` の最大) を、ファイル自身から読むのに使う。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ranges: BTreeMap<String, [f64; 2]>,
 }
 
 /// メタデータのうち、カタログに要るもの。
@@ -117,6 +122,16 @@ struct TileStatsLayer {
     layer: String,
     geometry: Option<String>,
     count: Option<u64>,
+    #[serde(default)]
+    attributes: Vec<TileStatsAttribute>,
+}
+
+/// `tilestats` の属性1つ。数の属性には `min` と `max` が付く。
+#[derive(Debug, Deserialize)]
+struct TileStatsAttribute {
+    attribute: String,
+    min: Option<f64>,
+    max: Option<f64>,
 }
 
 /// メタデータを読む。圧縮はヘッダの `internal_compression` に従う。
@@ -142,6 +157,11 @@ pub fn parse_metadata(bytes: &[u8], compression: u8) -> Result<Metadata> {
             if let Some(stat) = stats.layers.iter().find(|stat| stat.layer == layer.id) {
                 layer.geometry.clone_from(&stat.geometry);
                 layer.count = stat.count;
+                layer.ranges = stat
+                    .attributes
+                    .iter()
+                    .filter_map(|a| Some((a.attribute.clone(), [a.min?, a.max?])))
+                    .collect();
             }
         }
     }
@@ -149,6 +169,23 @@ pub fn parse_metadata(bytes: &[u8], compression: u8) -> Result<Metadata> {
         vector_layers,
         generator_options: raw.generator_options,
     })
+}
+
+/// 手元の PMTiles のヘッダとメタデータを読む (配信ディレクトリに置いたものをカタログに載せるとき)。
+pub fn read_local(path: &std::path::Path) -> Result<(Header, Metadata)> {
+    use std::io::{Seek, SeekFrom};
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("開けません: {}", path.display()))?;
+    let mut head = vec![0u8; HEADER_LEN as usize];
+    file.read_exact(&mut head)
+        .with_context(|| format!("ヘッダを読めません: {}", path.display()))?;
+    let header = parse_header(&head)?;
+    let mut bytes = vec![0u8; header.metadata_length as usize];
+    file.seek(SeekFrom::Start(header.metadata_offset))?;
+    file.read_exact(&mut bytes)
+        .with_context(|| format!("メタデータを読めません: {}", path.display()))?;
+    let metadata = parse_metadata(&bytes, header.internal_compression)?;
+    Ok((header, metadata))
 }
 
 #[cfg(test)]
@@ -233,5 +270,19 @@ mod tests {
         assert_eq!(bld.geometry.as_deref(), Some("Polygon"));
         assert_eq!(bld.count, Some(80_556_822));
         assert_eq!(metadata.vector_layers[1].geometry.as_deref(), Some("Point"));
+    }
+
+    /// **数の属性の範囲も写す。** 建物のタイルがどの段まで入っているかをここから読む。
+    /// 文字列の属性 (min/max が無い) は写さない。
+    #[test]
+    fn copies_numeric_ranges_from_tilestats() {
+        let json = r#"{"vector_layers":[{"id":"buildings","minzoom":12,"maxzoom":14}],
+            "tilestats":{"layers":[{"layer":"buildings","geometry":"Polygon","count":10,
+              "attributes":[{"attribute":"lod","type":"number","min":0,"max":1},
+                            {"attribute":"name","type":"string","values":["a"]}]}]}}"#;
+        let metadata = parse_metadata(json.as_bytes(), 1).unwrap();
+        let ranges = &metadata.vector_layers[0].ranges;
+        assert_eq!(ranges.get("lod"), Some(&[0.0, 1.0]));
+        assert!(!ranges.contains_key("name"));
     }
 }

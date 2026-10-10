@@ -42,7 +42,7 @@
 //! `root` は `../catalog.json`、stac-geoparquet は `../items.parquet` になる。
 //! **stac-geoparquet の中の Item のリンクとアセットは、その Parquet (起点) からの相対。**
 
-use crate::catalog::{ColumnEntry, DatasetEntry, DatasetKind};
+use crate::catalog::{ColumnEntry, DatasetEntry, DatasetKind, LocalTiles};
 use crate::external::{ExternalRaster, ExternalTileset, RasterRole, TileLink};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
@@ -119,6 +119,20 @@ fn items_href(dir: &str) -> String {
         format!("../{file}")
     }
 }
+
+/// `dir` にある文書から、配信の起点からのパス `file` への相対リンク。
+fn relative_to(dir: &str, file: &str) -> String {
+    if dir.is_empty() {
+        return file.to_string();
+    }
+    match file.strip_prefix(&format!("{dir}/")) {
+        Some(rest) => rest.to_string(),
+        None => format!("{}{file}", "../".repeat(dir.split('/').count())),
+    }
+}
+
+/// 建物のタイルのアセットの題名。
+const TILES_TITLE: &str = "引いた表示のための建物のベクタタイル (重要な段だけ)";
 
 /// `dir` にある文書から `catalog.json` への相対リンク。
 ///
@@ -295,10 +309,6 @@ fn item(entry: &DatasetEntry, dir: &str) -> Value {
     if let Some(source_lod) = &entry.source_lod {
         properties["duck:source_lod"] = json!(source_lod);
     }
-    // **概観 (引いた表示で読む、上の段だけの複製) か。** UI はこれで元のファイルと分ける。
-    if let Some(lod_max) = entry.lod_max {
-        properties["duck:lod_max"] = json!(lod_max);
-    }
 
     // **Item は stac-geoparquet (配信の起点に置く1ファイル) に入るので、リンクとアセットは
     // 起点からの相対で書く** (Collection の文書の隣ではない)。
@@ -335,7 +345,12 @@ fn item(entry: &DatasetEntry, dir: &str) -> Value {
     })
 }
 
-fn collection(id: &str, entries: &[&DatasetEntry], dir: &str) -> Result<Value> {
+fn collection(
+    id: &str,
+    entries: &[&DatasetEntry],
+    dir: &str,
+    tiles: Option<&LocalTiles>,
+) -> Result<Value> {
     let Some(first) = entries.first() else {
         bail!("{id} に1件も入っていない");
     };
@@ -461,6 +476,51 @@ fn collection(id: &str, entries: &[&DatasetEntry], dir: &str) -> Result<Value> {
         .collect();
     if vintages.len() == 1 && entries.iter().all(|entry| entry.vintage.is_some()) {
         body["duck:vintage"] = json!(vintages.iter().next());
+    }
+    // **引いた表示のためのベクタタイル** (`build_building_tiles`)。UI は段で間引くズームで
+    // GeoParquet を読む代わりにこれを描く。元の GeoParquet は Item のまま (調べる・保存はそちら)。
+    if let Some(tiles) = tiles {
+        let href = relative_to(dir, &tiles.file);
+        let layers: Vec<&str> = tiles
+            .metadata
+            .vector_layers
+            .iter()
+            .map(|layer| layer.id.as_str())
+            .collect();
+        // **どの段まで入っているかはファイル自身から読む** (tippecanoe の tilestats の `lod` の最大)。
+        let lod_max = tiles
+            .metadata
+            .vector_layers
+            .iter()
+            .filter_map(|layer| layer.ranges.get("lod"))
+            .map(|[_, max]| *max)
+            .fold(None, |acc: Option<f64>, max| {
+                Some(acc.map_or(max, |a| a.max(max)))
+            });
+        let Some(lod_max) = lod_max else {
+            bail!("{id} のタイルに段 (lod) の範囲がありません: {}", tiles.file);
+        };
+        body["assets"]["tiles"] = json!({
+            "href": href,
+            "type": PMTILES_MEDIA_TYPE,
+            "title": TILES_TITLE,
+            "roles": ["visual"],
+            "file:size": tiles.bytes,
+            "duck:zoom": [tiles.header.min_zoom, tiles.header.max_zoom],
+            "duck:lod_max": lod_max as u8,
+            "pmtiles:layers": layers,
+        });
+        body["links"]
+            .as_array_mut()
+            .expect("links は配列")
+            .push(json!({
+                "rel": "pmtiles",
+                "href": href,
+                "type": PMTILES_MEDIA_TYPE,
+                "title": TILES_TITLE,
+                "pmtiles:layers": layers,
+            }));
+        body["stac_extensions"] = json!([TABLE_EXTENSION, FILE_EXTENSION, WEB_MAP_LINKS_EXTENSION]);
     }
     Ok(body)
 }
@@ -691,10 +751,11 @@ pub struct Built {
 /// `externals` と `rasters` は外部で公開されている配信物 ([`crate::external`])。
 pub fn build(
     datasets: &[DatasetEntry],
+    tiles: &[LocalTiles],
     externals: &[ExternalTileset],
     rasters: &[ExternalRaster],
 ) -> Result<Built> {
-    let japanese = build_japanese(datasets, externals, rasters)?;
+    let japanese = build_japanese(datasets, tiles, externals, rasters)?;
     Ok(Built {
         documents: crate::stac_i18n::localize(japanese.documents)?,
         items: japanese.items,
@@ -704,6 +765,7 @@ pub fn build(
 /// 日本語の文書だけを作る (英語版とまとめは [`build`] が足す)。
 pub fn build_japanese(
     datasets: &[DatasetEntry],
+    tiles: &[LocalTiles],
     externals: &[ExternalTileset],
     rasters: &[ExternalRaster],
 ) -> Result<Built> {
@@ -736,7 +798,12 @@ pub fn build_japanese(
 
         documents.push(Document {
             path: in_dir(&dir, &collection_file(id)),
-            body: collection(id, entries, &dir)?,
+            body: collection(
+                id,
+                entries,
+                &dir,
+                tiles.iter().find(|t| t.collection == *id),
+            )?,
         });
         // Item は文書にせず、stac-geoparquet にまとめる (Collection ごとに並べる)。
         items.extend(entries.iter().map(|entry| item(entry, &dir)));
@@ -867,12 +934,12 @@ mod tests {
     /// 外部のタイルセット無しで、日本語の文書だけを組み立てる。ほとんどのテストは
     /// GeoParquet 側だけを見る (仮の日本語には英語の訳が無いので、英語版は作らない)。
     fn build(datasets: &[DatasetEntry]) -> Result<Vec<Document>> {
-        super::build_japanese(datasets, &[], &[]).map(|built| built.documents)
+        super::build_japanese(datasets, &[], &[], &[]).map(|built| built.documents)
     }
 
     /// 1つの Collection の Item (stac-geoparquet にまとめる前の JSON)。
     fn items_of(datasets: &[DatasetEntry], collection: &str) -> Vec<Value> {
-        super::build_japanese(datasets, &[], &[])
+        super::build_japanese(datasets, &[], &[], &[])
             .unwrap()
             .items
             .into_iter()
@@ -895,9 +962,10 @@ mod tests {
             entry("mesh_pop_13", "estat/mesh_pop_13.parquet", None),
             overture,
         ];
-        let documents = super::build_japanese(&datasets, &[GSI_OPTIMAL_BVMAP], EXTERNAL_RASTERS)
-            .unwrap()
-            .documents;
+        let documents =
+            super::build_japanese(&datasets, &[], &[GSI_OPTIMAL_BVMAP], EXTERNAL_RASTERS)
+                .unwrap()
+                .documents;
 
         // **何から作られたか**を辿れる。別のサブカタログへは `../` で。
         let derived = |document: &Value| -> Vec<String> {
@@ -1041,7 +1109,8 @@ mod tests {
         use crate::external::EXTERNAL_RASTERS;
         let datasets = vec![entry("mesh_pop_13", "estat/mesh_pop_13.parquet", None)];
         // overture-buildings が無いので、Re:Earth Buildings の derived_from が解決できない。
-        let Err(error) = super::build_japanese(&datasets, &[GSI_OPTIMAL_BVMAP], EXTERNAL_RASTERS)
+        let Err(error) =
+            super::build_japanese(&datasets, &[], &[GSI_OPTIMAL_BVMAP], EXTERNAL_RASTERS)
         else {
             panic!("通ってしまった");
         };
@@ -1051,7 +1120,7 @@ mod tests {
     #[test]
     fn external_tilesets_point_at_the_publisher() {
         let datasets = vec![entry("mesh_pop_13", "estat/mesh_pop_13.parquet", None)];
-        let built = super::build_japanese(&datasets, &[GSI_OPTIMAL_BVMAP], &[]).unwrap();
+        let built = super::build_japanese(&datasets, &[], &[GSI_OPTIMAL_BVMAP], &[]).unwrap();
         let documents = built.documents;
 
         let root = find(&documents, "catalog.json");
@@ -1142,7 +1211,6 @@ mod tests {
             covers: None,
             tiers: None,
             lod_by_tier: false,
-            lod_max: None,
             collection_via: "https://example.invalid/download",
         }
     }
@@ -1541,23 +1609,61 @@ mod tests {
         );
     }
 
-    /// **概観は Item で名乗る。** UI はこれで元のファイルと分ける (一緒に読むと二重に出る)。
-    /// stac-geoparquet にも書けること (知らない properties は書き出しで止まる)。
+    /// **建物のタイルは Collection のアセットとリンクに載る。** どの段まで入っているかは
+    /// タイル自身 (tilestats の `lod` の最大) から読む。
     #[test]
-    fn item_says_it_is_an_overview() {
-        let mut overview = entry("a", "a.parquet", None);
-        overview.lod_max = Some(1);
-        let plain = entry("b", "b.parquet", None);
+    fn collection_points_to_its_tiles() {
+        let datasets = [entry("a", "a.parquet", None)];
+        let layer = crate::pmtiles::VectorLayer {
+            id: "buildings".to_string(),
+            minzoom: 12,
+            maxzoom: 14,
+            fields: BTreeMap::new(),
+            geometry: Some("Polygon".to_string()),
+            count: Some(10),
+            ranges: BTreeMap::from([("lod".to_string(), [0.0, 1.0])]),
+        };
+        let tiles = LocalTiles {
+            collection: "estat-mesh-pop",
+            file: "a_tiles.pmtiles".to_string(),
+            bytes: 1234,
+            header: crate::pmtiles::Header {
+                metadata_offset: 0,
+                metadata_length: 0,
+                addressed_tiles: 1,
+                internal_compression: 2,
+                tile_type: 1,
+                min_zoom: 12,
+                max_zoom: 14,
+                bounds: [139.0, 35.0, 140.0, 36.0],
+            },
+            metadata: crate::pmtiles::Metadata {
+                vector_layers: vec![layer],
+                generator_options: None,
+            },
+        };
+        let documents = super::build_japanese(&datasets, &[tiles], &[], &[])
+            .unwrap()
+            .documents;
+        let collection = find(&documents, "estat-mesh-pop.json");
+        let asset = &collection["assets"]["tiles"];
+        assert_eq!(asset["href"], "a_tiles.pmtiles");
+        assert_eq!(asset["type"], PMTILES_MEDIA_TYPE);
+        assert_eq!(asset["duck:lod_max"], 1);
+        assert_eq!(asset["duck:zoom"], json!([12, 14]));
+        assert_eq!(asset["pmtiles:layers"], json!(["buildings"]));
+        let links = collection["links"].as_array().unwrap();
+        assert!(links.iter().any(|link| link["rel"] == "pmtiles"));
+    }
 
-        let datasets = [overview, plain];
-        let features = items_of(&datasets, "estat-mesh-pop");
-        assert_eq!(features[0]["properties"]["duck:lod_max"], 1);
-        assert!(features[1]["properties"].get("duck:lod_max").is_none());
-
-        let path =
-            std::env::temp_dir().join(format!("stac-overview-{}.parquet", std::process::id()));
-        crate::stac_geoparquet::write(&path, &features).unwrap();
-        std::fs::remove_file(&path).ok();
+    #[test]
+    fn relative_paths_to_files_in_other_directories() {
+        assert_eq!(relative_to("", "plateau/a.pmtiles"), "plateau/a.pmtiles");
+        assert_eq!(relative_to("plateau", "plateau/a.pmtiles"), "a.pmtiles");
+        assert_eq!(
+            relative_to("plateau", "overture/a.pmtiles"),
+            "../overture/a.pmtiles"
+        );
     }
 
     #[test]

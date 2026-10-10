@@ -73,11 +73,6 @@ pub struct DatasetEntry {
     /// **段で間引く `lod` 列を持つか** (`add_building_lod` が書く `duck:lod_by_tier`)。
     /// Collection の全ファイルが持つときだけ、UI に `lod_column` として伝える。
     pub lod_by_tier: bool,
-    /// **概観なら、入っている段の上限** (`build_building_overview` が書く `duck:lod_max`)。
-    ///
-    /// 概観は元のファイルの複製なので、UI は Item のこれを見て元のファイルと分ける
-    /// (一緒に読むと同じ建物が二重に出る)。元のファイルは `None`。
-    pub lod_max: Option<u8>,
     /// **この出所の配布元。** 出所全体で1つ。ファイル側に `via` が無くてもこれはある。
     pub collection_via: &'static str,
 }
@@ -1038,13 +1033,6 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         .and_then(crate::lod::coarse_resolution_m);
     let covers = key_value(crate::coverage::COVERS_KEY);
     let lod_by_tier = key_value("duck:lod_by_tier").is_some();
-    let lod_max = key_value("duck:lod_max")
-        .map(|value| {
-            value
-                .parse::<u8>()
-                .with_context(|| format!("duck:lod_max が段の順位ではありません: {value} ({file})"))
-        })
-        .transpose()?;
 
     let columns: Vec<ColumnEntry> = file_metadata
         .schema_descr()
@@ -1093,7 +1081,6 @@ pub fn describe_parquet(path: &Path, base: &Path) -> Result<DatasetEntry> {
         covers,
         tiers,
         lod_by_tier,
-        lod_max,
         collection_via: described.via,
     })
 }
@@ -1111,6 +1098,65 @@ fn collect_parquet(dir: &Path, found: &mut Vec<std::path::PathBuf>) -> Result<()
         }
     }
     Ok(())
+}
+
+/// 配信ディレクトリに置いた PMTiles (`build_building_tiles` が作る)。Collection のアセットになる。
+#[derive(Debug, Clone)]
+pub struct LocalTiles {
+    /// 属する Collection。ファイル名の頭で決まる (`plateau_bldg_tiles` → `plateau-buildings`)。
+    pub collection: &'static str,
+    /// 配信時のパス (`plateau/plateau_bldg_tiles.pmtiles`)。
+    pub file: String,
+    pub bytes: u64,
+    pub header: crate::pmtiles::Header,
+    pub metadata: crate::pmtiles::Metadata,
+}
+
+/// 配下の *.pmtiles を集めて、どの Collection のものかを決める。
+///
+/// **建物の Collection のものだけを載せる** (いまタイルを作るのは建物だけ)。名前の頭が
+/// どの Collection にも当たらないものはエラーにする (置き間違いを黙って配らない)。
+pub fn find_tiles(dir: &Path) -> Result<Vec<LocalTiles>> {
+    fn collect(dir: &Path, found: &mut Vec<std::path::PathBuf>) -> Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                collect(&path, found)?;
+            } else if path.extension().is_some_and(|ext| ext == "pmtiles") {
+                found.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut paths = Vec::new();
+    collect(dir, &mut paths)?;
+    paths.sort();
+    paths
+        .iter()
+        .map(|path| {
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .context("ファイル名が取得できない")?;
+            let file = delivery_path(path, dir)?;
+            let described = describe(stem)
+                .with_context(|| format!("どの Collection のタイルか分かりません: {file}"))?;
+            if !matches!(
+                described.kind,
+                DatasetKind::Buildings | DatasetKind::PlateauBuildings
+            ) {
+                bail!("建物以外のタイルは載せていません: {file}");
+            }
+            let (header, metadata) = crate::pmtiles::read_local(path)?;
+            Ok(LocalTiles {
+                collection: described.collection,
+                file,
+                bytes: std::fs::metadata(path)?.len(),
+                header,
+                metadata,
+            })
+        })
+        .collect()
 }
 
 /// ディレクトリ配下の *.parquet を走査してカタログを組み立てる。

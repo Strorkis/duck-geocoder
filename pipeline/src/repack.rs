@@ -64,10 +64,6 @@ pub enum Layout {
     /// 行グループの残りの列を読む。bbox が後ろにあると、読むたびに行グループの頭へ戻る。
     /// 測った結果は docs/pipeline.md の「建物の並べ方」。
     CellFirst,
-    /// 段ごとに分け、段の中を場所で並べる ([`Layout::LevelFirst`] と同じ)。行グループは
-    /// [`CELL_TARGET_BYTES`] ぶんで、bbox の列を先頭に置く。**建物の概観**
-    /// (`build_building_overview`) 向け — 引いた表示で、広い範囲の上の段だけを続けて読む。
-    Overview,
 }
 
 /// [`Layout::CellFirst`] の場所1つぶんの目標バイト数 (全段の合計)。
@@ -92,20 +88,20 @@ pub fn repack_with(
     let input_bytes = std::fs::metadata(input)?.len();
     let row_group_size = row_group_size.unwrap_or_else(|| match layout {
         Layout::LevelFirst => spatial_pack::default_row_group_size(input_bytes, batch.num_rows()),
-        Layout::CellFirst | Layout::Overview => {
+        Layout::CellFirst => {
             spatial_pack::row_group_size_for(CELL_TARGET_BYTES, input_bytes, batch.num_rows())
         }
     });
 
     let (order, segments) = match layout {
-        Layout::LevelFirst | Layout::Overview => pack_by_level(&batch, &bboxes, row_group_size)?,
+        Layout::LevelFirst => pack_by_level(&batch, &bboxes, row_group_size)?,
         Layout::CellFirst => pack_by_cell(&batch, &bboxes, row_group_size)?,
     };
     let indices = UInt32Array::from(order);
     let sorted = take_record_batch(&batch, &indices).context("行の並べ替えに失敗しました")?;
     let sorted = match layout {
         Layout::LevelFirst => sorted,
-        Layout::CellFirst | Layout::Overview => column_first(&sorted, &covering.column)?,
+        Layout::CellFirst => column_first(&sorted, &covering.column)?,
     };
 
     // 書き込み中に落ちたときに元ファイルを壊さないよう、一時ファイル経由にする。

@@ -17,10 +17,13 @@ fn main() -> Result<()> {
     };
 
     let datasets = catalog::build_catalog(&dir)?;
+    // 建物の引いた表示のためのタイル (`build_building_tiles`)。Collection のアセットになる。
+    let tiles = catalog::find_tiles(&dir)?;
     // 外部の配信物 (地理院のベクトルタイルなど) はスナップショットから載せる。
     // **ここではネットワークに触らない** (`describe_pmtiles` で先に取っておく)。
     let built = stac::build(
         &datasets,
+        &tiles,
         external::EXTERNAL_TILESETS,
         external::EXTERNAL_RASTERS,
     )?;

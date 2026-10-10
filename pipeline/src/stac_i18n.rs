@@ -61,6 +61,10 @@ const EN: &[(&str, &str)] = &[
         "Item list (stac-geoparquet, covering all Collections)",
     ),
     (
+        "引いた表示のための建物のベクタタイル (重要な段だけ)",
+        "Vector tiles of buildings for zoomed-out views (important tiers only)",
+    ),
+    (
         "国土交通省が整備している3D都市モデルです。",
         "3D city models maintained by the Ministry of Land, Infrastructure, Transport and Tourism (MLIT).",
     ),
