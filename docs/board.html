@@ -313,7 +313,7 @@
   <body>
     <header>
       <h1>duck-geocoder ダッシュボード</h1>
-      <span class="meta">更新 2026-10-09 23:20 (日本時間)</span>
+      <span class="meta">更新 2026-10-10 10:45 (日本時間)</span>
       <span class="meta">
         <a href="https://strorkis.github.io/duck-geocoder/">公開サイト</a> ·
         <a href="roadmap.md">方針 (roadmap.md)</a> · STAC 配布形式の実験
@@ -333,7 +333,7 @@
       <div class="card kpi">
         <div class="label">公開待ちのコミット</div>
         <div class="value">3 <small>件</small></div>
-        <span class="status you">建物の概観を R2 へ → push 待ち (デプロイは 10-07 から止まっている)</span>
+        <span class="status you">push 待ち (R2 へのアップロードは要らない。10-10 の CI は周辺検索で落ちた)</span>
       </div>
       <div class="card kpi">
         <div class="label">建物</div>
@@ -379,11 +379,9 @@
           </span>
         </li>
         <li class="current">
-          <b>建物の概観を R2 へ上げる</b><span class="status you">あなたの番</span>
+          <b>push する (アップロードは要らない)</b><span class="status you">あなたの番</span>
           <span class="sub">
-            手順は <a href="deploy.md">deploy.md</a> の「2026-10-09 の分」。
-            ① 概観 48個・409MB → ② items.parquet・まとめ・英語版 (46個) → ③ push。
-            ① を ② より先に。10-08 の分の ①〜③ は済んでいる
+            概観の分 (deploy.md「2026-10-09 の分」) は上げ済み。10-10 の CI は、鉄道を起点にした周辺検索 (路線全体で1分半) で落ちた。鉄道は押した地点の前後1.5kmだけを調べるように直し、手元から R2 に向けた全テストは通った (116件)。
           </span>
         </li>
         <li>
@@ -521,6 +519,10 @@
               <td>STAC Browser 5.1.0 に<b>パッチを1つ当てて</b>ビルドする (相対の <code>rel: items</code> がページ基準で解決され 404 になる不具合)。<code>rel: items</code> が無くなったので今は効く場面が無い。上流で直ったら外す</td>
             </tr>
             <tr class="group"><th colspan="2">判断の記録 (docs)</th></tr>
+            <tr>
+              <td><a href="geoparquet-layout.md">geoparquet-layout.md</a></td>
+              <td>GeoParquet の並べ方と読み方を1か所に。問い合わせの形ごとの相性、テストで見えていない部分、COGP に返せそうなこと</td>
+            </tr>
             <tr>
               <td><a href="duckdb-wasm-range-requests.md">duckdb-wasm-range-requests.md</a></td>
               <td>部分取得が黙って全件取得に落ちる罠と、CORS の要件</td>

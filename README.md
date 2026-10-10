@@ -36,6 +36,7 @@
 | [docs/pipeline.md](docs/pipeline.md) | データの入手から、配信できるGeoParquetを作るまで |
 | [docs/deploy.md](docs/deploy.md) | 開発・テスト・デプロイ |
 | [docs/duckdb-wasm-range-requests.md](docs/duckdb-wasm-range-requests.md) | ブラウザに部分取得させるまでの調査記録 |
+| [docs/geoparquet-layout.md](docs/geoparquet-layout.md) | GeoParquet の並べ方と読み方。工夫・測った数字・見えていない課題・COGP に返せそうなこと |
 | [AGENTS.md](AGENTS.md) | このリポジトリで作業するときの約束事 |
 
 ## データの出所

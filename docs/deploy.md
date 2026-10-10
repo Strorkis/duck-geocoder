@@ -84,6 +84,17 @@ Viteにバンドルさせているが、同種の破綻は再び起こりうる�
 VITE_BASE_PATH=/duck-geocoder/ pnpm test:dist
 ```
 
+**R2 の遅さは手元では見えない** (往復の待ちがほぼ0)。手元の配信に待ちを足して確かめられる
+(1回 450ms・16Mbps は r2.dev を測った値。テストの待ちも R2 と同じ長さになる)。
+
+```sh
+DATA_LATENCY_MS=450 DATA_BANDWIDTH_MBPS=16 pnpm test:dist
+```
+
+**CI の失敗は注釈で読める。** CI では Playwright が失敗を GitHub の注釈にも書くので、認証なしで
+`https://api.github.com/repos/<owner>/<repo>/check-runs/<job id>/annotations` から読める
+(ジョブのログは認証が要る)。
+
 ## 0. 公開前に権利を確かめる (2026-10-05 に通しで見た)
 
 **配るもの・読みに行くもの・表示するものを、それぞれの条件と突き合わせた。** 規約は変わるので、
