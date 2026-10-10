@@ -148,6 +148,9 @@ tippecanoe -q -o plateau_overview.pmtiles -Z12 -z14 -l buildings -T lod:int \
 - **「1つの出所 = 1つのファイル」に戻せる。** 元の GeoParquet は都市ごとのまま (上の「どこまで分けるか」)、
   引いた表示は PMTiles 1つ。概観の GeoParquet (327MB) は要らなくなり、容量も減る
 
+**組み込んだ (2026-10-10)。** 利用者の判断で、引いた表示で件数が出なくなる点も受け入れた。
+作り方と UI の扱いは pipeline.md の「引いた表示はタイル (PMTiles) で描く」。
+
 ### 組み込むときの得失
 
 | | いま (GeoParquet の概観) | PMTiles |

@@ -393,6 +393,42 @@ git push
 
 CI が通ったら、上の「10-03 と 10-07 の分」の 4 (日本語の JSON) と 5 (古いファイルを消す) に戻る。
 
+### 2026-10-10 の分 (引いた表示をタイルに)
+
+10-09 の分で CI が通り、**10-10 11:19 に今のカタログ形式のアプリが公開された** (日本語の JSON と
+古いファイルの削除はまだ)。そのあと、引いた表示を GeoParquet の概観から **PMTiles** に置き換えた
+(docs/pipeline.md の「引いた表示はタイル (PMTiles) で描く」)。
+
+**公開中のアプリは `collections.json` を読む新しいもの**なので、日本語の JSON も順番を気にせず上げられる
+(「10-03 と 10-07 の分」の 4 はここでまとめて済む)。
+
+```sh
+# 1. タイル (PLATEAU 123MB・Overture 39MB、2ファイル)
+rclone copy data/output "$R2" \
+  --filter '+ /plateau/plateau_bldg_tiles.pmtiles' --filter '+ /overture/overture_buildings_tiles.pmtiles' \
+  --filter '- **' -P
+
+# 2. カタログ (items.parquet・まとめ・英語版・日本語の JSON。89ファイル)
+rclone copy data/output "$R2" \
+  --filter '+ /items.parquet' --filter '+ *.json' --filter '- **' -P
+
+# 3. push すると CI が流れ直す
+git push
+
+# 4. 新しいアプリが公開されたら、使わなくなったファイルを消す (先に --dry-run で見る)
+rclone delete "$R2" --include '/plateau/plateau_bldg_overview_*.parquet' --include '/overture/overture_buildings_overview_*.parquet' --dry-run
+rclone delete "$R2" --include '/plateau/plateau_bldg_overview_*.parquet' --include '/overture/overture_buildings_overview_*.parquet'
+rclone delete "$R2" --include '*-items.json' --dry-run
+rclone delete "$R2" --include '*-items.json'
+rclone delete "$R2/overture/overture_buildings_minato.parquet"
+```
+
+- **1 を 2 より先に。** カタログがタイルを指しているのにタイルが無いと、新しいアプリの引いた表示が描けない
+- 2 と 3 の間、公開中のアプリ (概観を読む版) は items.parquet から概観が消えるので、引いた表示で
+  都市ごとの GeoParquet を読む (遅いが壊れない)。3 のデプロイで直る
+- 4 の概観は 48ファイル・409MB。消すと R2 の合計は無料枠に収まる (下のボードの数字)
+- 選ばれるのは 1 が2ファイル、2 が89ファイル (`rclone --config /dev/null lsf -R data/output --files-only --filter …`)
+
 ### 平置きだった頃の古いJSONを消す
 
 `rclone copy` は消さないので、ルートに残る。`catalog.json` を差し替えれば

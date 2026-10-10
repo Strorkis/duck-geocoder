@@ -471,8 +471,8 @@ cargo run --release --bin overture_buildings_to_geoparquet -- \
 for f in ../data/output/overture/overture_buildings_[0-3]*.parquet; do
   cargo run --release --bin optimize_geoparquet -- "$f" "$f"; done
 cargo run --release --bin add_building_lod -- ../data/output/overture/overture_buildings_[0-3]*.parquet
-# 引いた表示のための概観 (PLATEAU と両方を作り直す。約1分20秒)
-cargo run --release --bin build_building_overview -- ../data/output
+# 引いた表示のためのタイル (PMTiles。tippecanoe が要る。約1分半)
+cargo run --release --bin build_building_tiles -- ../data/output
 ```
 
 - **分け方は QuadKey** (`overture_buildings_<quadkey>.parquet`)。地域メッシュは日本の基準
@@ -939,7 +939,7 @@ DuckDB-WASM は1回ずつ順に読み、続けて読む間は読み取りを4倍
   698ファイルで2分20秒
 - 線の粗い段は段ごとのまま (引いた表示で粗い段だけを広く読むので、そちらが合う)
 
-##### 建物の概観 — 引いた表示は別のファイルを読む (2026-10-09)
+##### 建物の概観 — 引いた表示は別のファイルを読む (2026-10-09。10-10 にタイルへ置き換えた)
 
 **引いた表示の重さは、ファイルを開く回数だった。** 東京駅 z13 では区ごとのファイルを
 14個開き、R2 の回線 (1回450ms) で 229回・121秒。並べ方では減らない (上の節)。
@@ -975,6 +975,39 @@ DuckDB-WASM は1回ずつ順に読み、続けて読む間は読み取りを4倍
 | **概観 + 開く往復1回** | **29秒・39回・3ファイル** | **20秒・23回** | **25秒・29回** | **28秒・40回** |
 
 z16 が縮んだのは開く往復のほう (概観は読まない)。
+
+##### 引いた表示はタイル (PMTiles) で描く (2026-10-10)
+
+**上の概観 (GeoParquet) は、10-10 にタイルへ置き換えた。** 概観を作ると「1つの出所 = 1つのファイル」が
+崩れ (利用者の指摘)、しかも同じ建物を PMTiles にすると速かった (東京駅 z13 39秒 → 10秒、z14.5 36秒 → 3.4秒)。
+MapLibre はタイルを並列に取り (DuckDB は1回ずつ順に)、タイルは描く用に簡略化されて量が少ない。
+比べた結果は [format-survey.md](format-survey.md)「測ったこと」、分け方の比較は
+[geoparquet-layout.md](geoparquet-layout.md)「どこまでファイルを分けるか」。
+
+```sh
+# tippecanoe が要る (/usr/local/bin。mise では入れていない)。PLATEAU と Overture を作り直す。約1分半
+cargo run --release --bin build_building_tiles -- ../data/output
+```
+
+| | 出所ごとのファイル | 大きさ |
+| --- | --- | ---: |
+| PLATEAU | `plateau/plateau_bldg_tiles.pmtiles` | 123MB |
+| Overture | `overture/overture_buildings_tiles.pmtiles` | 39MB |
+
+- **最後の段 (住宅・その他) を除く。** 段 k はズーム `12 + k` から入れる (UI は1ズーム引くごとに1段減らす)。
+  ズームは 12〜14 で、それより寄った間引き (表示量「控えめ」の z15) は z14 のタイルを拡大して描く
+- タイルの中では間引かない (`--no-feature-limit --no-tile-size-limit`)。段で既に間引いてあり、
+  さらに落とすと「無い」と読まれる
+- 属性は `lod` (段の順位)・`name`・`category` (用途の列。PLATEAU の `usage`、Overture の `class` をそろえた)・`height`
+- **カタログは Collection のアセット `tiles` に載せる** (`roles: visual`、`duck:zoom`、`duck:lod_max`、
+  `pmtiles:layers`)。地図の道具が読めるよう `rel: pmtiles` のリンクも付ける (web-map-links)。
+  **どの段まで入っているかはタイル自身から読む** (tippecanoe の tilestats の `lod` の最大)
+- 元の GeoParquet は都市ごとのまま。寄った表示・周辺検索・保存はそちら
+- UI は、間引くズームでタイルに入っている段なら問い合わせずにタイルを描く。**タイルは数えられない**ので、
+  件数の代わりに「表示しています · 公共施設のみ」と段だけを言う。絞り込み (高さ・用途・段) はスタイルの
+  filter で、吹き出しは層 (= 出所) から出所と段の名前を補う
+- 経由する FlatGeobuf は PLATEAU で 788MB (作ったら消す)。名前は `.fgb` で終える
+  (tippecanoe も GDAL も拡張子で形式を決める。違うと GDAL はディレクトリを作り、tippecanoe は形が無いと止まる)
 #### 表示量は利用者が選ぶ (控えめ / 標準 / 多め)
 
 上限とズームの閾値は**どこまで描けるかで決まり、それは端末で違う**。

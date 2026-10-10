@@ -313,7 +313,7 @@
   <body>
     <header>
       <h1>duck-geocoder ダッシュボード</h1>
-      <span class="meta">更新 2026-10-10 11:45 (日本時間)</span>
+      <span class="meta">更新 2026-10-10 12:40 (日本時間)</span>
       <span class="meta">
         <a href="https://strorkis.github.io/duck-geocoder/">公開サイト</a> ·
         <a href="roadmap.md">方針 (roadmap.md)</a> · STAC 配布形式の実験
@@ -324,16 +324,16 @@
     <section class="kpis" aria-label="主な数字">
       <div class="card kpi">
         <div class="label">配信データ (手元の data/output)</div>
-        <div class="value">10.11 <small>GB / 無料枠 10 GB</small></div>
-        <div class="meter" role="img" aria-label="無料枠の101%">
-          <span style="width: 100%; background: var(--warning)"></span>
+        <div class="value">9.86 <small>GB / 無料枠 10 GB</small></div>
+        <div class="meter" role="img" aria-label="無料枠の99%">
+          <span style="width: 99%; background: var(--warning)"></span>
         </div>
-        <span class="status you">無料枠を約0.1GB 超える (建物の概観 0.41GB を足した。超えた分は払う方針)</span>
+        <span class="status you">無料枠の99%。R2 には概観 (0.41GB) が残っていて、消すまでは超える</span>
       </div>
       <div class="card kpi">
         <div class="label">公開待ちのコミット</div>
         <div class="value">6 <small>件</small></div>
-        <span class="status you">公開済み (10-10 11:19)。残りは資料と計測用の道具 (アプリの動きは変わらない)</span>
+        <span class="status you">引いた表示をタイルにした。タイルとカタログを R2 へ → push 待ち</span>
       </div>
       <div class="card kpi">
         <div class="label">建物</div>
@@ -367,15 +367,14 @@
             英語の画面 (<code>?lang=en</code>。右下に「🌐 日本語 | English」)・カタログの英語版 (Language extension)・
             JSON のまとめ (Item は stac-geoparquet 1つ・アプリは起動時にまとめを1回読む)・
             建物の並べ直し (場所ごと・段ごと。R2 で寄った表示が約35秒 → 約16秒の見積もり)・
-            建物の概観 (引いた表示は都道府県・QuadKey ごとのファイルを読む。R2 相当の回線で z13 121秒 → 29秒)
+            引いた表示の建物をタイル (PMTiles) で描く (R2 相当の回線で東京駅 z13 39秒 → 10秒。件数は寄った表示でだけ出す)
           </span>
         </li>
         <li>
           <b>テスト</b><span class="status done">済み</span>
           <span class="sub">
-            E2E 118件 (本番ビルド・手元のデータ)、単体 18件 (WKB・言語)、パイプライン 203件、remote-zip 11件。
-            <b>R2 の実データでの CI は 10-07・10-08 に落ちた。</b> 手元から R2 に向けて流すと116件中9件が落ち、
-            うち7件が z13〜14 (引いた表示の読み込みが重い)。概観で直した
+            E2E 118件 (本番ビルド・手元のデータ)、単体 24件 (WKB・言語・線の切り取り)、パイプライン 205件、remote-zip 11件。
+            R2 の遅さは手元でも再現できる (<code>DATA_LATENCY_MS=450 DATA_BANDWIDTH_MBPS=16</code>)
           </span>
         </li>
         <li>
@@ -386,11 +385,15 @@
           </span>
         </li>
         <li class="current">
-          <b>日本語の JSON を上げ、古いファイルを消す</b><span class="status you">あなたの番</span>
+          <b>タイルとカタログを上げて push</b><span class="status you">あなたの番</span>
           <span class="sub">
-            <a href="deploy.md">deploy.md</a>「10-03 と 10-07 の分」の ④ 日本語の JSON (43個) → ⑤ 古い <code>*-items.json</code> (15個) と
-            <code>overture_buildings_minato.parquet</code> を消す (<code>--dry-run</code> で先に見る)。新しいアプリが配られていることは確かめた
+            <a href="deploy.md">deploy.md</a>「2026-10-10 の分」。① タイル 2つ (162MB) → ② items.parquet と JSON 全部 (89個。日本語の JSON もここで済む) → ③ push。
+            ① を ② より先に
           </span>
+        </li>
+        <li>
+          <b>公開されたら古いファイルを消す</b><span class="status todo">まだ</span>
+          <span class="sub">同じ節の ④。概観 48個 (409MB)・古い <code>*-items.json</code> (15個)・<code>overture_buildings_minato.parquet</code> (<code>--dry-run</code> で先に見る)</span>
         </li>
         <li>
           <b>公開を確かめる</b><span class="status todo">まだ</span>
@@ -403,30 +406,31 @@
       <!-- ===== 容量の内訳 ===== -->
       <section class="card" aria-label="R2の容量の内訳">
         <h2>R2 の容量 — 何が占めているか</h2>
-        <div class="stack" role="img" aria-label="Overture 5.86GB、PLATEAU 4.13GB、その他 0.12GB。無料枠10GB">
-          <span style="flex: 5.86; background: var(--s1)" title="Overture Maps 5.86 GB (403 ファイル。概観 3 を含む)"></span>
-          <span style="flex: 4.13; background: var(--s2)" title="PLATEAU 4.13 GB (352 ファイル。概観 45 を含む)"></span>
-          <span style="flex: 0.12; background: var(--s3)" title="国土数値情報・国勢調査・位置参照情報 0.12 GB"></span>
-          <span class="limit" style="left: 98.9%" data-label="無料枠 10 GB"></span>
+        <div class="stack" role="img" aria-label="Overture 5.82GB、PLATEAU 3.93GB、その他 0.11GB。無料枠10GB">
+          <span style="flex: 5.82; background: var(--s1)" title="Overture Maps 5.82 GB (GeoParquet 400・タイル 1)"></span>
+          <span style="flex: 3.93; background: var(--s2)" title="PLATEAU 3.93 GB (GeoParquet 307・タイル 1)"></span>
+          <span style="flex: 0.11; background: var(--s3)" title="国土数値情報・国勢調査・位置参照情報 0.11 GB"></span>
+          <span style="flex: 0.14"></span>
+          <span class="limit" style="left: 98.6%" data-label="無料枠 10 GB"></span>
         </div>
         <div class="legend">
-          <span><i style="background: var(--s1)"></i>Overture 5.86 GB</span>
-          <span><i style="background: var(--s2)"></i>PLATEAU 4.13 GB</span>
-          <span><i style="background: var(--s3)"></i>その他 0.12 GB</span>
+          <span><i style="background: var(--s1)"></i>Overture 5.82 GB</span>
+          <span><i style="background: var(--s2)"></i>PLATEAU 3.93 GB</span>
+          <span><i style="background: var(--s3)"></i>その他 0.11 GB</span>
         </div>
         <table>
           <thead>
             <tr><th>出所</th><th class="num">ファイル</th><th class="num">大きさ</th><th>次のアップロード</th></tr>
           </thead>
           <tbody>
-            <tr><td>Overture Maps</td><td class="num">403</td><td class="num">5.86 GB</td><td>概観 3つ (新規・82MB)</td></tr>
-            <tr><td>PLATEAU</td><td class="num">352</td><td class="num">4.13 GB</td><td>概観 45 (新規・327MB)</td></tr>
-            <tr><td>カタログ (起点)</td><td class="num">1</td><td class="num">0.08 MB</td><td>items.parquet・まとめ 2つ・英語版の JSON</td></tr>
-            <tr><td>そのほか</td><td class="num">—</td><td class="num">0.12 GB</td><td>なし</td></tr>
+            <tr><td>Overture Maps</td><td class="num">401</td><td class="num">5.82 GB</td><td>タイル 1つ (新規・39MB)。概観 3つは消す</td></tr>
+            <tr><td>PLATEAU</td><td class="num">308</td><td class="num">3.93 GB</td><td>タイル 1つ (新規・123MB)。概観 45 は消す</td></tr>
+            <tr><td>カタログ (起点)</td><td class="num">1</td><td class="num">0.08 MB</td><td>items.parquet と JSON 全部 (89個)</td></tr>
+            <tr><td>そのほか</td><td class="num">—</td><td class="num">0.11 GB</td><td>なし</td></tr>
           </tbody>
         </table>
         <p class="sub">
-          建物の元のファイルは変えていない。日本語の JSON は CI が通ってから。R2に残る古い <code>*-items.json</code> (15個) と <code>*_minato.parquet</code> は、新しいサイトが配られてから消す。
+          建物の元のファイルは変えていない。R2 に残る概観 (48個)・古い <code>*-items.json</code> (15個)・<code>*_minato.parquet</code> は、新しいサイトが配られてから消す。
         </p>
       </section>
 
@@ -613,7 +617,7 @@
           <li>
             <b>R2 に独自ドメインを付けるか</b>
             <span class="sub">
-              r2.dev は読み込み1回ごとに約0.45秒待たされる。引いた表示は概観で z13 121秒 → 29秒 に縮めた (R2 相当の回線)。
+              r2.dev は読み込み1回ごとに約0.45秒待たされる。引いた表示はタイルで東京駅 z13 39秒 → 10秒 に縮めた (R2 相当の回線)。
               CI が通るなら急がない。独自ドメインならキャッシュが効く (未計測・ドメインの費用がかかる) (roadmap)
             </span>
           </li>
