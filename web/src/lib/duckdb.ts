@@ -18,6 +18,7 @@ import {
 } from './stac';
 import {
   LINE_KINDS,
+  buildingTiles,
   type BuildingCoverage,
   type BuildingSource,
   type LineKind,
@@ -231,7 +232,7 @@ export async function initDuckDb(collections: Collection[]): Promise<Database> {
     }
     const result = await conn.query(`
       SELECT id, collection, bbox, links,
-             "table:row_count" AS row_count, "duck:source_lod" AS source_lod, "duck:lod_max" AS lod_max,
+             "table:row_count" AS row_count, "duck:source_lod" AS source_lod,
              assets.data.href AS href
       FROM read_parquet('${file}', file_row_number = true) ${where};
     `);
@@ -251,7 +252,6 @@ export async function initDuckDb(collections: Collection[]): Promise<Database> {
           // Int64 は BigInt で返る。
           'table:row_count': row.row_count === null ? undefined : Number(row.row_count),
           'duck:source_lod': row.source_lod ?? undefined,
-          'duck:lod_max': row.lod_max ?? undefined,
         },
         assets: { data: { href: row.href } },
       };
@@ -262,18 +262,10 @@ export async function initDuckDb(collections: Collection[]): Promise<Database> {
    * Collection の Item を読み、ファイルを DuckDB に教える。**使うときに一度だけ** (`once`)。
    * 建物・メッシュ・鉄道・道路・線で同じ形なので、ここで1つにする。
    */
-  const lazyFiles = (
-    collection: Collection,
-    assign: (files: ItemFile[], overviews: ItemFile[]) => void,
-  ) =>
+  const lazyFiles = (collection: Collection, assign: (files: ItemFile[]) => void) =>
     once(async () => {
       const files = itemFiles(await collection.items());
-      // **概観 (上の段だけの複製) は分けて渡す。** 元のファイルと一緒に読むと二重に出る。
-      // 受け取らない出所には渡らない。
-      assign(
-        files.filter((f) => f.lodMax === null),
-        files.filter((f) => f.lodMax !== null),
-      );
+      assign(files);
       await register(files.map(({ file }) => file));
       await ensureSpatial();
     });
@@ -404,17 +396,14 @@ export async function initDuckDb(collections: Collection[]): Promise<Database> {
       id: collection.id,
       // Itemを読むまで空。寄って実際に引くまで通信しない。
       files: [],
-      overviews: [],
       hasHeight: collection.columns.has('height'),
       categoryColumn,
       usages,
       bbox: collection.bbox,
       coverage,
       tiers: collection.tiers,
-      ensure: lazyFiles(collection, (files, overviews) => {
-        source.files = files;
-        source.overviews = overviews;
-      }),
+      tiles: buildingTiles(collection),
+      ensure: lazyFiles(collection, (files) => (source.files = files)),
     };
     return source;
   });

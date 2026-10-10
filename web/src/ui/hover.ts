@@ -13,6 +13,7 @@ import type { Collection } from '../lib/stac';
 import { LINE_KINDS } from '../lib/sources';
 import { MESH_SIZE_LABELS } from '../lib/mesh';
 import type { VectorOverlay } from '../lib/tiles';
+import { BUILDING_TILES_PREFIX, buildingTilesLayerId } from './map';
 import { m } from '../i18n';
 
 type Props = Record<string, unknown>;
@@ -196,11 +197,34 @@ export function createHover(options: HoverOptions): HoverHandle {
     ),
   };
 
+  /** 引いた表示の建物のタイルの層 (出所ごと)。 */
+  const tileLayerIds = collections
+    .filter((c) => c.kind === 'plateau_buildings' || c.kind === 'buildings')
+    .map((c) => buildingTilesLayerId(c.id));
+
+  /**
+   * タイルの建物。**GeoJSON の建物と同じ吹き出しにする。** タイルの地物は出所も段の名前も持たないので、
+   * 層 (= 出所) から補う。段の順位はタイルの `lod`、用途は `category` (build_building_tiles)。
+   */
+  const tileBuildingHover = (layerId: string, p: Props): Hover => {
+    const origin = layerId.slice(BUILDING_TILES_PREFIX.length);
+    const rank = p.lod as number;
+    const props: Props = {
+      ...p,
+      origin,
+      tierRank: rank,
+      tier: collections.find((c) => c.id === origin)?.tiers?.tiers[rank]?.title ?? null,
+    };
+    return { key: `building|${origin}|${p.name}|${p.height}|${p.category}`, rows: buildingRows(props) };
+  };
+
   /** うちのデータ (と周辺検索の結果) で、その点のいちばん上にあるもの。 */
   const ownHoverAt = (point: { x: number; y: number }): Hover | null => {
-    const ids = Object.keys(HOVER_LAYERS).filter((id) => map.getLayer(id));
+    const ids = [...Object.keys(HOVER_LAYERS), ...tileLayerIds].filter((id) => map.getLayer(id));
     const top = map.queryRenderedFeatures([point.x, point.y], { layers: ids })[0];
-    return top ? HOVER_LAYERS[top.layer.id](top.properties) : null;
+    if (!top) return null;
+    if (top.layer.id.startsWith(BUILDING_TILES_PREFIX)) return tileBuildingHover(top.layer.id, top.properties);
+    return HOVER_LAYERS[top.layer.id](top.properties);
   };
 
   /**

@@ -2,7 +2,7 @@
  * **データの出所** (GeoParquet のファイル群) と、表示範囲から読むファイルを選ぶ部品。
  * 問い合わせ (DuckDB) からも画面からも使う。地図には依存しない。
  */
-import type { Bbox, ItemFile, Tiers } from './stac';
+import { dataUrl, type Bbox, type Collection, type ItemFile, type Tiers } from './stac';
 import { m } from '../i18n';
 
 /** 地図の表示範囲。 */
@@ -104,11 +104,10 @@ export interface BuildingSource {
    */
   files: ItemFile[];
   /**
-   * **概観。** 上の段 (`lodMax` まで) だけを広い範囲で集めた複製。引いた表示 (段で間引く
-   * ズーム) ではこちらを読む — 元のファイルを20近く開く往復が、数ファイルで済む。
-   * 無ければ (古いカタログ) 元のファイルを段で絞って読む。`ensure()` を呼ぶまで空。
+   * **引いた表示のためのタイル** (PMTiles)。段で間引くズームでは GeoParquet を読まずにこれを描く
+   * (R2 では東京駅 z13 が 39秒 → 10秒)。無ければ (古いカタログ) 元のファイルを段で絞って読む。
    */
-  overviews: ItemFile[];
+  tiles: BuildingTiles | undefined;
   /** 収録範囲 (ファイル全部の和)。Collectionが持っているので最初から分かる。 */
   bbox: Bbox | null;
   /** 高さの列があるか。あれば高さで絞れるし、立体の高さにも使える。 */
@@ -130,6 +129,32 @@ export interface BuildingSource {
   coverage: BuildingCoverage | undefined;
   /** 重要度の段の規則 (カタログの `duck:tiers`)。無ければ段で絞れない。用途を問わない部品。 */
   tiers: Tiers | undefined;
+}
+
+/** 建物のタイル。Collection のアセット `tiles` (`build_building_tiles` が作る)。 */
+export interface BuildingTiles {
+  /** PMTiles の URL (`pmtiles://` の後ろに付ける絶対URL)。 */
+  url: string;
+  /** タイルの層の名前。 */
+  layer: string;
+  /** 入っている段の上限 (`lod`)。これより下の段を出すズームでは、タイルではなく GeoParquet を読む。 */
+  lodMax: number;
+}
+
+/**
+ * Collection のアセットから建物のタイルを取り出す。**PMTiles で、段の上限が書いてあるものだけ**。
+ * 足りないものは使わない (段が分からないと、どのズームで使えるか決まらない)。
+ */
+export function buildingTiles(collection: Collection): BuildingTiles | undefined {
+  const asset = collection.assets.tiles;
+  if (!asset || asset.type !== 'application/vnd.pmtiles' || asset['duck:lod_max'] === undefined) {
+    return undefined;
+  }
+  return {
+    url: dataUrl(asset.href),
+    layer: asset['pmtiles:layers']?.[0] ?? 'buildings',
+    lodMax: asset['duck:lod_max'],
+  };
 }
 
 /**

@@ -33,7 +33,7 @@ export const TERRAIN_SOURCE = 'terrain';
 
 /** `pmtiles://` を MapLibre に教える。**1回だけ** (2回登録すると後のものが勝つだけだが無駄)。 */
 let pmtilesRegistered = false;
-function registerPmtiles() {
+export function registerPmtiles() {
   if (pmtilesRegistered) return;
   addProtocol('pmtiles', new PmtilesProtocol().tile);
   pmtilesRegistered = true;

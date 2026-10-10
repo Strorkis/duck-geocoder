@@ -7,8 +7,9 @@
  *
  * ズームで出し方が変わる: 全部 / 重要な段だけ (間引き) / 整備範囲のメッシュ ([`buildingDepth`])。
  */
-import type { GeoJSONSource } from 'maplibre-gl';
+import type { ExpressionSpecification, FilterSpecification, GeoJSONSource } from 'maplibre-gl';
 import { sourceLodNote, type BuildingSource } from '../../lib/sources';
+import { registerPmtiles } from '../../lib/tiles';
 import { MESH_SIZE_LABELS, meshDigits } from '../../lib/mesh';
 import {
   coverageFeatureCollection,
@@ -16,7 +17,13 @@ import {
   fetchCoverageInView,
   type BuildingFilter,
 } from '../../lib/queries';
-import { BUILDING_COLOR_BY_HEIGHT, BUILDING_COLOR_BY_TIER, EMPTY_FEATURE_COLLECTION } from '../map';
+import {
+  BUILDING_COLOR_BY_HEIGHT,
+  BUILDING_COLOR_BY_TIER,
+  EMPTY_FEATURE_COLLECTION,
+  buildingTilesLayerId,
+  tileColor,
+} from '../map';
 import { requester, type DrawContext } from './context';
 import { m } from '../../i18n';
 
@@ -56,6 +63,74 @@ export function createBuildingLayers(ctx: DrawContext, sources: BuildingSource[]
     sources.map((source) => [source.id, { minHeight: 0, usages: null, tiers: null }]),
   );
   const filterOf = (source: BuildingSource): BuildingFilter => filters.get(source.id)!;
+
+  // ---- 引いた表示のタイル ----------------------------------------------------------
+  //
+  // **段で間引くズームでは、GeoParquet を読まずにタイル (PMTiles) を描く。** DuckDB は1回ずつ順に
+  // 読むので、都市ごとのファイルを十数個開くと R2 では1分近くかかった。MapLibre はタイルを並列に取る
+  // (東京駅 z13 で 39秒 → 10秒)。**タイルは数えられない**ので、件数は寄った表示でだけ出す。
+  // 層は出所ごとに1つ。塗りは GeoJSON の層と同じ規則から作る (`tileColor`)。
+  const colorFor = (byTier: boolean) => (byTier ? BUILDING_COLOR_BY_TIER : BUILDING_COLOR_BY_HEIGHT);
+  for (const [palette, source] of sources.entries()) {
+    if (!source.tiles) continue;
+    registerPmtiles();
+    const id = buildingTilesLayerId(source.id);
+    map.addSource(id, { type: 'vector', url: `pmtiles://${source.tiles.url}` });
+    map.addLayer(
+      {
+        id,
+        type: 'fill-extrusion',
+        source: id,
+        'source-layer': source.tiles.layer,
+        layout: { visibility: 'none' },
+        paint: {
+          'fill-extrusion-color': tileColor(colorFor(tierColorToggle.checked), palette),
+          'fill-extrusion-height': ['coalesce', ['get', 'height'], 3],
+          'fill-extrusion-base': 0,
+          'fill-extrusion-opacity': 0.9,
+        },
+      },
+      // GeoJSON の建物の層のすぐ下 (一覧の重ね順を変えても、main.ts が一緒に動かす)。
+      'buildings-3d',
+    );
+  }
+
+  /** このズームの段をタイルで描けるか (タイルに入っている段まで)。 */
+  const drawsWithTiles = (source: BuildingSource, depth: 'all' | number | null | undefined): depth is number =>
+    typeof depth === 'number' && source.tiles !== undefined && depth <= source.tiles.lodMax;
+
+  /**
+   * タイルの絞り込み。問い合わせ (`fetchBuildingsInView`) と同じ条件を、スタイルの式で書く。
+   * 用途の列はタイルでは `category` にそろえてある (build_building_tiles)。段の順位は `lod`。
+   */
+  const tileFilter = (source: BuildingSource, depth: number): FilterSpecification => {
+    const filter = filterOf(source);
+    const conditions: ExpressionSpecification[] = [['<=', ['get', 'lod'], depth]];
+    if (source.hasHeight && filter.minHeight > 0) {
+      // 問い合わせの `height >= x` と同じく、高さの無い建物は外す。
+      conditions.push(['>=', ['coalesce', ['get', 'height'], -1], filter.minHeight]);
+    }
+    if (source.categoryColumn && filter.usages) {
+      conditions.push(['in', ['get', 'category'], ['literal', filter.usages]]);
+    }
+    if (source.tiers && filter.tiers) {
+      const ranks = source.tiers.tiers.flatMap((tier, rank) => (filter.tiers!.includes(tier.id) ? [rank] : []));
+      conditions.push(['in', ['get', 'lod'], ['literal', ranks]]);
+    }
+    return ['all', ...conditions];
+  };
+
+  /** タイルの層を出し入れする。`depth` が数でタイルに入っている段なら出し、それ以外は隠す。 */
+  const showTiles = (source: BuildingSource, depth: 'all' | number | null | undefined) => {
+    const id = buildingTilesLayerId(source.id);
+    if (!map.getLayer(id)) return;
+    if (drawsWithTiles(source, depth)) {
+      map.setFilter(id, tileFilter(source, depth));
+      map.setLayoutProperty(id, 'visibility', 'visible');
+    } else {
+      map.setLayoutProperty(id, 'visibility', 'none');
+    }
+  };
 
   /** 行の状態に書き、パネルを向けている出所なら件数の欄にも出す。 */
   const showStatus = (source: BuildingSource, text: string) => {
@@ -101,20 +176,23 @@ export function createBuildingLayers(ctx: DrawContext, sources: BuildingSource[]
     // 残っていると、すでに寄っている利用者に拡大しろと言い続けることになる。
     for (const source of sources) showStatus(source, '');
 
+    const zoom = map.getZoom();
+    const depths = new Map(visible.map((source) => [source, buildingDepth(source, zoom)]));
+    // **タイルはすぐ出し入れする** (読むのは MapLibre。下の問い合わせを待たない)。外した出所は隠す。
+    for (const source of sources) showTiles(source, depths.get(source));
+
     if (visible.length === 0) {
       await coverage?.setData(EMPTY_FEATURE_COLLECTION);
       await mapSource.setData(EMPTY_FEATURE_COLLECTION);
       return;
     }
 
-    const zoom = map.getZoom();
     const bounds = ctx.currentBounds();
     const detail = ctx.detail();
 
     // 状態は最後にまとめて出す。途中で打ち切ったとき (地図が動いた) に
     // 片方の出所だけ新しい件数が出る、という食い違いを作らない。
     const statuses: [BuildingSource, string][] = [];
-    const depths = new Map(visible.map((source) => [source, buildingDepth(source, zoom)]));
 
     // **引いた表示では整備範囲を出す** (段で間引いても出せないほど引いたとき)。
     const coverageFeatures: GeoJSON.Feature[] = [];
@@ -152,6 +230,18 @@ export function createBuildingLayers(ctx: DrawContext, sources: BuildingSource[]
     for (const source of visible) {
       const depth = depths.get(source);
       if (depth === null || depth === undefined) continue;
+      if (drawsWithTiles(source, depth)) {
+        // **タイルは数えられない。** どこまで出しているか (段) だけを言い、件数は寄ったときに出す。
+        statuses.push([
+          source,
+          m.shownAsTiles +
+            m.thinnedTiers(
+              source.tiers!.tiers.slice(0, depth + 1).map((t) => t.title),
+              detail.buildingsMinZoom,
+            ),
+        ]);
+        continue;
+      }
       const rows = await ctx.busy(m.loadingNamed(m.buildings), async () => {
         await source.ensure();
         return fetchBuildingsInView(
@@ -289,11 +379,14 @@ export function createBuildingLayers(ctx: DrawContext, sources: BuildingSource[]
     // **重要度で色分けする。** 重要な段を目立たせ、住宅・その他を退かせる。
     // 引き直さず塗りだけを替える (段は既に地物に入っている)。出所をまたいで効く。
     tierColorToggle.addEventListener('change', () => {
-      map.setPaintProperty(
-        'buildings-3d',
-        'fill-extrusion-color',
-        tierColorToggle.checked ? BUILDING_COLOR_BY_TIER : BUILDING_COLOR_BY_HEIGHT,
-      );
+      map.setPaintProperty('buildings-3d', 'fill-extrusion-color', colorFor(tierColorToggle.checked));
+      // タイルの層も同じ規則で塗り替える。
+      for (const [palette, source] of sources.entries()) {
+        const id = buildingTilesLayerId(source.id);
+        if (map.getLayer(id)) {
+          map.setPaintProperty(id, 'fill-extrusion-color', tileColor(colorFor(tierColorToggle.checked), palette));
+        }
+      }
     });
 
     showFilters(settingsSource);

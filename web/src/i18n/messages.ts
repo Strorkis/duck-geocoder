@@ -106,6 +106,8 @@ const ja = {
     `整備範囲 ${cells.toLocaleString()} メッシュ (${size}) · 建物 ${buildings.toLocaleString()} 棟 · ズーム${zoom}から建物の形を表示`,
   atLeastItemsCapped: (count: number) => `${count}件以上 (表示上限)`,
   thinnedTiers: (titles: readonly string[], zoom: number) => ` · ${titles.join('・')}のみ (ズーム${zoom}ですべて)`,
+  /** 引いた表示をタイルで描いているとき (件数は数えられない)。後ろに段 (`thinnedTiers`) が続く。 */
+  shownAsTiles: "表示しています",
   noTier: 'どの段にも入らないもの',
   allTiers: 'すべて',
   classesHeldBack: (count: number, zoom: number) => ` · ${count}種別はズーム${zoom}から`,
@@ -407,6 +409,7 @@ const en: Messages = {
     `Coverage ${cells.toLocaleString()} cells (${size}) · ${buildings.toLocaleString()} buildings · shapes from zoom ${zoom}`,
   atLeastItemsCapped: (count) => `${count}+ items (display limit)`,
   thinnedTiers: (titles, zoom) => ` · only ${titles.join(', ')} (all from zoom ${zoom})`,
+  shownAsTiles: "Shown",
   noTier: 'Not in any tier',
   allTiers: 'All',
   classesHeldBack: (count, zoom) => ` · ${count} more classes from zoom ${zoom}`,

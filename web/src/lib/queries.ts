@@ -432,13 +432,7 @@ export async function fetchBuildingsInView(
   maxRank?: number,
 ): Promise<BuildingFeature[]> {
   // 表示範囲に重なるファイルだけを渡す。重なるものが無ければ問い合わせない。
-  // **間引くときは概観を読む** (要る段がすべて入っているとき)。元のファイルを開く往復が、
-  // 都道府県・QuadKey ごとの数ファイルで済む。
-  const overview =
-    maxRank !== undefined &&
-    source.overviews.length > 0 &&
-    source.overviews.every(({ lodMax }) => lodMax !== null && lodMax >= maxRank);
-  const files = filesInView(overview ? { files: source.overviews } : source, bounds);
+  const files = filesInView(source, bounds);
   if (files.length === 0) return [];
 
   // 絞り込みは **SQLに渡す**。取得後にJavaScript側で捨てると、

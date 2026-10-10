@@ -109,6 +109,28 @@ export const BUILDING_COLOR_BY_TIER: ExpressionSpecification = [
 ];
 
 /**
+ * **引いた表示の建物のタイルの層** (出所ごとに1つ)。段で間引くズームでは GeoParquet を読まずに
+ * これを描く (ui/layers/buildings.ts)。吹き出し (hover.ts) と一覧の重ね順 (main.ts) も見る。
+ */
+export const BUILDING_TILES_PREFIX = 'buildings-tiles/';
+export const buildingTilesLayerId = (collectionId: string) => `${BUILDING_TILES_PREFIX}${collectionId}`;
+
+/**
+ * 建物の塗りの式を、タイルの層で使える形にする。**塗りの規則は1つに保つ** (`BUILDING_COLOR_BY_*`)。
+ * GeoJSON の地物は出所の番号 (`palette`) と段の順位 (`tierRank`) を持つが、タイルの地物は持たない。
+ * 出所の番号は層ごとに決まった値に、段の順位はタイルの `lod` (段の順位そのもの) に置き換える。
+ */
+export function tileColor(expression: ExpressionSpecification, palette: number): ExpressionSpecification {
+  const replace = (value: unknown): unknown => {
+    if (!Array.isArray(value)) return value;
+    if (value.length === 2 && value[0] === 'get' && value[1] === 'palette') return palette;
+    if (value.length === 2 && value[0] === 'get' && value[1] === 'tierRank') return ['get', 'lod'];
+    return value.map(replace);
+  };
+  return replace(expression) as ExpressionSpecification;
+}
+
+/**
  * 地図を生成し、スタイルのロードとデータ・周辺検索・ハイライトの層の追加が終わるまで待つ。
  *
  * 出典表示はカタログから組み立てる。どのデータセットを配信するかはカタログ次第なので、

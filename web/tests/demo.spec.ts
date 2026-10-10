@@ -967,10 +967,11 @@ test('逆ジオコーディング中は合図が出る', async ({ page }) => {
     map.jumpTo({ center: [139.7671, 35.6812], zoom: 13 });
   });
   // 先に建物側を出し切って、合図が建物のものでないことを確かめられる状態にする。
-  // **このズームで出るのは段で間引いた建物** (公共施設だけ。全部はズーム15から)。
-  await expect
-    .poll(() => sourceFeatureCount(page, 'buildings'), { timeout: 60_000 })
-    .toBeGreaterThan(0);
+  // **このズームの建物は段で間引いたタイル** (公共施設だけ。全部はズーム15から)。数えられないので、
+  // 状態の欄に段が出る (引き直しが終わった) のを待つ。
+  await expect(page.locator(`[data-layer-status="${LAYER.plateauBuildings}"]`)).toContainText('のみ', {
+    timeout: DATA_TIMEOUT,
+  });
   await expect(page.locator('#busy')).toBeHidden();
 
   // 合図を確かめるまで行政区域を渡さない。
@@ -3191,40 +3192,43 @@ for (const [layer, label] of [
 }
 
 /**
- * **引いた表示では、重要な段の建物から出る** (間引き)。1ズーム引くごとに1段減らす。
+ * **引いた表示では、重要な段の建物だけをタイル (PMTiles) で描く。** 1ズーム引くごとに1段減らす。
  *
- * 標準 (ズーム15から全部) なら、14.x で公共施設と商業・業務、13.x で公共施設だけ、
- * それより引くと整備範囲のメッシュ。段は建物ファイルの `lod` 列 (段の順位) で、
- * 段ごとに行グループが分かれているので、統計で読み飛ばせる。
+ * GeoParquet を DuckDB で読むと、都市ごとのファイルを十数個開いて R2 で1分近くかかった
+ * (東京駅 z13 で 39秒 → タイルで 10秒)。タイルは数えられないので、件数の代わりに段だけを言う。
  */
-test('引いた表示では重要な段の建物だけが出る (間引き)', async ({ page }) => {
+test('引いた表示では重要な段の建物だけをタイルで描く (間引き)', async ({ page }) => {
   test.skip(!(await hasPlateau(page)), 'PLATEAUの建物データが無い');
   const collection = (await bundledCollection<{
     'duck:tiers': { lod_column?: string; tiers: { title: string }[] };
+    assets?: { tiles?: { href: string } };
   }>(page, LAYER.plateauBuildings))!;
-  test.skip(!collection['duck:tiers'].lod_column, '段の列 (lod) がまだ無いカタログ');
+  test.skip(!collection.assets?.tiles, '建物のタイルがまだ無いカタログ');
   const titles = collection['duck:tiers'].tiers.map((t) => t.title);
 
-  const plateau = await datasetUrl(page, PLATEAU_DATASET);
-  let bytes = 0;
-  /** 開いた建物のファイル。 */
+  /** 開いた建物のファイル (タイルと GeoParquet)。 */
   const opened = new Set<string>();
-  page.on('response', (response) => {
-    if (!response.url().endsWith('.parquet')) return;
-    if (!response.url().includes('/plateau_bldg_') || response.url().includes('coverage')) return;
-    opened.add(response.url().split('/').pop()!);
-    if (response.request().method() === 'HEAD') return;
-    bytes += Number(response.headers()['content-length'] ?? 0);
+  page.on('request', (request) => {
+    const file = request.url().split('/').pop()!;
+    if (file.startsWith('plateau_bldg_') && !file.includes('coverage')) opened.add(file);
   });
 
-  /** 描かれている建物の段の順位 (重複なし)。 */
-  const ranks = () =>
-    page.evaluate(async () => {
+  const layer = `buildings-tiles/${LAYER.plateauBuildings}`;
+  /** 描かれている建物の段の順位 (重複なし)。描き終わるまで待ってから数える。 */
+  const ranks = async () => {
+    await page.waitForFunction(
+      (id) => {
+        const map = (window as unknown as TestWindow).__map!;
+        return map.areTilesLoaded() && map.queryRenderedFeatures({ layers: [id] }).length > 0;
+      },
+      layer,
+      { timeout: DATA_TIMEOUT },
+    );
+    return page.evaluate((id) => {
       const map = (window as unknown as TestWindow).__map!;
-      const data = await (map.getSource('buildings') as GeoJSONSource).getData();
-      if (data.type !== 'FeatureCollection') return [];
-      return [...new Set(data.features.map((f) => f.properties?.tierRank as number))].sort();
-    });
+      return [...new Set(map.queryRenderedFeatures({ layers: [id] }).map((f) => f.properties.lod as number))].sort();
+    }, layer);
+  };
   const jump = (zoom: number) =>
     page.evaluate((z) => {
       (window as unknown as TestWindow).__map!.jumpTo({ center: [139.7671, 35.6812], zoom: z });
@@ -3233,27 +3237,26 @@ test('引いた表示では重要な段の建物だけが出る (間引き)', as
 
   // 13.x: 公共施設だけ。
   await jump(13.5);
-  await expect(count).toContainText(`${titles[0]}のみ`, { timeout: 60_000 });
+  await expect(count).toContainText(`${titles[0]}のみ`, { timeout: DATA_TIMEOUT });
+  // **件数は出さない** (タイルは数えられない)。
+  await expect(count).not.toContainText('件');
   expect(await ranks()).toEqual([0]);
-  console.log(`間引き (ズーム13.5) の建物の転送量: ${(bytes / 1024).toFixed(0)} KB`);
-  expect(bytes, '転送量を計測できていない').toBeGreaterThan(0);
-  // 全部読むとこの画面で30MB前後 (実測)。公共施設だけなら数MBに収まる。
-  expect(bytes).toBeLessThan(12 * 1024 * 1024);
-  // **概観 (都道府県ごと) だけを開く。** 区ごとのファイルを20近く開くと、R2 では開く往復だけで
-  // 数十秒かかっていた。ここが崩れたら、概観を R2 に上げ忘れているか、読む側が戻っている。
+  // **都市ごとの GeoParquet は開かない。** 開いたら、タイルを使わずに問い合わせへ戻っている。
   console.log(`間引き (ズーム13.5) で開いた建物のファイル: ${[...opened].join(', ')}`);
-  expect([...opened].every((file) => file.startsWith('plateau_bldg_overview_')), [...opened].join(', ')).toBe(true);
-  expect(opened.size).toBeLessThanOrEqual(2);
+  expect([...opened].some((file) => file.endsWith('.pmtiles'))).toBe(true);
+  expect([...opened].filter((file) => file.endsWith('.parquet'))).toEqual([]);
 
   // 14.x: 公共施設と商業・業務。
   await jump(14.5);
-  await expect(count).toContainText(`${titles[0]}・${titles[1]}のみ`, { timeout: 60_000 });
+  await expect(count).toContainText(`${titles[0]}・${titles[1]}のみ`, { timeout: DATA_TIMEOUT });
   expect((await ranks()).every((rank) => rank <= 1)).toBe(true);
 
-  // それより引くと整備範囲。
+  // それより引くと整備範囲。タイルの層は隠れる。
   await jump(12.5);
-  await expect(count).toContainText('整備範囲', { timeout: 60_000 });
-  expect(plateau).not.toBeNull();
+  await expect(count).toContainText('整備範囲', { timeout: DATA_TIMEOUT });
+  expect(
+    await page.evaluate((id) => (window as unknown as TestWindow).__map!.getLayoutProperty(id, 'visibility'), layer),
+  ).toBe('none');
 });
 
 /** 周辺検索の待ち受けに入り、地図の点を押す。 */

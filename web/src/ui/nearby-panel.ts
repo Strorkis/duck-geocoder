@@ -34,6 +34,7 @@ import {
   type NearbyOrigin,
 } from '../lib/nearby';
 import { aroundBox, clipLines } from '../lib/clip';
+import { buildingTilesLayerId } from './map';
 
 /** 種類の名前 (地図の絞り込みの鍵でもある「建物」「駅」…) を、画面の言語で見せる。 */
 const kindLabel = (kind: string): string => m.nearbyKinds[kind] ?? kind;
@@ -229,7 +230,9 @@ export function createNearbyPanel(options: NearbyPanelOptions): NearbyPanel {
     point: { x: number; y: number },
     lngLat: { lng: number; lat: number },
   ): Promise<NearbyOrigin> => {
-    const layers = ORIGIN_LAYERS.filter(({ layer }) => map.getLayer(layer));
+    // 引いた表示ではタイルの建物を描いている (出所ごとの層)。押せばその建物が起点になる。
+    const tileLayers = sources.buildings.map((s) => ({ layer: buildingTilesLayerId(s.id), label: '建物', nameKey: null }));
+    const layers = [...tileLayers, ...ORIGIN_LAYERS].filter(({ layer }) => map.getLayer(layer));
     const hit = map.queryRenderedFeatures([point.x, point.y], { layers: layers.map(({ layer }) => layer) })[0];
     const spec = hit && layers.find(({ layer }) => layer === hit.layer.id);
     if (!hit || !spec) {

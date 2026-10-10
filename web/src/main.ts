@@ -20,7 +20,7 @@ import { initDuckDb } from './lib/duckdb';
 import { coverageInView } from './lib/queries';
 import { DETAIL_LEVELS, loadDetailLevel, saveDetailLevel, type DetailLevel, type DetailSettings } from './lib/detail';
 // 画面の部品は ui/。地図の初期化と描き方は map.ts、左下の一覧とカタログのダイアログは layer-list.ts。
-import { EMPTY_FEATURE_COLLECTION, initMap } from './ui/map';
+import { EMPTY_FEATURE_COLLECTION, buildingTilesLayerId, initMap } from './ui/map';
 // データの描き方 (建物・人口メッシュ・鉄道・道路・送電線と川) は ui/layers/。
 import type { DrawContext } from './ui/layers/context';
 import { createBuildingLayers } from './ui/layers/buildings';
@@ -419,7 +419,12 @@ async function main() {
   const layers: Layer[] = [];
   for (const collection of collections) {
     // 既定はデータの行。地図タイルの行は下で区分と描く層を上書きする。
-    const dataMapLayers = DATA_MAP_LAYERS[collection.kind] ?? [];
+    // 建物は、引いた表示のタイルの層も一緒に動かす (出所ごとに1つ。無ければ動かす側が飛ばす)。
+    const isBuildings = collection.kind === 'plateau_buildings' || collection.kind === 'buildings';
+    const dataMapLayers = [
+      ...(DATA_MAP_LAYERS[collection.kind] ?? []),
+      ...(isBuildings ? [buildingTilesLayerId(collection.id)] : []),
+    ];
     const base = {
       id: collection.id,
       title: collection.title,
