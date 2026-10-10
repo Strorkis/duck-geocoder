@@ -313,7 +313,7 @@
   <body>
     <header>
       <h1>duck-geocoder ダッシュボード</h1>
-      <span class="meta">更新 2026-10-10 10:45 (日本時間)</span>
+      <span class="meta">更新 2026-10-10 11:45 (日本時間)</span>
       <span class="meta">
         <a href="https://strorkis.github.io/duck-geocoder/">公開サイト</a> ·
         <a href="roadmap.md">方針 (roadmap.md)</a> · STAC 配布形式の実験
@@ -332,8 +332,8 @@
       </div>
       <div class="card kpi">
         <div class="label">公開待ちのコミット</div>
-        <div class="value">3 <small>件</small></div>
-        <span class="status you">push 待ち (R2 へのアップロードは要らない。10-10 の CI は周辺検索で落ちた)</span>
+        <div class="value">5 <small>件</small></div>
+        <span class="status you">公開済み (10-10 11:19)。残りは資料と計測用の道具 (アプリの動きは変わらない)</span>
       </div>
       <div class="card kpi">
         <div class="label">建物</div>
@@ -378,15 +378,19 @@
             うち7件が z13〜14 (引いた表示の読み込みが重い)。概観で直した
           </span>
         </li>
-        <li class="current">
-          <b>push する (アップロードは要らない)</b><span class="status you">あなたの番</span>
+        <li>
+          <b>push と CI</b><span class="status done">済み</span>
           <span class="sub">
-            概観の分 (deploy.md「2026-10-09 の分」) は上げ済み。10-10 の CI は、鉄道を起点にした周辺検索 (路線全体で1分半) で落ちた。鉄道は押した地点の前後1.5kmだけを調べるように直し、手元から R2 に向けた全テストは通った (116件)。
+            10-10 11:19 にデプロイの CI が通り、今のカタログ形式のアプリが Pages に載った (10-07 から止まっていた)。
+            鉄道を起点にした周辺検索は、押した地点の前後1.5kmだけを調べるように直した
           </span>
         </li>
-        <li>
-          <b>CI が通ったら</b><span class="status todo">まだ</span>
-          <span class="sub">「10-03 と 10-07 の分」の ④ 日本語の JSON → ⑤ 古い <code>*-items.json</code> と <code>*_minato.parquet</code> を消す</span>
+        <li class="current">
+          <b>日本語の JSON を上げ、古いファイルを消す</b><span class="status you">あなたの番</span>
+          <span class="sub">
+            <a href="deploy.md">deploy.md</a>「10-03 と 10-07 の分」の ④ 日本語の JSON (43個) → ⑤ 古い <code>*-items.json</code> (15個) と
+            <code>overture_buildings_minato.parquet</code> を消す (<code>--dry-run</code> で先に見る)。新しいアプリが配られていることは確かめた
+          </span>
         </li>
         <li>
           <b>公開を確かめる</b><span class="status todo">まだ</span>
